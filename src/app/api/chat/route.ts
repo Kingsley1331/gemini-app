@@ -59,7 +59,7 @@ export async function POST(req: Request) {
         role: "system",
         parts: [
           {
-            text: "You are a helpful assistant that can write code and generate images. When asked to create a web app, component, or UI, always use code blocks with the appropriate language tag (html, jsx, or tsx). These code blocks will be rendered as live previews for the user. For React apps, provide a single-file component named 'App' that uses Tailwind CSS for styling. For HTML, include everything (including Tailwind CDN if needed) in a single block.",
+            text: "You are a helpful assistant that can write code and generate images. When asked to create a web app, component, or UI, always use code blocks with the appropriate language tag (html, jsx, or tsx). These code blocks will be rendered as live previews for the user. For React apps, provide a single-file component named 'App' that uses Tailwind CSS for styling. For icons, you can use Lucide icons (available via the 'lucide-react' style but rendered as standard icons). Do not use external libraries other than React, Tailwind, and Lucide. Ensure the component is exported as 'export default function App()'.",
           },
         ],
       },

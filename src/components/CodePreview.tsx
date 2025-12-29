@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Play,
   Code,
@@ -37,7 +37,7 @@ export default function CodePreview({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const updateIframe = () => {
+  const updateIframe = useCallback(() => {
     if (!iframeRef.current) return;
 
     let content = "";
@@ -49,6 +49,13 @@ export default function CodePreview({
       language === "javascript" ||
       language === "typescript"
     ) {
+      // Clean up the code: remove imports that will fail in the browser
+      const cleanedCode = code
+        .replace(/import\s+[\s\S]*?from\s+['"].*?['"];?/g, "")
+        .replace(/export\s+default\s+function\s+(\w+)/, "function $1")
+        .replace(/export\s+default\s+/, "const App = ")
+        .replace(/export\s+/g, "");
+
       // Basic React/JS runner template
       content = `
         <!DOCTYPE html>
@@ -58,32 +65,70 @@ export default function CodePreview({
             <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
             <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
             <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+            <script src="https://unpkg.com/lucide@latest"></script>
             <script src="https://cdn.tailwindcss.com"></script>
             <style>
-              body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-              #root { padding: 20px; }
+              body { 
+                margin: 0; 
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+                background-color: white;
+                color: #18181b;
+              }
+              #root { padding: 0; min-height: 100vh; }
+              ::-webkit-scrollbar { width: 8px; }
+              ::-webkit-scrollbar-track { background: #f1f1f1; }
+              ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+              ::-webkit-scrollbar-thumb:hover { background: #555; }
             </style>
           </head>
           <body>
             <div id="root"></div>
-            <script type="text/babel">
-              const { useState, useEffect, useMemo, useCallback, useRef } = React;
+            <script type="text/babel" data-presets="react,typescript">
+              // Setup globals for the AI code
+              const { 
+                useState, useEffect, useMemo, useCallback, useRef, 
+                useReducer, useContext, createContext, useLayoutEffect,
+                useImperativeHandle, useDebugValue, useDeferredValue,
+                useTransition, useId
+              } = React;
               
+              // Lucide icon helper
+              window.LucideReact = window.lucide;
+
               try {
-                ${
-                  code.includes("export default")
-                    ? code
-                        .replace(
-                          /export\s+default\s+function\s+(\w+)/,
-                          "function $1"
-                        )
-                        .replace(/export\s+default\s+/, "const App = ") +
-                      "\n ReactDOM.createRoot(document.getElementById('root')).render(<App />);"
-                    : code +
-                      "\n if (typeof App !== 'undefined') { ReactDOM.createRoot(document.getElementById('root')).render(<App />); } else if (typeof main !== 'undefined') { main(); }"
+                ${cleanedCode}
+                
+                // Final render logic
+                const container = document.getElementById('root');
+                const root = ReactDOM.createRoot(container);
+                
+                if (typeof App !== 'undefined') {
+                  root.render(
+                    <React.StrictMode>
+                      <App />
+                    </React.StrictMode>
+                  );
+                } else if (typeof main !== 'undefined') {
+                  main();
+                } else {
+                  console.error("No 'App' component found.");
+                  container.innerHTML = '<div style="padding: 20px; color: #ef4444;">Error: No <b>App</b> component found. Please define <code>export default function App()</code>.</div>';
                 }
+                
+                // Initialize lucide icons if any
+                setTimeout(() => {
+                  if (window.lucide) {
+                    window.lucide.createIcons();
+                  }
+                }, 100);
               } catch (err) {
-                document.getElementById('root').innerHTML = '<pre style="color: red">' + err.toString() + '</pre>';
+                console.error("Preview Error:", err);
+                document.getElementById('root').innerHTML = \`
+                  <div style="color: #ef4444; background: #fee2e2; padding: 1.5rem; border: 1px solid #fecaca; border-radius: 0.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; margin: 1rem;">
+                    <h3 style="margin-top: 0; color: #991b1b; font-size: 1.125rem;">Runtime Error</h3>
+                    <pre style="white-space: pre-wrap; margin: 0; font-size: 0.875rem; line-height: 1.5;">\${err.stack || err.toString()}</pre>
+                  </div>
+                \`;
               }
             </script>
           </body>
@@ -97,13 +142,13 @@ export default function CodePreview({
       doc.write(content);
       doc.close();
     }
-  };
+  }, [code, language]);
 
   useEffect(() => {
     if (activeTab === "preview") {
       updateIframe();
     }
-  }, [code, activeTab]);
+  }, [activeTab, updateIframe]);
 
   return (
     <div
@@ -173,16 +218,16 @@ export default function CodePreview({
         </div>
       </div>
 
-      <div className="relative flex-1 min-h-[300px] bg-zinc-50 dark:bg-zinc-900/20">
+      <div className="relative flex-1 min-h-[500px] bg-zinc-50 dark:bg-zinc-900/20">
         {activeTab === "preview" ? (
           <iframe
             ref={iframeRef}
-            className="w-full h-full border-none bg-white"
+            className="w-full h-full min-h-[500px] border-none bg-white"
             sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
             title="Code Preview"
           />
         ) : (
-          <pre className="p-4 text-sm font-mono text-zinc-800 dark:text-zinc-200 overflow-auto h-full max-h-[500px]">
+          <pre className="p-4 text-sm font-mono text-zinc-800 dark:text-zinc-200 overflow-auto h-full max-h-[600px]">
             <code>{code}</code>
           </pre>
         )}
