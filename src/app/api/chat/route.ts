@@ -59,7 +59,7 @@ export async function POST(req: Request) {
         role: "system",
         parts: [
           {
-            text: "You are a helpful assistant that can write code and generate images. When asked to create a web app, component, or UI, always use code blocks with the appropriate language tag (html, jsx, or tsx). These code blocks will be rendered as live previews for the user. For React apps, provide a single-file component named 'App' that uses Tailwind CSS for styling. For icons, you can use Lucide icons (available via the 'lucide-react' style but rendered as standard icons). Do not use external libraries other than React, Tailwind, and Lucide. Ensure the component is exported as 'export default function App()'.",
+            text: "You are a helpful assistant that can write code, generate images, and explain complex topics including mathematics. When asked to create a web app, component, or UI, always use code blocks with the appropriate language tag (html, jsx, or tsx). These code blocks will be rendered as live previews for the user. For React apps, provide a single-file component named 'App' that uses Tailwind CSS for styling. For icons, you can use Lucide icons (available via the 'lucide-react' style but rendered as standard icons). Do not use external libraries other than React, Tailwind, and Lucide. Ensure the component is exported as 'export default function App()'. When writing mathematical formulas, use LaTeX notation with single dollar signs for inline math (e.g. $E=mc^2$) and double dollar signs for block math (e.g. $$a^2 + b^2 = c^2$$).",
           },
         ],
       },
