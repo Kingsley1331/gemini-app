@@ -11,6 +11,8 @@ import {
   Paperclip,
   X,
   Mic,
+  Volume2,
+  Square,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
@@ -67,6 +69,12 @@ export default function Chat() {
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isMicInitializing, setIsMicInitializing] = useState(false);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(
+    null
+  );
+  const [isGeneratingSpeech, setIsGeneratingSpeech] = useState<string | null>(
+    null
+  );
   const [selectedImage, setSelectedImage] = useState<{
     url: string;
     mimeType: string;
@@ -75,6 +83,7 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     if (
@@ -93,7 +102,8 @@ export default function Chat() {
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         let transcript = "";
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
+          const result = event.results[i];
+          if (result) transcript += result[0].transcript;
         }
         setInput(transcript);
       };
@@ -106,8 +116,6 @@ export default function Chat() {
 
       recognition.onstart = () => {
         console.log("Mic started listening");
-        // Add a tiny delay to ensure the UI has time to show the initializing state
-        // and doesn't flicker if the browser starts immediately
         setTimeout(() => {
           setIsListening(true);
           setIsMicInitializing(false);
@@ -121,7 +129,124 @@ export default function Chat() {
 
       recognitionRef.current = recognition;
     }
+
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
   }, []);
+
+  const speak = async (text: string, messageId: string) => {
+    if (speakingMessageId === messageId || isGeneratingSpeech === messageId) {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      setSpeakingMessageId(null);
+      setIsGeneratingSpeech(null);
+      return;
+    }
+
+    // Stop current audio
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeakingMessageId(null);
+
+    setIsGeneratingSpeech(messageId);
+
+    try {
+      const cleanText = text
+        .replace(/```[\s\S]*?```/g, "Code block omitted.")
+        .replace(/[*#_~`]/g, "")
+        .replace(/\$[^$]+\$/g, "formula");
+
+      const response = await fetch("/api/generate-speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cleanText }),
+      });
+
+      const data = await response.json();
+
+      if (data.error === "GEMINI_MODALITY_UNSUPPORTED") {
+        console.warn(
+          "Gemini native audio not supported. Using browser fallback."
+        );
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.onend = () => setSpeakingMessageId(null);
+        setSpeakingMessageId(messageId);
+        window.speechSynthesis.speak(utterance);
+        setIsGeneratingSpeech(null);
+        return;
+      }
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      if (!data.audioContent) {
+        throw new Error("No audio content received from Gemini");
+      }
+
+      console.log("Gemini audio type:", data.mimeType);
+
+      // Robust base64 to blob conversion
+      const binaryString = window.atob(data.audioContent);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const audioBlob = new Blob([bytes], { type: data.mimeType });
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        setSpeakingMessageId(null);
+        audioRef.current = null;
+      };
+
+      audio.onerror = () => {
+        setSpeakingMessageId(null);
+        audioRef.current = null;
+      };
+
+      setIsGeneratingSpeech(null);
+      setSpeakingMessageId(messageId);
+      audio.play();
+    } catch (err: any) {
+      if (err.message !== "GEMINI_MODALITY_UNSUPPORTED") {
+        console.error("Gemini Speech Error:", err);
+      }
+      setIsGeneratingSpeech(null);
+
+      // Fallback logic
+      if (
+        typeof window !== "undefined" &&
+        window.speechSynthesis &&
+        err.message !== "GEMINI_MODALITY_UNSUPPORTED"
+      ) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.onend = () => setSpeakingMessageId(null);
+        setSpeakingMessageId(messageId);
+        window.speechSynthesis.speak(utterance);
+      }
+    }
+  };
 
   const toggleListening = () => {
     if (!recognitionRef.current) {
@@ -141,7 +266,6 @@ export default function Chat() {
         console.log("Starting mic initialization...");
         setIsMicInitializing(true);
         recognitionRef.current.start();
-        // Fallback: if onstart doesn't fire within 3 seconds, reset
         setTimeout(() => {
           setIsMicInitializing((current) => {
             if (current) {
@@ -368,8 +492,9 @@ export default function Chat() {
                         <img
                           key={idx}
                           src={attachment.url}
-                          alt="User uploaded"
-                          className="max-w-[200px] h-auto rounded-lg border border-white/20"
+                          alt="User uploaded content"
+                          className="max-w-50 h-auto rounded-lg border border-white/20"
+                          loading="lazy"
                         />
                       ))}
                     </div>
@@ -465,8 +590,9 @@ export default function Chat() {
                       <div className="relative group">
                         <img
                           src={m.imageUrl}
-                          alt="Generated"
+                          alt="Generated AI artwork"
                           className="rounded-xl w-full h-auto shadow-md transition-transform group-hover:scale-[1.01]"
+                          loading="lazy"
                         />
                         <a
                           href={m.imageUrl}
@@ -484,6 +610,44 @@ export default function Chat() {
                         </span>
                       </div>
                     )}
+                  </div>
+                )}
+                {m.role === "assistant" && m.type === "text" && (
+                  <div className="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-700/50 flex justify-end">
+                    <button
+                      onClick={() => speak(m.content, m.id)}
+                      disabled={isGeneratingSpeech === m.id}
+                      className={cn(
+                        "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
+                        speakingMessageId === m.id
+                          ? "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
+                          : "text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                      )}
+                      title={
+                        isGeneratingSpeech === m.id
+                          ? "Generating Gemini voice..."
+                          : speakingMessageId === m.id
+                          ? "Stop reading"
+                          : "Read aloud with Gemini"
+                      }
+                    >
+                      {isGeneratingSpeech === m.id ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          LOADING...
+                        </>
+                      ) : speakingMessageId === m.id ? (
+                        <>
+                          <Square className="w-3 h-3 fill-current" />
+                          STOP
+                        </>
+                      ) : (
+                        <>
+                          <Volume2 className="w-3 h-3" />
+                          GEMINI SPEAK
+                        </>
+                      )}
+                    </button>
                   </div>
                 )}
               </div>
@@ -532,8 +696,9 @@ export default function Chat() {
           <div className="mb-4 relative inline-block">
             <img
               src={selectedImage.url}
-              alt="Selected"
+              alt="Selected image for analysis"
               className="h-20 w-auto rounded-lg border border-zinc-200 dark:border-zinc-700 shadow-sm"
+              loading="lazy"
             />
             <button
               type="button"
