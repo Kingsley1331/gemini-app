@@ -10,6 +10,8 @@ import {
   Copy,
   Check,
 } from "lucide-react";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 interface CodePreviewProps {
   code: string;
@@ -227,9 +229,27 @@ export default function CodePreview({
             title="Code Preview"
           />
         ) : (
-          <pre className="p-4 text-sm font-mono text-zinc-800 dark:text-zinc-200 overflow-auto h-full max-h-[600px]">
-            <code>{code}</code>
-          </pre>
+          <div className="h-full overflow-auto max-h-[600px] bg-[#1e1e1e]">
+            <SyntaxHighlighter
+              language={language}
+              style={vscDarkPlus}
+              customStyle={{
+                margin: 0,
+                padding: "1.5rem",
+                fontSize: "0.875rem",
+                lineHeight: "1.5",
+                backgroundColor: "transparent",
+              }}
+              codeTagProps={{
+                style: {
+                  fontFamily:
+                    "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                },
+              }}
+            >
+              {code}
+            </SyntaxHighlighter>
+          </div>
         )}
       </div>
     </div>
