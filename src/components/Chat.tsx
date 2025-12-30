@@ -11,7 +11,6 @@ import {
   Paperclip,
   X,
   Mic,
-  MicOff,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
@@ -39,6 +38,7 @@ interface SpeechRecognition extends EventTarget {
   interimResults: boolean;
   onresult: (event: SpeechRecognitionEvent) => void;
   onerror: (event: SpeechRecognitionErrorEvent) => void;
+  onstart: () => void;
   onend: () => void;
   start: () => void;
   stop: () => void;
@@ -66,6 +66,7 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isMicInitializing, setIsMicInitializing] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{
     url: string;
     mimeType: string;
@@ -83,8 +84,9 @@ export default function Chat() {
       const SpeechRecognitionConstructor =
         (window as any).SpeechRecognition ||
         (window as any).webkitSpeechRecognition;
-      const recognition =
-        new SpeechRecognitionConstructor() as SpeechRecognition;
+      const recognition = new (SpeechRecognitionConstructor as {
+        new (): SpeechRecognition;
+      })() as SpeechRecognition;
       recognition.continuous = true;
       recognition.interimResults = true;
 
@@ -99,10 +101,22 @@ export default function Chat() {
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
         console.error("Speech recognition error:", event.error);
         setIsListening(false);
+        setIsMicInitializing(false);
+      };
+
+      recognition.onstart = () => {
+        console.log("Mic started listening");
+        // Add a tiny delay to ensure the UI has time to show the initializing state
+        // and doesn't flicker if the browser starts immediately
+        setTimeout(() => {
+          setIsListening(true);
+          setIsMicInitializing(false);
+        }, 200);
       };
 
       recognition.onend = () => {
         setIsListening(false);
+        setIsMicInitializing(false);
       };
 
       recognitionRef.current = recognition;
@@ -116,10 +130,34 @@ export default function Chat() {
     }
 
     if (isListening) {
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current.stop();
+      } catch (err) {
+        console.error("Error stopping recognition:", err);
+        setIsListening(false);
+      }
     } else {
-      recognitionRef.current.start();
-      setIsListening(true);
+      try {
+        console.log("Starting mic initialization...");
+        setIsMicInitializing(true);
+        recognitionRef.current.start();
+        // Fallback: if onstart doesn't fire within 3 seconds, reset
+        setTimeout(() => {
+          setIsMicInitializing((current) => {
+            if (current) {
+              console.warn("Mic initialization timed out");
+              return false;
+            }
+            return current;
+          });
+        }, 3000);
+      } catch (err) {
+        console.error("Error starting recognition:", err);
+        setIsMicInitializing(false);
+        alert(
+          "Could not start speech recognition. It might already be running or blocked."
+        );
+      }
     }
   };
 
@@ -521,12 +559,22 @@ export default function Chat() {
               "p-2.5 rounded-xl transition-all",
               isListening
                 ? "text-red-500 bg-red-50 dark:bg-red-900/20"
+                : isMicInitializing
+                ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20"
                 : "text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
             )}
-            title={isListening ? "Stop Listening" : "Start Voice Input"}
+            title={
+              isListening
+                ? "Stop Listening"
+                : isMicInitializing
+                ? "Initializing Mic..."
+                : "Start Voice Input"
+            }
           >
-            {isListening ? (
-              <MicOff className="w-5 h-5 animate-pulse" />
+            {isMicInitializing ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : isListening ? (
+              <Mic className="w-5 h-5 animate-pulse" />
             ) : (
               <Mic className="w-5 h-5" />
             )}
