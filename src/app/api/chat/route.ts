@@ -1,4 +1,9 @@
-import { GoogleGenerativeAI, Tool, SchemaType } from "@google/generative-ai";
+import {
+  GoogleGenerativeAI,
+  Tool,
+  SchemaType,
+  Part,
+} from "@google/generative-ai";
 import { NextResponse } from "next/server";
 
 // Define the tool for image generation using official Nano Banana naming
@@ -68,14 +73,52 @@ export async function POST(req: Request) {
     const chat = model.startChat({
       history: messages
         .slice(0, -1)
-        .map((msg: { role: string; content: string }) => ({
-          role: msg.role === "user" ? "user" : "model",
-          parts: [{ text: msg.content }],
-        })),
+        .map(
+          (msg: {
+            role: string;
+            content: string;
+            attachments?: { mimeType: string; data: string }[];
+          }) => {
+            const parts: Part[] = [{ text: msg.content }];
+
+            if (msg.attachments && msg.attachments.length > 0) {
+              msg.attachments.forEach(
+                (attachment: { mimeType: string; data: string }) => {
+                  parts.push({
+                    inlineData: {
+                      mimeType: attachment.mimeType,
+                      data: attachment.data,
+                    },
+                  });
+                }
+              );
+            }
+
+            return {
+              role: msg.role === "user" ? "user" : "model",
+              parts,
+            };
+          }
+        ),
     });
 
-    const lastMessage = messages[messages.length - 1].content;
-    const result = await chat.sendMessage(lastMessage);
+    const lastMessage = messages[messages.length - 1];
+    const lastMessageParts: Part[] = [{ text: lastMessage.content || "" }];
+
+    if (lastMessage.attachments && lastMessage.attachments.length > 0) {
+      lastMessage.attachments.forEach(
+        (attachment: { mimeType: string; data: string }) => {
+          lastMessageParts.push({
+            inlineData: {
+              mimeType: attachment.mimeType,
+              data: attachment.data,
+            },
+          });
+        }
+      );
+    }
+
+    const result = await chat.sendMessage(lastMessageParts);
     const response = await result.response;
 
     const call = response.candidates?.[0]?.content?.parts?.find(

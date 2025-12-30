@@ -8,6 +8,8 @@ import {
   User,
   Bot,
   Sparkles,
+  Paperclip,
+  X,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
@@ -30,13 +32,24 @@ type Message = {
   content: string;
   type: "text" | "image";
   imageUrl?: string;
+  attachments?: {
+    url: string;
+    mimeType: string;
+    data: string; // base64
+  }[];
 };
 
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<{
+    url: string;
+    mimeType: string;
+    data: string;
+  } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -46,19 +59,42 @@ export default function Chat() {
     scrollToBottom();
   }, [messages]);
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      alert("Please select an image file.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64String = (event.target?.result as string).split(",")[1];
+      setSelectedImage({
+        url: URL.createObjectURL(file),
+        mimeType: file.type,
+        data: base64String,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleSubmit = async (e: React.FormEvent, isImage = false) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if ((!input.trim() && !selectedImage) || isLoading) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
       content: input,
       type: "text",
+      attachments: selectedImage ? [selectedImage] : undefined,
     };
 
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
+    setSelectedImage(null);
     setIsLoading(true);
 
     try {
@@ -93,6 +129,7 @@ export default function Chat() {
             messages: [...messages, userMessage].map((m) => ({
               role: m.role,
               content: m.content,
+              attachments: m.attachments,
             })),
           }),
         });
@@ -213,6 +250,20 @@ export default function Chat() {
                     : "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tl-none"
                 )}
               >
+                {m.role === "user" &&
+                  m.attachments &&
+                  m.attachments.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {m.attachments.map((attachment, idx) => (
+                        <img
+                          key={idx}
+                          src={attachment.url}
+                          alt="User uploaded"
+                          className="max-w-[200px] h-auto rounded-lg border border-white/20"
+                        />
+                      ))}
+                    </div>
+                  )}
                 {m.type === "text" ? (
                   <div className="prose prose-sm dark:prose-invert max-w-none">
                     <ReactMarkdown
@@ -367,7 +418,38 @@ export default function Chat() {
         onSubmit={(e) => handleSubmit(e)}
         className="p-4 bg-zinc-50 dark:bg-zinc-900/50 border-t border-zinc-200 dark:border-zinc-800"
       >
+        {selectedImage && (
+          <div className="mb-4 relative inline-block">
+            <img
+              src={selectedImage.url}
+              alt="Selected"
+              className="h-20 w-auto rounded-lg border border-zinc-200 dark:border-zinc-700 shadow-sm"
+            />
+            <button
+              type="button"
+              onClick={() => setSelectedImage(null)}
+              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-md hover:bg-red-600 transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
         <div className="relative flex items-center gap-3">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImageSelect}
+            accept="image/*"
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="p-2.5 text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
+            title="Upload Image"
+          >
+            <Paperclip className="w-5 h-5" />
+          </button>
           <button
             type="button"
             onClick={(e) => handleSubmit(e as unknown as React.FormEvent, true)}
@@ -384,7 +466,7 @@ export default function Chat() {
           />
           <button
             type="submit"
-            disabled={!input.trim() || isLoading}
+            disabled={(!input.trim() && !selectedImage) || isLoading}
             className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 shadow-lg shadow-blue-500/20 transition-all"
           >
             <Send className="w-5 h-5" />
