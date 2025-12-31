@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Send,
   Image as ImageIcon,
@@ -314,89 +314,101 @@ export default function Chat() {
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = async (e: React.FormEvent, isImage = false) => {
-    e.preventDefault();
-    if ((!input.trim() && !selectedImage) || isLoading) return;
+  const handleSubmit = useCallback(
+    async (e?: React.FormEvent, isImage = false, overrideInput?: string) => {
+      if (e) e.preventDefault();
+      const messageInput = overrideInput || input;
+      if ((!messageInput.trim() && !selectedImage) || isLoading) return;
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: "user",
-      content: input,
-      type: "text",
-      attachments: selectedImage ? [selectedImage] : undefined,
-    };
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        role: "user",
+        content: messageInput,
+        type: "text",
+        attachments: selectedImage ? [selectedImage] : undefined,
+      };
 
-    setMessages((prev) => [...prev, userMessage]);
-    setInput("");
-    setSelectedImage(null);
-    setIsLoading(true);
+      setMessages((prev) => [...prev, userMessage]);
+      if (!overrideInput) setInput("");
+      setSelectedImage(null);
+      setIsLoading(true);
 
-    try {
-      if (isImage || input.toLowerCase().startsWith("/image ")) {
-        const prompt = input.toLowerCase().startsWith("/image ")
-          ? input.slice(7)
-          : input;
+      try {
+        if (isImage || messageInput.toLowerCase().startsWith("/image ")) {
+          const prompt = messageInput.toLowerCase().startsWith("/image ")
+            ? messageInput.slice(7)
+            : messageInput;
 
-        const response = await fetch("/api/generate-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt }),
-        });
+          const response = await fetch("/api/generate-image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt }),
+          });
 
-        const data = await response.json();
-        if (data.error) throw new Error(data.error);
+          const data = await response.json();
+          if (data.error) throw new Error(data.error);
 
-        const assistantMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content: `Generated image for: ${prompt}`,
-          type: "image",
-          imageUrl:
-            data.imageUrl || data.url || (data.images && data.images[0]),
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
-      } else {
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: [...messages, userMessage].map((m) => ({
-              role: m.role,
-              content: m.content,
-              attachments: m.attachments,
-            })),
-          }),
-        });
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: `Generated image for: ${prompt}`,
+            type: "image",
+            imageUrl:
+              data.imageUrl || data.url || (data.images && data.images[0]),
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        } else {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messages: [...messages, userMessage].map((m) => ({
+                role: m.role,
+                content: m.content,
+                attachments: m.attachments,
+              })),
+            }),
+          });
 
-        const data = await response.json();
-        if (data.error) throw new Error(data.error);
+          const data = await response.json();
+          if (data.error) throw new Error(data.error);
 
-        const assistantMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content: data.content,
-          type: data.type || "text",
-          imageUrl: data.imageUrl,
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: data.content,
+            type: data.type || "text",
+            imageUrl: data.imageUrl,
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        }
+      } catch (error: unknown) {
+        console.error(error);
+        const errorMessage =
+          error instanceof Error ? error.message : "An unknown error occurred";
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: `Error: ${errorMessage}`,
+            type: "text",
+          },
+        ]);
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error: unknown) {
-      console.error(error);
-      const errorMessage =
-        error instanceof Error ? error.message : "An unknown error occurred";
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content: `Error: ${errorMessage}`,
-          type: "text",
-        },
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    },
+    [input, selectedImage, isLoading, messages]
+  );
+
+  const handleDebug = useCallback(
+    (error: string) => {
+      const debugPrompt = `I'm getting a runtime error in the code you provided:\n\n\`\`\`\n${error}\n\`\`\`\n\nPlease fix the code and provide the corrected version.`;
+      handleSubmit(undefined, false, debugPrompt);
+    },
+    [handleSubmit]
+  );
 
   return (
     <div className="flex flex-col h-[90vh] w-full max-w-5xl mx-auto bg-white dark:bg-zinc-900 rounded-2xl shadow-xl overflow-hidden border border-zinc-200 dark:border-zinc-800">
@@ -533,6 +545,7 @@ export default function Chat() {
                                 code={code}
                                 language={language}
                                 title={`${language.toUpperCase()} Artifact`}
+                                onDebug={handleDebug}
                               />
                             );
                           }

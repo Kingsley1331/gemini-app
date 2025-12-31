@@ -9,6 +9,7 @@ import {
   RotateCcw,
   Copy,
   Check,
+  Bug,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -17,12 +18,14 @@ interface CodePreviewProps {
   code: string;
   language: string;
   title?: string;
+  onDebug?: (error: string) => void;
 }
 
 export default function CodePreview({
   code,
   language,
   title = "Preview",
+  onDebug,
 }: CodePreviewProps) {
   const [activeTab, setActiveTab] = useState<"preview" | "code">(
     language === "html" || language === "jsx" || language === "tsx"
@@ -31,6 +34,7 @@ export default function CodePreview({
   );
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const copyToClipboard = () => {
@@ -97,6 +101,21 @@ export default function CodePreview({
               // Lucide icon helper
               window.LucideReact = window.lucide;
 
+              // Error reporter
+              const reportError = (err) => {
+                const message = err.stack || err.toString();
+                window.parent.postMessage({ type: 'preview-error', message }, '*');
+              };
+
+              window.onerror = (msg, url, lineNo, columnNo, error) => {
+                reportError(error || msg);
+                return false;
+              };
+
+              window.onunhandledrejection = (event) => {
+                reportError(event.reason);
+              };
+
               try {
                 ${cleanedCode}
                 
@@ -113,7 +132,9 @@ export default function CodePreview({
                 } else if (typeof main !== 'undefined') {
                   main();
                 } else {
-                  console.error("No 'App' component found.");
+                  const noAppMsg = "No 'App' component found. Please define 'export default function App()'.";
+                  console.error(noAppMsg);
+                  window.parent.postMessage({ type: 'preview-error', message: noAppMsg }, '*');
                   container.innerHTML = '<div style="padding: 20px; color: #ef4444;">Error: No <b>App</b> component found. Please define <code>export default function App()</code>.</div>';
                 }
                 
@@ -125,6 +146,7 @@ export default function CodePreview({
                 }, 100);
               } catch (err) {
                 console.error("Preview Error:", err);
+                reportError(err);
                 document.getElementById('root').innerHTML = \`
                   <div style="color: #ef4444; background: #fee2e2; padding: 1.5rem; border: 1px solid #fecaca; border-radius: 0.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; margin: 1rem;">
                     <h3 style="margin-top: 0; color: #991b1b; font-size: 1.125rem;">Runtime Error</h3>
@@ -146,11 +168,34 @@ export default function CodePreview({
     }
   }, [code, language]);
 
+  const handleRefresh = useCallback(() => {
+    setError(null);
+    updateIframe();
+  }, [updateIframe]);
+
   useEffect(() => {
-    if (activeTab === "preview") {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "preview-error") {
+        setError(event.data.message);
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  // Use a separate effect for the initial load and tab switches
+  // but don't clear the error here
+  // Debounced update to avoid flickering during streaming
+  useEffect(() => {
+    if (activeTab !== "preview") return;
+
+    const timer = setTimeout(() => {
       updateIframe();
-    }
-  }, [activeTab, updateIframe]);
+    }, 500); // Wait 500ms after last code change
+
+    return () => clearTimeout(timer);
+  }, [code, activeTab, updateIframe]);
 
   return (
     <div
@@ -185,6 +230,15 @@ export default function CodePreview({
               <Code className="w-3 h-3 inline-block mr-1" /> Code
             </button>
           </div>
+          {error && onDebug && activeTab === "preview" && (
+            <button
+              onClick={() => onDebug(error)}
+              className="flex items-center gap-1.5 px-3 py-1 bg-red-500 hover:bg-red-600 text-white text-[10px] font-bold rounded-md transition-all shadow-sm animate-pulse"
+            >
+              <Bug className="w-3 h-3" />
+              DEBUG WITH GEMINI
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -200,7 +254,7 @@ export default function CodePreview({
             )}
           </button>
           <button
-            onClick={() => updateIframe()}
+            onClick={handleRefresh}
             className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
             title="Reload preview"
           >
