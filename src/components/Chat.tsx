@@ -242,10 +242,17 @@ export default function Chat() {
       useRefState.current.speakingMessageId = messageId;
       setIsGeneratingSpeech(null);
 
-      for (const sentence of sentences) {
-        if (!sentence) continue;
+      // Pre-fetch sentences in parallel to eliminate network delay between them
+      const sentenceTasks = sentences
+        .filter((s) => s && s.length > 0)
+        .map((sentence) => ({
+          promise: processSentence(sentence, messageId),
+        }));
+
+      // Await all tasks to ensure full playback in sequence
+      for (const task of sentenceTasks) {
         if (useRefState.current.speakingMessageId !== messageId) break;
-        await processAndPlaySentence(sentence, messageId);
+        await task.promise;
       }
     } catch (err: any) {
       handleSpeakError(err, text, messageId);
@@ -269,10 +276,7 @@ export default function Chat() {
     setIsGeneratingSpeech(null);
   };
 
-  const processAndPlaySentence = async (
-    sentence: string,
-    messageId: string
-  ) => {
+  const processSentence = async (sentence: string, messageId: string) => {
     try {
       const response = await fetch("/api/generate-speech", {
         method: "POST",
@@ -281,14 +285,39 @@ export default function Chat() {
       });
 
       if (!response.ok) return;
+      if (!response.body) return;
       if (useRefState.current.speakingMessageId !== messageId) return;
 
-      const data = await response.json();
-      if (data.audio) {
-        await playAudioChunk(data.audio, data.mimeType);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (useRefState.current.speakingMessageId !== messageId) {
+          reader.cancel();
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const data = JSON.parse(line);
+            if (data.audio) {
+              await playAudioChunk(data.audio, data.mimeType);
+            }
+          } catch (e) {
+            console.error("Error parsing audio chunk:", e);
+          }
+        }
       }
     } catch (e) {
-      console.error("Error in processAndPlaySentence:", e);
+      console.error("Error in processSentence:", e);
     }
   };
 

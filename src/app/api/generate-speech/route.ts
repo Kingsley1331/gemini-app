@@ -25,19 +25,17 @@ export async function POST(req: Request) {
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
-    // Using the specific model and config suggested by the user
+    // Reverting to the specialized TTS model which supports native audio output
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-pro-preview-tts",
     });
 
-    const result = await model.generateContent({
+    const result = await model.generateContentStream({
       contents: [{ role: "user", parts: [{ text }] }],
       generationConfig: {
-        // responseModalities is supported in newer Gemini models
         // @ts-expect-error - Newer Gemini feature
         responseModalities: ["audio"],
         // speechConfig is a newer feature
-        // @ts-expect-error - Newer Gemini feature
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: {
@@ -48,25 +46,36 @@ export async function POST(req: Request) {
       },
     });
 
-    const response = await result.response;
-    const part = response.candidates?.[0]?.content?.parts?.find(
-      (p) => p.inlineData && p.inlineData.mimeType.startsWith("audio/")
-    );
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          for await (const chunk of result.stream) {
+            const part = chunk.candidates?.[0]?.content?.parts?.find(
+              (p) => p.inlineData && p.inlineData.mimeType.startsWith("audio/")
+            );
 
-    if (part?.inlineData) {
-      const { data, mimeType } = part.inlineData;
-      return new Response(
-        JSON.stringify({
-          audio: data,
-          mimeType: mimeType,
-        }),
-        {
-          headers: { "Content-Type": "application/json" },
+            if (part?.inlineData) {
+              const { data, mimeType } = part.inlineData;
+              controller.enqueue(
+                encoder.encode(JSON.stringify({ audio: data, mimeType }) + "\n")
+              );
+            }
+          }
+          controller.close();
+        } catch (error) {
+          console.error("Streaming error:", error);
+          controller.error(error);
         }
-      );
-    }
+      },
+    });
 
-    throw new Error("No audio content generated");
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson",
+        "Cache-Control": "no-cache",
+      },
+    });
   } catch (error: unknown) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
