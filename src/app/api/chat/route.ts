@@ -118,58 +118,31 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = await chat.sendMessage(lastMessageParts);
-    const response = await result.response;
+    const result = await chat.sendMessageStream(lastMessageParts);
 
-    const call = response.candidates?.[0]?.content?.parts?.find(
-      (p) => p.functionCall
-    );
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          for await (const chunk of result.stream) {
+            const text = chunk.text();
+            if (text) {
+              controller.enqueue(encoder.encode(text));
+            }
+          }
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+    });
 
-    if (call?.functionCall && call.functionCall.name === "generate_image") {
-      const { prompt, quality } = call.functionCall.args as {
-        prompt: string;
-        quality?: string;
-      };
-
-      // Use gemini-2.5-flash-image as the default for most requests due to better availability
-      const imageModelName =
-        quality === "high-fidelity"
-          ? "gemini-3-pro-image-preview"
-          : "gemini-2.5-flash-image";
-      const imageModel = currentGenAI.getGenerativeModel({
-        model: imageModelName,
-      });
-
-      const imageResult = await imageModel.generateContent({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: {
-          // @ts-expect-error - responseModalities is the official way to request image output
-          responseModalities: ["IMAGE"],
-        },
-      });
-
-      const imageResponse = await imageResult.response;
-      const part = imageResponse.candidates?.[0]?.content?.parts?.[0];
-
-      let imageUrl = "";
-      if (part?.inlineData) {
-        imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-      }
-
-      if (imageUrl) {
-        return NextResponse.json({
-          content: `Created using ${
-            imageModelName === "gemini-3-pro-image-preview"
-              ? "Nano Banana Pro"
-              : "Nano Banana"
-          }: "${prompt}"`,
-          type: "image",
-          imageUrl,
-        });
-      }
-    }
-
-    return NextResponse.json({ content: response.text(), type: "text" });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Transfer-Encoding": "chunked",
+      },
+    });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(

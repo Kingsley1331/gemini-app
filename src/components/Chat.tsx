@@ -84,6 +84,16 @@ export default function Chat() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const nextStartTimeRef = useRef<number>(0);
+  const useRefState = useRef<{ speakingMessageId: string | null }>({
+    speakingMessageId: null,
+  });
+
+  // Keep ref in sync for async loops
+  useEffect(() => {
+    useRefState.current.speakingMessageId = speakingMessageId;
+  }, [speakingMessageId]);
 
   useEffect(() => {
     if (
@@ -135,36 +145,86 @@ export default function Chat() {
         audioRef.current.pause();
         audioRef.current = null;
       }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
       if (typeof window !== "undefined" && window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
     };
   }, []);
 
+  const playAudioChunk = async (base64Data: string, mimeType: string) => {
+    try {
+      if (
+        !audioContextRef.current ||
+        audioContextRef.current.state === "closed"
+      ) {
+        audioContextRef.current = new (window.AudioContext ||
+          (window as any).webkitAudioContext)();
+        nextStartTimeRef.current = audioContextRef.current.currentTime;
+      }
+
+      const ctx = audioContextRef.current;
+
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+
+      // Extract sample rate if available in mimeType (e.g., "audio/L16;rate=24000")
+      let sampleRate = 24000;
+      const rateMatch = mimeType.match(/rate=(\d+)/);
+      if (rateMatch) {
+        sampleRate = parseInt(rateMatch[1], 10);
+      }
+
+      const binaryString = window.atob(base64Data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      if (mimeType.includes("audio/L16")) {
+        // Convert Int16 PCM to Float32
+        const int16Array = new Int16Array(bytes.buffer);
+        const float32Array = new Float32Array(int16Array.length);
+        for (let i = 0; i < int16Array.length; i++) {
+          float32Array[i] = int16Array[i] / 32768;
+        }
+
+        const audioBuffer = ctx.createBuffer(
+          1,
+          float32Array.length,
+          sampleRate
+        );
+        audioBuffer.getChannelData(0).set(float32Array);
+
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+
+        const startTime = Math.max(
+          nextStartTimeRef.current,
+          ctx.currentTime + 0.1
+        );
+        source.start(startTime);
+        nextStartTimeRef.current = startTime + audioBuffer.duration;
+      } else {
+        console.warn("Unsupported streaming mimeType:", mimeType);
+      }
+    } catch (e) {
+      console.error("Error playing audio chunk:", e);
+    }
+  };
+
   const speak = async (text: string, messageId: string) => {
     if (speakingMessageId === messageId || isGeneratingSpeech === messageId) {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
-      setSpeakingMessageId(null);
-      setIsGeneratingSpeech(null);
+      stopSpeaking();
       return;
     }
 
-    // Stop current audio
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-    setSpeakingMessageId(null);
-
+    stopSpeaking();
     setIsGeneratingSpeech(messageId);
 
     try {
@@ -173,78 +233,81 @@ export default function Chat() {
         .replace(/[*#_~`]/g, "")
         .replace(/\$[^$]+\$/g, "formula");
 
+      // Better sentence splitting
+      const sentences = cleanText
+        .match(/[^.!?]+[.!?]+|[^.!?]+/g)
+        ?.map((s) => s.trim()) || [cleanText];
+
+      setSpeakingMessageId(messageId);
+      useRefState.current.speakingMessageId = messageId;
+      setIsGeneratingSpeech(null);
+
+      for (const sentence of sentences) {
+        if (!sentence) continue;
+        if (useRefState.current.speakingMessageId !== messageId) break;
+        await processAndPlaySentence(sentence, messageId);
+      }
+    } catch (err: any) {
+      handleSpeakError(err, text, messageId);
+    }
+  };
+
+  const stopSpeaking = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeakingMessageId(null);
+    useRefState.current.speakingMessageId = null;
+    setIsGeneratingSpeech(null);
+  };
+
+  const processAndPlaySentence = async (
+    sentence: string,
+    messageId: string
+  ) => {
+    try {
       const response = await fetch("/api/generate-speech", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: cleanText }),
+        body: JSON.stringify({ text: sentence }),
       });
 
+      if (!response.ok) return;
+      if (useRefState.current.speakingMessageId !== messageId) return;
+
       const data = await response.json();
-
-      if (data.error === "GEMINI_MODALITY_UNSUPPORTED") {
-        console.warn(
-          "Gemini native audio not supported. Using browser fallback."
-        );
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.onend = () => setSpeakingMessageId(null);
-        setSpeakingMessageId(messageId);
-        window.speechSynthesis.speak(utterance);
-        setIsGeneratingSpeech(null);
-        return;
+      if (data.audio) {
+        await playAudioChunk(data.audio, data.mimeType);
       }
+    } catch (e) {
+      console.error("Error in processAndPlaySentence:", e);
+    }
+  };
 
-      if (data.error) {
-        throw new Error(data.error);
-      }
+  const handleSpeakError = (err: any, text: string, messageId: string) => {
+    if (err.message === "GEMINI_MODALITY_UNSUPPORTED") {
+      console.warn(
+        "Gemini native audio not supported. Using browser fallback."
+      );
+    } else {
+      console.error("Gemini Speech Error:", err);
+    }
 
-      if (!data.audioContent) {
-        throw new Error("No audio content received from Gemini");
-      }
+    setIsGeneratingSpeech(null);
 
-      console.log("Gemini audio type:", data.mimeType);
-
-      // Robust base64 to blob conversion
-      const binaryString = window.atob(data.audioContent);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      const audioBlob = new Blob([bytes], { type: data.mimeType });
-      const audioUrl = URL.createObjectURL(audioBlob);
-
-      const audio = new Audio(audioUrl);
-      audioRef.current = audio;
-
-      audio.onended = () => {
-        setSpeakingMessageId(null);
-        audioRef.current = null;
-      };
-
-      audio.onerror = () => {
-        setSpeakingMessageId(null);
-        audioRef.current = null;
-      };
-
-      setIsGeneratingSpeech(null);
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.onend = () => setSpeakingMessageId(null);
       setSpeakingMessageId(messageId);
-      audio.play();
-    } catch (err: any) {
-      if (err.message !== "GEMINI_MODALITY_UNSUPPORTED") {
-        console.error("Gemini Speech Error:", err);
-      }
-      setIsGeneratingSpeech(null);
-
-      // Fallback logic
-      if (
-        typeof window !== "undefined" &&
-        window.speechSynthesis &&
-        err.message !== "GEMINI_MODALITY_UNSUPPORTED"
-      ) {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.onend = () => setSpeakingMessageId(null);
-        setSpeakingMessageId(messageId);
-        window.speechSynthesis.speak(utterance);
-      }
+      window.speechSynthesis.speak(utterance);
     }
   };
 
@@ -370,17 +433,38 @@ export default function Chat() {
             }),
           });
 
-          const data = await response.json();
-          if (data.error) throw new Error(data.error);
+          if (!response.ok) throw new Error("Failed to get response");
+          if (!response.body) throw new Error("No response body");
 
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let assistantContent = "";
+
+          const assistantMessageId = (Date.now() + 1).toString();
           const assistantMessage: Message = {
-            id: (Date.now() + 1).toString(),
+            id: assistantMessageId,
             role: "assistant",
-            content: data.content,
-            type: data.type || "text",
-            imageUrl: data.imageUrl,
+            content: "",
+            type: "text",
           };
+
           setMessages((prev) => [...prev, assistantMessage]);
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            assistantContent += chunk;
+
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessageId
+                  ? { ...msg, content: assistantContent }
+                  : msg
+              )
+            );
+          }
         }
       } catch (error: unknown) {
         console.error(error);
