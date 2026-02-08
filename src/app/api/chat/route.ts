@@ -1,40 +1,10 @@
 import {
   GoogleGenerativeAI,
-  Tool,
-  SchemaType,
   Part,
+  HarmCategory,
+  HarmBlockThreshold,
 } from "@google/generative-ai";
 import { NextResponse } from "next/server";
-
-// Define the tool for image generation using official Nano Banana naming
-const tools: Tool[] = [
-  {
-    functionDeclarations: [
-      {
-        name: "generate_image",
-        description:
-          "Generates a high-fidelity image using Google's Nano Banana Pro model.",
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            prompt: {
-              type: SchemaType.STRING,
-              description: "The description of the image to generate.",
-            },
-            quality: {
-              type: SchemaType.STRING,
-              format: "enum",
-              enum: ["speed", "high-fidelity"],
-              description:
-                "Whether to use standard Nano Banana (speed) or Nano Banana Pro (high-fidelity).",
-            },
-          },
-          required: ["prompt"],
-        },
-      },
-    ],
-  },
-];
 
 export async function POST(req: Request) {
   try {
@@ -56,15 +26,32 @@ export async function POST(req: Request) {
     // Re-initialize to ensure the key is correctly captured from the environment
     const currentGenAI = new GoogleGenerativeAI(apiKey);
 
-    // Gemini handles the conversation and tool orchestration
+    // Gemini handles the conversation
     const model = currentGenAI.getGenerativeModel({
       model: "gemini-3-pro-preview",
-      tools,
+      safetySettings: [
+        {
+          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+      ],
       systemInstruction: {
         role: "system",
         parts: [
           {
-            text: `You are a helpful assistant that can write code, generate images, and explain complex topics including mathematics.
+            text: `You are a helpful assistant that can write code and explain complex topics including mathematics. To generate images, the user must start their message with "/image".
 
 CRITICAL CODE PREVIEW RULES:
 Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS inside a sandboxed iframe. Follow these rules strictly to avoid runtime errors:
@@ -173,11 +160,20 @@ When writing mathematical formulas, use LaTeX notation with single dollar signs 
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          let hasText = false;
           for await (const chunk of result.stream) {
             const text = chunk.text();
             if (text) {
+              hasText = true;
               controller.enqueue(encoder.encode(text));
             }
+          }
+          if (!hasText) {
+            controller.enqueue(
+              encoder.encode(
+                "I'm sorry, I couldn't generate a response. Please try again."
+              )
+            );
           }
           controller.close();
         } catch (error) {

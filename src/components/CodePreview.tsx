@@ -46,8 +46,11 @@ export default function CodePreview({
   };
 
   const handleDownload = useCallback(async () => {
+    const name = window.prompt("Enter a name for your project:", "my-app") || "my-app";
+    const safeName = name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
+
     const zip = new JSZip();
-    const folder = zip.folder("my-app")!;
+    const folder = zip.folder(safeName)!;
 
     if (language === "html") {
       folder.file("index.html", code);
@@ -217,7 +220,7 @@ export default function CodePreview({
 
       // Add a README
       const readme = [
-        "# My App",
+        `# ${name}`,
         "",
         "Generated with Gemini.",
         "",
@@ -239,7 +242,7 @@ export default function CodePreview({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "my-app.zip";
+    a.download = `${safeName}.zip`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
