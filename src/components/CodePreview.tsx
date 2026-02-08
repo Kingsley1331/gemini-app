@@ -255,12 +255,9 @@ export default function CodePreview({
       `;
     }
 
-    const doc = iframeRef.current.contentWindow?.document;
-    if (doc) {
-      doc.open();
-      doc.write(content);
-      doc.close();
-    }
+    // Use srcdoc to create a completely fresh document context each time,
+    // avoiding stale Babel helper declarations on refresh
+    iframeRef.current.srcdoc = content;
   }, [code, language]);
 
   const handleRefresh = useCallback(() => {
