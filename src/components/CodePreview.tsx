@@ -162,27 +162,30 @@ export default function CodePreview({
         '        Children, createRef, isValidElement',
         '      } = React;',
         '',
-        '      // Lucide icon factory',
+        '      // Lucide icon factory — uses lucide.createElement() for reliable SVG generation',
+        '      const __iconHtmlCache = {};',
         '      function __createLucideIcon(kebabName, displayName) {',
-        '        const iconNode = window.lucide?.icons?.[kebabName];',
-        '        if (!iconNode) {',
-        '          const Fallback = () => null;',
-        '          Fallback.displayName = displayName || kebabName;',
-        '          return Fallback;',
-        '        }',
         '        const LucideIcon = function(props) {',
-        "          const { size = 24, color = 'currentColor', strokeWidth = 2, className, style, absoluteStrokeWidth, ...rest } = props || {};",
-        '          const sw = absoluteStrokeWidth ? strokeWidth : strokeWidth * 24 / Number(size);',
-        '          const children = (iconNode[2] || []).map(function(child, i) {',
-        '            return React.createElement(child[0], Object.assign({ key: i }, child[1]));',
-        '          });',
+        "          const { size = 24, color = 'currentColor', strokeWidth = 2, className, style, ...rest } = props || {};",
+        '          if (!__iconHtmlCache[kebabName]) {',
+        '            try {',
+        '              const iconDef = window.lucide?.icons?.[kebabName];',
+        '              if (iconDef && window.lucide?.createElement) {',
+        '                const svgEl = window.lucide.createElement(iconDef);',
+        '                __iconHtmlCache[kebabName] = svgEl.innerHTML;',
+        '              }',
+        '            } catch(e) { /* icon not found */ }',
+        '          }',
+        '          const innerHtml = __iconHtmlCache[kebabName];',
+        '          if (!innerHtml) return null;',
         "          return React.createElement('svg', Object.assign({",
         "            xmlns: 'http://www.w3.org/2000/svg',",
         "            width: size, height: size, viewBox: '0 0 24 24',",
-        "            fill: 'none', stroke: color, strokeWidth: sw,",
+        "            fill: 'none', stroke: color, strokeWidth: strokeWidth,",
         "            strokeLinecap: 'round', strokeLinejoin: 'round',",
-        '            className: className, style: style',
-        '          }, rest), ...children);',
+        '            className: className, style: style,',
+        '            dangerouslySetInnerHTML: { __html: innerHtml }',
+        '          }, rest));',
         '        };',
         '        LucideIcon.displayName = displayName || kebabName;',
         '        return LucideIcon;',
@@ -249,32 +252,44 @@ export default function CodePreview({
       language === "javascript" ||
       language === "typescript"
     ) {
-      // Extract Lucide icon names from imports before stripping
-      const lucideImports: string[] = [];
-      const lucideImportRegex =
-        /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"];?/g;
-      let lucideMatch;
-      while ((lucideMatch = lucideImportRegex.exec(code)) !== null) {
-        const names = lucideMatch[1]
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-          // Handle "X as Y" aliasing
-          .map((s) => {
-            const parts = s.split(/\s+as\s+/);
-            return parts.length > 1
-              ? { original: parts[0].trim(), alias: parts[1].trim() }
-              : { original: s.trim(), alias: s.trim() };
-          });
-        names.forEach((n) => lucideImports.push(JSON.stringify(n)));
-      }
-
-      // Clean up the code: remove imports and exports
+      // Clean up the code: convert lucide imports to const declarations,
+      // strip all other imports, and handle exports
       const cleanedCode = code
         // Remove type-only imports
         .replace(/import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
         .replace(/import\s+type\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
-        // Remove regular imports (single and multi-line)
+        // Convert lucide-react imports into const declarations (BEFORE general import stripping)
+        .replace(
+          /import\s*\{([^}]*)\}\s*from\s*['"]lucide-react['"];?\n?/g,
+          (_match, names) => {
+            return (
+              names
+                .split(",")
+                .map((n: string) => n.trim())
+                .filter(Boolean)
+                .map((n: string) => {
+                  const parts = n.split(/\s+as\s+/);
+                  const original = parts[0].trim();
+                  const alias =
+                    parts.length > 1 ? parts[1].trim() : original;
+                  const kebab = original
+                    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+                    .toLowerCase();
+                  return (
+                    "const " +
+                    alias +
+                    " = __createLucideIcon('" +
+                    kebab +
+                    "', '" +
+                    original +
+                    "');"
+                  );
+                })
+                .join("\n") + "\n"
+            );
+          }
+        )
+        // Remove remaining imports (react, etc.)
         .replace(/import\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
         .replace(/import\s+\w+\s*,?\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
         .replace(/import\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
@@ -285,17 +300,6 @@ export default function CodePreview({
         .replace(/export\s+default\s+function\s+(\w+)/, "function $1")
         .replace(/export\s+default\s+/, "const App = ")
         .replace(/export\s+/g, "");
-
-      // Generate Lucide icon declarations
-      const iconDeclarations = lucideImports.length > 0
-        ? `const __lucideNames = [${lucideImports.join(",")}];\n` +
-          `__lucideNames.forEach(function(n) {\n` +
-          `  const name = typeof n === 'string' ? n : n.original;\n` +
-          `  const alias = typeof n === 'string' ? n : n.alias;\n` +
-          `  const kebab = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();\n` +
-          `  window[alias] = __createLucideIcon(kebab, name);\n` +
-          `});\n`
-        : "";
 
       // Basic React/JS runner template
       content = `
@@ -344,21 +348,27 @@ export default function CodePreview({
                 Children, createRef, isValidElement
               } = React;
 
-              // Lucide icon factory — creates React components from lucide vanilla icons
+              // Lucide icon factory — uses lucide.createElement() to get SVG HTML,
+              // then wraps it in a React component with dangerouslySetInnerHTML
+              const __iconHtmlCache = {};
               function __createLucideIcon(kebabName, displayName) {
-                const iconNode = window.lucide?.icons?.[kebabName];
-                if (!iconNode) {
-                  // Return a fallback that renders nothing but doesn't crash
-                  const Fallback = () => null;
-                  Fallback.displayName = displayName || kebabName;
-                  return Fallback;
-                }
                 const LucideIcon = function(props) {
-                  const { size = 24, color = 'currentColor', strokeWidth = 2, className, style, absoluteStrokeWidth, ...rest } = props || {};
-                  const sw = absoluteStrokeWidth ? strokeWidth : strokeWidth * 24 / Number(size);
-                  const children = (iconNode[2] || []).map(function(child, i) {
-                    return React.createElement(child[0], Object.assign({ key: i }, child[1]));
-                  });
+                  const { size = 24, color = 'currentColor', strokeWidth = 2, className, style, ...rest } = props || {};
+
+                  // Cache the SVG inner HTML on first use
+                  if (!__iconHtmlCache[kebabName]) {
+                    try {
+                      const iconDef = window.lucide?.icons?.[kebabName];
+                      if (iconDef && window.lucide?.createElement) {
+                        const svgEl = window.lucide.createElement(iconDef);
+                        __iconHtmlCache[kebabName] = svgEl.innerHTML;
+                      }
+                    } catch(e) { /* icon not found */ }
+                  }
+
+                  const innerHtml = __iconHtmlCache[kebabName];
+                  if (!innerHtml) return null;
+
                   return React.createElement('svg', Object.assign({
                     xmlns: 'http://www.w3.org/2000/svg',
                     width: size,
@@ -366,31 +376,41 @@ export default function CodePreview({
                     viewBox: '0 0 24 24',
                     fill: 'none',
                     stroke: color,
-                    strokeWidth: sw,
+                    strokeWidth: strokeWidth,
                     strokeLinecap: 'round',
                     strokeLinejoin: 'round',
                     className: className,
-                    style: style
-                  }, rest), ...children);
+                    style: style,
+                    dangerouslySetInnerHTML: { __html: innerHtml }
+                  }, rest));
                 };
                 LucideIcon.displayName = displayName || kebabName;
                 return LucideIcon;
               }
 
-              // Proxy to auto-create any Lucide icon on access
-              const __LucideProxy = new Proxy({}, {
-                get(target, prop) {
-                  if (typeof prop !== 'string') return undefined;
-                  if (!target[prop]) {
-                    const kebab = prop.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
-                    target[prop] = __createLucideIcon(kebab, prop);
+              // Pre-create ALL lucide icons as global variables so they're
+              // always available regardless of import patterns.
+              // IMPORTANT: Skip names that collide with JS built-ins (Map, Set, Text, etc.)
+              const __builtins = new Set([
+                'Map', 'Set', 'Date', 'Text', 'Image', 'Link', 'Option', 'Table',
+                'Object', 'Array', 'Number', 'String', 'Boolean', 'Symbol', 'Proxy',
+                'Promise', 'Error', 'Function', 'Reflect', 'Navigator', 'History',
+                'Location', 'Screen', 'Event', 'Node', 'Element', 'Document',
+                'Window', 'Range', 'Selection', 'File', 'Blob', 'URL',
+                'Headers', 'Request', 'Response', 'Worker', 'Storage',
+                'FormData', 'Clipboard'
+              ]);
+              if (window.lucide && window.lucide.icons) {
+                Object.keys(window.lucide.icons).forEach(function(kebabName) {
+                  var pascalName = kebabName.replace(/(^|-)([a-z])/g, function(m, sep, c) {
+                    return c.toUpperCase();
+                  });
+                  // Only set if it won't overwrite a JS built-in
+                  if (!__builtins.has(pascalName)) {
+                    window[pascalName] = __createLucideIcon(kebabName, pascalName);
                   }
-                  return target[prop];
-                }
-              });
-
-              // Setup explicit icon declarations from imports
-              ${iconDeclarations}
+                });
+              }
 
               // Error reporter
               const reportError = (err) => {
