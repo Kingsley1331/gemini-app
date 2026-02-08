@@ -114,6 +114,15 @@ export default function CodePreview({
             <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><\/script>
             <script src="https://unpkg.com/lucide@latest"><\/script>
             <script src="https://cdn.tailwindcss.com"><\/script>
+            <script>
+              // Register a custom TSX preset so Babel can parse TypeScript generics + JSX together
+              Babel.registerPreset('tsx', {
+                presets: [
+                  [Babel.availablePresets['typescript'], { isTSX: true, allExtensions: true }],
+                  [Babel.availablePresets['react']]
+                ]
+              });
+            <\/script>
             <style>
               body { 
                 margin: 0; 
@@ -130,7 +139,7 @@ export default function CodePreview({
           </head>
           <body>
             <div id="root"></div>
-            <script type="text/babel" data-presets="react,typescript">
+            <script type="text/babel" data-presets="tsx">
               // React globals
               const { 
                 useState, useEffect, useMemo, useCallback, useRef, 
