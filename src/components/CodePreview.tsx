@@ -10,9 +10,11 @@ import {
   Copy,
   Check,
   Bug,
+  Download,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import JSZip from "jszip";
 
 interface CodePreviewProps {
   code: string;
@@ -42,6 +44,198 @@ export default function CodePreview({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const handleDownload = useCallback(async () => {
+    const zip = new JSZip();
+    const folder = zip.folder("my-app")!;
+
+    if (language === "html") {
+      folder.file("index.html", code);
+    } else {
+      const ext =
+        language === "tsx" || language === "typescript" ? "tsx" : "jsx";
+      folder.file("App." + ext, code);
+
+      // Process the code: extract lucide icons, strip imports/exports
+      const lucideIconDecls: string[] = [];
+      const processedCode = code
+        .replace(
+          /import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
+          ""
+        )
+        .replace(
+          /import\s+type\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g,
+          ""
+        )
+        .replace(
+          /import\s*\{([^}]*)\}\s*from\s*['"]lucide-react['"];?\n?/g,
+          (_match, names) => {
+            const icons = names
+              .split(",")
+              .map((n: string) => n.trim())
+              .filter(Boolean);
+            icons.forEach((n: string) => {
+              const kebab = n
+                .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+                .toLowerCase();
+              lucideIconDecls.push(
+                "const " +
+                  n +
+                  " = __createLucideIcon('" +
+                  kebab +
+                  "', '" +
+                  n +
+                  "');"
+              );
+            });
+            return "";
+          }
+        )
+        .replace(
+          /import\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
+          ""
+        )
+        .replace(
+          /import\s+\w+\s*,?\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
+          ""
+        )
+        .replace(/import\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
+        .replace(
+          /import\s+\*\s+as\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g,
+          ""
+        )
+        .replace(/import\s*['"][^'"]*['"];?\n?/g, "")
+        .replace(
+          /export\s+default\s+function\s+(\w+)/,
+          "function $1"
+        )
+        .replace(/export\s+default\s+/, "const App = ")
+        .replace(/export\s+/g, "");
+
+      const iconSection =
+        lucideIconDecls.length > 0
+          ? "\n      // Lucide icon components\n      " +
+            lucideIconDecls.join("\n      ") +
+            "\n"
+          : "";
+
+      // Build runner HTML using string concatenation to avoid template literal issues
+      const runnerParts = [
+        '<!DOCTYPE html>',
+        '<html lang="en">',
+        '  <head>',
+        '    <meta charset="UTF-8" />',
+        '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+        '    <title>My App</title>',
+        '    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>',
+        '    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>',
+        '    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>',
+        '    <script src="https://unpkg.com/lucide@latest"></script>',
+        '    <script src="https://cdn.tailwindcss.com"></script>',
+        '    <script>',
+        "      Babel.registerPreset('tsx', {",
+        '        presets: [',
+        "          [Babel.availablePresets['typescript'], { isTSX: true, allExtensions: true }],",
+        "          [Babel.availablePresets['react']]",
+        '        ]',
+        '      });',
+        '    </script>',
+        '    <style>',
+        '      body {',
+        '        margin: 0;',
+        '        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;',
+        '        background-color: white;',
+        '        color: #18181b;',
+        '      }',
+        '      #root { padding: 0; min-height: 100vh; }',
+        '    </style>',
+        '  </head>',
+        '  <body>',
+        '    <div id="root"></div>',
+        '    <script type="text/babel" data-presets="tsx">',
+        '      const {',
+        '        useState, useEffect, useMemo, useCallback, useRef,',
+        '        useReducer, useContext, createContext, useLayoutEffect,',
+        '        useImperativeHandle, useDebugValue, useDeferredValue,',
+        '        useTransition, useId, memo, forwardRef, lazy,',
+        '        Suspense, Fragment, createElement, cloneElement,',
+        '        Children, createRef, isValidElement',
+        '      } = React;',
+        '',
+        '      // Lucide icon factory',
+        '      function __createLucideIcon(kebabName, displayName) {',
+        '        const iconNode = window.lucide?.icons?.[kebabName];',
+        '        if (!iconNode) {',
+        '          const Fallback = () => null;',
+        '          Fallback.displayName = displayName || kebabName;',
+        '          return Fallback;',
+        '        }',
+        '        const LucideIcon = function(props) {',
+        "          const { size = 24, color = 'currentColor', strokeWidth = 2, className, style, absoluteStrokeWidth, ...rest } = props || {};",
+        '          const sw = absoluteStrokeWidth ? strokeWidth : strokeWidth * 24 / Number(size);',
+        '          const children = (iconNode[2] || []).map(function(child, i) {',
+        '            return React.createElement(child[0], Object.assign({ key: i }, child[1]));',
+        '          });',
+        "          return React.createElement('svg', Object.assign({",
+        "            xmlns: 'http://www.w3.org/2000/svg',",
+        "            width: size, height: size, viewBox: '0 0 24 24',",
+        "            fill: 'none', stroke: color, strokeWidth: sw,",
+        "            strokeLinecap: 'round', strokeLinejoin: 'round',",
+        '            className: className, style: style',
+        '          }, rest), ...children);',
+        '        };',
+        '        LucideIcon.displayName = displayName || kebabName;',
+        '        return LucideIcon;',
+        '      }',
+        '',
+        iconSection,
+        '',
+        '      // APP CODE',
+        processedCode,
+        '',
+        '      // Render',
+        "      const container = document.getElementById('root');",
+        '      const root = ReactDOM.createRoot(container);',
+        "      if (typeof App !== 'undefined') {",
+        '        root.render(React.createElement(React.StrictMode, null, React.createElement(App)));',
+        '      }',
+        '    </script>',
+        '  </body>',
+        '</html>',
+      ];
+
+      folder.file("index.html", runnerParts.join("\n"));
+
+      // Add a README
+      const readme = [
+        "# My App",
+        "",
+        "Generated with Gemini.",
+        "",
+        "## How to Run",
+        "",
+        "Simply open `index.html` in your browser — no build step or server required.",
+        "",
+        "The app loads React, Tailwind CSS, and Lucide icons from CDNs automatically.",
+        "",
+        "## Source Code",
+        "",
+        "The original component source is in `App." + ext + "`.",
+        "",
+      ].join("\n");
+      folder.file("README.md", readme);
+    }
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "my-app.zip";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [code, language]);
 
   const updateIframe = useCallback(() => {
     if (!iframeRef.current) return;
@@ -344,6 +538,13 @@ export default function CodePreview({
             ) : (
               <Copy className="w-4 h-4" />
             )}
+          </button>
+          <button
+            onClick={handleDownload}
+            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+            title="Download as ZIP"
+          >
+            <Download className="w-4 h-4" />
           </button>
           <button
             onClick={handleRefresh}
