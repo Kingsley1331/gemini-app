@@ -24,3 +24,20 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Force line number color in syntax highlighter */
+/* We target spans that look like line numbers based on the styles we inject */
+.gemini-code-block span[style*="user-select:none"],
+.gemini-code-block span[style*="user-select: none"],
+.gemini-code-block span[style*="min-width:2em"],
+.gemini-code-block span[style*="min-width: 2em"] {
+  color: #6e7681 !important;
+  /* Ensure it overrides any specific text color */
+  -webkit-text-fill-color: #6e7681 !important;
+}
+
+/* Fallback: Target the first span of each line if it's a number */
+/* This assumes wrapLines={true} which creates a span for each line */
+.gemini-code-block code > span > span:first-child:not([class*="token"]) {
+  color: #6e7681 !important;
+}

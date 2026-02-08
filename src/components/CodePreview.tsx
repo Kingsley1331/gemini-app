@@ -55,12 +55,53 @@ export default function CodePreview({
       language === "javascript" ||
       language === "typescript"
     ) {
-      // Clean up the code: remove imports that will fail in the browser
+      // Extract Lucide icon names from imports before stripping
+      const lucideImports: string[] = [];
+      const lucideImportRegex =
+        /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"];?/g;
+      let lucideMatch;
+      while ((lucideMatch = lucideImportRegex.exec(code)) !== null) {
+        const names = lucideMatch[1]
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          // Handle "X as Y" aliasing
+          .map((s) => {
+            const parts = s.split(/\s+as\s+/);
+            return parts.length > 1
+              ? { original: parts[0].trim(), alias: parts[1].trim() }
+              : { original: s.trim(), alias: s.trim() };
+          });
+        names.forEach((n) => lucideImports.push(JSON.stringify(n)));
+      }
+
+      // Clean up the code: remove imports and exports
       const cleanedCode = code
-        .replace(/import\s+[\s\S]*?from\s+['"].*?['"];?/g, "")
+        // Remove type-only imports
+        .replace(/import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
+        .replace(/import\s+type\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
+        // Remove regular imports (single and multi-line)
+        .replace(/import\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
+        .replace(/import\s+\w+\s*,?\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
+        .replace(/import\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
+        .replace(/import\s+\*\s+as\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
+        // Remove side-effect imports
+        .replace(/import\s*['"][^'"]*['"];?\n?/g, "")
+        // Handle exports
         .replace(/export\s+default\s+function\s+(\w+)/, "function $1")
         .replace(/export\s+default\s+/, "const App = ")
         .replace(/export\s+/g, "");
+
+      // Generate Lucide icon declarations
+      const iconDeclarations = lucideImports.length > 0
+        ? `const __lucideNames = [${lucideImports.join(",")}];\n` +
+          `__lucideNames.forEach(function(n) {\n` +
+          `  const name = typeof n === 'string' ? n : n.original;\n` +
+          `  const alias = typeof n === 'string' ? n : n.alias;\n` +
+          `  const kebab = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();\n` +
+          `  window[alias] = __createLucideIcon(kebab, name);\n` +
+          `});\n`
+        : "";
 
       // Basic React/JS runner template
       content = `
@@ -68,11 +109,11 @@ export default function CodePreview({
         <html>
           <head>
             <meta charset="UTF-8" />
-            <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-            <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-            <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-            <script src="https://unpkg.com/lucide@latest"></script>
-            <script src="https://cdn.tailwindcss.com"></script>
+            <script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+            <script src="https://unpkg.com/react@18/umd/react.development.js"><\/script>
+            <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><\/script>
+            <script src="https://unpkg.com/lucide@latest"><\/script>
+            <script src="https://cdn.tailwindcss.com"><\/script>
             <style>
               body { 
                 margin: 0; 
@@ -90,20 +131,67 @@ export default function CodePreview({
           <body>
             <div id="root"></div>
             <script type="text/babel" data-presets="react,typescript">
-              // Setup globals for the AI code
+              // React globals
               const { 
                 useState, useEffect, useMemo, useCallback, useRef, 
                 useReducer, useContext, createContext, useLayoutEffect,
                 useImperativeHandle, useDebugValue, useDeferredValue,
-                useTransition, useId
+                useTransition, useId, memo, forwardRef, lazy, 
+                Suspense, Fragment, createElement, cloneElement,
+                Children, createRef, isValidElement
               } = React;
-              
-              // Lucide icon helper
-              window.LucideReact = window.lucide;
+
+              // Lucide icon factory — creates React components from lucide vanilla icons
+              function __createLucideIcon(kebabName, displayName) {
+                const iconNode = window.lucide?.icons?.[kebabName];
+                if (!iconNode) {
+                  // Return a fallback that renders nothing but doesn't crash
+                  const Fallback = () => null;
+                  Fallback.displayName = displayName || kebabName;
+                  return Fallback;
+                }
+                const LucideIcon = function(props) {
+                  const { size = 24, color = 'currentColor', strokeWidth = 2, className, style, absoluteStrokeWidth, ...rest } = props || {};
+                  const sw = absoluteStrokeWidth ? strokeWidth : strokeWidth * 24 / Number(size);
+                  const children = (iconNode[2] || []).map(function(child, i) {
+                    return React.createElement(child[0], Object.assign({ key: i }, child[1]));
+                  });
+                  return React.createElement('svg', Object.assign({
+                    xmlns: 'http://www.w3.org/2000/svg',
+                    width: size,
+                    height: size,
+                    viewBox: '0 0 24 24',
+                    fill: 'none',
+                    stroke: color,
+                    strokeWidth: sw,
+                    strokeLinecap: 'round',
+                    strokeLinejoin: 'round',
+                    className: className,
+                    style: style
+                  }, rest), ...children);
+                };
+                LucideIcon.displayName = displayName || kebabName;
+                return LucideIcon;
+              }
+
+              // Proxy to auto-create any Lucide icon on access
+              const __LucideProxy = new Proxy({}, {
+                get(target, prop) {
+                  if (typeof prop !== 'string') return undefined;
+                  if (!target[prop]) {
+                    const kebab = prop.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+                    target[prop] = __createLucideIcon(kebab, prop);
+                  }
+                  return target[prop];
+                }
+              });
+
+              // Setup explicit icon declarations from imports
+              ${iconDeclarations}
 
               // Error reporter
               const reportError = (err) => {
-                const message = err.stack || err.toString();
+                const message = (err && err.stack) ? err.stack : String(err);
                 window.parent.postMessage({ type: 'preview-error', message }, '*');
               };
 
@@ -125,9 +213,7 @@ export default function CodePreview({
                 
                 if (typeof App !== 'undefined') {
                   root.render(
-                    <React.StrictMode>
-                      <App />
-                    </React.StrictMode>
+                    React.createElement(React.StrictMode, null, React.createElement(App))
                   );
                 } else if (typeof main !== 'undefined') {
                   main();
@@ -287,6 +373,10 @@ export default function CodePreview({
             <SyntaxHighlighter
               language={language}
               style={vscDarkPlus}
+              showLineNumbers={true}
+              wrapLines={true}
+              className="gemini-code-block"
+              lineNumberStyle={{ color: "#6e7681", minWidth: "2em", paddingRight: "1em", userSelect: "none" }}
               customStyle={{
                 margin: 0,
                 padding: "1.5rem",

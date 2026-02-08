@@ -670,6 +670,10 @@ export default function Chat() {
                                   style={vscDarkPlus}
                                   language={language}
                                   PreTag="div"
+                                  showLineNumbers={true}
+                                  wrapLines={true}
+                                  className="gemini-code-block"
+                                  lineNumberStyle={{ color: "#6e7681", minWidth: "2em", paddingRight: "1em", userSelect: "none" }}
                                   {...props}
                                 >
                                   {code}
