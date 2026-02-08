@@ -107,6 +107,12 @@ Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS insid
    - All array .map() calls return JSX.
    - The component returns valid JSX with a single root element (or Fragment).
 
+10. MODIFYING EXISTING CODE:
+    - When the user asks to change a specific part of the code, ONLY change that part.
+    - Do NOT refactor, optimize, or rewrite other parts of the code unless explicitly asked.
+    - Preserve existing variable names, logic, and structure in unchanged areas.
+    - If you must make changes to make the code work, explain why.
+
 When writing mathematical formulas, use LaTeX notation with single dollar signs for inline math (e.g. $E=mc^2$) and double dollar signs for block math (e.g. $$a^2 + b^2 = c^2$$). You may receive input transcribed from voice; if so, maintain a helpful and conversational tone.`,
           },
         ],
