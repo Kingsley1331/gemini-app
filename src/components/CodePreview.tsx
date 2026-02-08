@@ -58,6 +58,11 @@ export default function CodePreview({
 
       // Process the code: extract lucide icons, strip imports/exports
       const lucideIconDecls: string[] = [];
+
+      // Extract the default-exported function name before transforms
+      const dlDefaultExportMatch = code.match(/export\s+default\s+function\s+(\w+)/);
+      const dlDefaultExportName = dlDefaultExportMatch ? dlDefaultExportMatch[1] : null;
+
       const processedCode = code
         .replace(
           /import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
@@ -105,12 +110,13 @@ export default function CodePreview({
           ""
         )
         .replace(/import\s*['"][^'"]*['"];?\n?/g, "")
-        .replace(
-          /export\s+default\s+function\s+(\w+)/,
-          "function $1"
-        )
+        .replace(/export\s+default\s+function\s+(\w+)/, "function $1")
         .replace(/export\s+default\s+/, "const App = ")
-        .replace(/export\s+/g, "");
+        .replace(/export\s+/g, "")
+        // Alias the default-exported function as App (if it wasn't already named App)
+        + (dlDefaultExportName && dlDefaultExportName !== 'App'
+          ? `\nconst App = ${dlDefaultExportName};\n`
+          : '');
 
       const iconSection =
         lucideIconDecls.length > 0
@@ -254,6 +260,11 @@ export default function CodePreview({
     ) {
       // Clean up the code: convert lucide imports to const declarations,
       // strip all other imports, and handle exports
+
+      // Extract the default-exported function name before transforms
+      const defaultExportMatch = code.match(/export\s+default\s+function\s+(\w+)/);
+      const defaultExportName = defaultExportMatch ? defaultExportMatch[1] : null;
+
       const cleanedCode = code
         // Remove type-only imports
         .replace(/import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
@@ -296,10 +307,14 @@ export default function CodePreview({
         .replace(/import\s+\*\s+as\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
         // Remove side-effect imports
         .replace(/import\s*['"][^'"]*['"];?\n?/g, "")
-        // Handle exports
+        // Handle exports — just strip the keywords, keep function declarations intact
         .replace(/export\s+default\s+function\s+(\w+)/, "function $1")
         .replace(/export\s+default\s+/, "const App = ")
-        .replace(/export\s+/g, "");
+        .replace(/export\s+/g, "")
+        // Alias the default-exported function as App (if it wasn't already named App)
+        + (defaultExportName && defaultExportName !== 'App'
+          ? `\nconst App = ${defaultExportName};\n`
+          : '');
 
       // Basic React/JS runner template
       content = `
