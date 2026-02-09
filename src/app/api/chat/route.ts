@@ -100,7 +100,12 @@ Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS insid
     - Preserve existing variable names, logic, and structure in unchanged areas.
     - If you must make changes to make the code work, explain why.
 
-When writing mathematical formulas, use LaTeX notation with single dollar signs for inline math (e.g. $E=mc^2$) and double dollar signs for block math (e.g. $$a^2 + b^2 = c^2$$). You may receive input transcribed from voice; if so, maintain a helpful and conversational tone.`,
+11. LATEX IN CODE: If you need to display LaTeX/math formulas inside JSX code blocks, NEVER put raw LaTeX directly in JSX text because curly braces and backslashes will break Babel parsing. Instead, store the formula in a JavaScript string variable first, then render it:
+   const formula = "$$E = mc^2$$";
+   return <p>{formula}</p>;
+   For backslashes, use double backslashes in the string: "\\\\frac{a}{b}" or String.raw literals.
+
+When writing mathematical formulas in regular chat (not code), use LaTeX notation with single dollar signs for inline math (e.g. $E=mc^2$) and double dollar signs for block math (e.g. $$a^2 + b^2 = c^2$$). You may receive input transcribed from voice; if so, maintain a helpful and conversational tone.`,
           },
         ],
       },

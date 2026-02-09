@@ -319,6 +319,27 @@ export default function CodePreview({
           ? `\nconst App = ${defaultExportName};\n`
           : '');
 
+      // Escape LaTeX math in JSX so Babel doesn't interpret $...$ content as expressions
+      const escapeLatex = (src: string): string => {
+        // Replace block math $$...$$ with {"$$...$$"} (double dollar is never valid JS)
+        src = src.replace(/\$\$([\s\S]*?)\$\$/g, (_m: string, inner: string) => {
+          const escaped = inner.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+          return '{"$$' + escaped + '$$"}';
+        });
+        // Replace inline math $...$ that contains LaTeX-like chars (\, ^, _, or is a single letter)
+        src = src.replace(/\$([^$\n]+?)\$/g, (_m: string, inner: string) => {
+          // Only escape if it looks like LaTeX (contains \, ^, _, or is a single letter variable like A, B, x)
+          if (/[\\^_]/.test(inner) || /^[A-Za-z]$/.test(inner)) {
+            const escaped = inner.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            return '{"$' + escaped + '$"}';
+          }
+          return _m; // leave non-LaTeX dollar expressions alone
+        });
+        return src;
+      };
+
+      const finalCode = escapeLatex(cleanedCode);
+
       // Basic React/JS runner template
       content = `
         <!DOCTYPE html>
@@ -446,7 +467,7 @@ export default function CodePreview({
               };
 
               try {
-                ${cleanedCode}
+                ${finalCode}
                 
                 // Final render logic
                 const container = document.getElementById('root');
