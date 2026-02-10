@@ -11,6 +11,7 @@ import {
   X,
   Mic,
   Upload,
+  ChevronDown,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
@@ -54,12 +55,36 @@ export default function Chat() {
   const [isGeneratingSpeech, setIsGeneratingSpeech] = useState<string | null>(
     null,
   );
+  const [selectedModel, setSelectedModel] = useState("gemini-3-pro-preview");
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
+
   const [selectedImage, setSelectedImage] = useState<{
     url: string;
     mimeType: string;
     data: string;
   } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const models = [
+    { id: "gemini-3-pro-preview", name: "Gemini 3 Pro (Preview)", description: "Most intelligent model" },
+    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash (Preview)", description: "Fast and versatile" },
+    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", description: "Fastest response time" },
+  ];
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(event.target as Node)) {
+        setIsModelDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeFileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -490,6 +515,7 @@ export default function Chat() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              model: selectedModel,
               messages: [...messages, userMessage].map((m) => ({
                 role: m.role,
                 content: m.content,
@@ -548,7 +574,7 @@ export default function Chat() {
         setIsLoading(false);
       }
     },
-    [selectedImage, isLoading, messages],
+    [selectedImage, isLoading, messages, selectedModel],
   );
 
   const handleDebug = useCallback(
@@ -575,6 +601,48 @@ export default function Chat() {
               Chat, Code, and Generate Images
             </p>
           </div>
+        </div>
+
+        <div className="relative" ref={modelDropdownRef}>
+          <button
+            onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm font-medium hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors"
+          >
+            <span>{models.find((m) => m.id === selectedModel)?.name}</span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${isModelDropdownOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          <AnimatePresence>
+            {isModelDropdownOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="absolute right-0 top-full mt-2 w-64 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-xl z-50 overflow-hidden"
+              >
+                {models.map((model) => (
+                  <button
+                    key={model.id}
+                    onClick={() => {
+                      setSelectedModel(model.id);
+                      setIsModelDropdownOpen(false);
+                    }}
+                    className={cn(
+                      "w-full text-left px-4 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors flex flex-col gap-0.5",
+                      selectedModel === model.id && "bg-blue-50 dark:bg-blue-900/20"
+                    )}
+                  >
+                    <span className={cn("text-sm font-medium", selectedModel === model.id ? "text-blue-600 dark:text-blue-400" : "text-zinc-900 dark:text-zinc-100")}>
+                      {model.name}
+                    </span>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {model.description}
+                    </span>
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 

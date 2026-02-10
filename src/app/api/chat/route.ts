@@ -21,14 +21,14 @@ export async function POST(req: Request) {
       );
     }
 
-    const { messages } = await req.json();
+    const { messages, model: userModel } = await req.json();
 
     // Re-initialize to ensure the key is correctly captured from the environment
     const currentGenAI = new GoogleGenerativeAI(apiKey);
 
     // Gemini handles the conversation
     const model = currentGenAI.getGenerativeModel({
-      model: "gemini-3-pro-preview",
+      model: userModel || "gemini-3-pro-preview",
       safetySettings: [
         {
           category: HarmCategory.HARM_CATEGORY_HARASSMENT,
