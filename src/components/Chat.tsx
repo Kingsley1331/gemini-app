@@ -10,6 +10,7 @@ import {
   Paperclip,
   X,
   Mic,
+  Upload,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
@@ -60,6 +61,7 @@ export default function Chat() {
   } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const codeFileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -409,6 +411,37 @@ export default function Chat() {
     reader.readAsDataURL(file);
   };
 
+  const handleCodeUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      
+      // Create a user message saying we uploaded a file
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        role: "user",
+        content: `Uploaded ${file.name} for preview.`,
+        type: "text",
+      };
+
+      // Create an assistant message with the code block to trigger preview
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: `Here is the preview for \`${file.name}\`:\n\n\`\`\`tsx\n${content}\n\`\`\``,
+        type: "text",
+      };
+
+      setMessages((prev) => [...prev, userMessage, assistantMessage]);
+    };
+    reader.readAsText(file);
+    // Reset input so same file can be selected again
+    e.target.value = "";
+  };
+
   const handleSubmit = useCallback(
     async (e?: React.FormEvent, isImage = false, overrideInput?: string) => {
       if (e) e.preventDefault();
@@ -654,6 +687,13 @@ export default function Chat() {
             accept="image/*"
             className="hidden"
           />
+          <input
+            type="file"
+            ref={codeFileInputRef}
+            onChange={handleCodeUpload}
+            accept=".tsx,.jsx,.js,.ts,.html"
+            className="hidden"
+          />
           <button
             type="button"
             onClick={toggleListening}
@@ -688,6 +728,14 @@ export default function Chat() {
             title="Upload Image"
           >
             <Paperclip className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => codeFileInputRef.current?.click()}
+            className="p-2.5 text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
+            title="Upload Code for Preview"
+          >
+            <Upload className="w-5 h-5" />
           </button>
           <button
             type="button"
