@@ -20,7 +20,7 @@ interface CodePreviewProps {
   code: string;
   language: string;
   title?: string;
-  onDebug?: (error: string) => void;
+  onDebug?: (error: string, code: string, language: string) => void;
 }
 
 export default function CodePreview({
@@ -577,7 +577,7 @@ export default function CodePreview({
           </div>
           {error && onDebug && activeTab === "preview" && (
             <button
-              onClick={() => onDebug(error)}
+              onClick={() => onDebug(error, code, language)}
               className="flex items-center gap-1.5 px-3 py-1 bg-red-500 hover:bg-red-600 text-white text-[10px] font-bold rounded-md transition-all shadow-sm animate-pulse"
             >
               <Bug className="w-3 h-3" />

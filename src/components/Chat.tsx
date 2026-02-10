@@ -5,25 +5,16 @@ import {
   Send,
   Image as ImageIcon,
   Loader2,
-  User,
   Bot,
   Sparkles,
   Paperclip,
   X,
   Mic,
-  Volume2,
-  Square,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
-import CodePreview from "./CodePreview";
+import MessageItem, { Message } from "./MessageItem";
 
 // Types for Web Speech API
 interface SpeechRecognitionEvent extends Event {
@@ -50,19 +41,6 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-type Message = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  type: "text" | "image";
-  imageUrl?: string;
-  attachments?: {
-    url: string;
-    mimeType: string;
-    data: string; // base64
-  }[];
-};
-
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -70,10 +48,10 @@ export default function Chat() {
   const [isListening, setIsListening] = useState(false);
   const [isMicInitializing, setIsMicInitializing] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(
-    null
+    null,
   );
   const [isGeneratingSpeech, setIsGeneratingSpeech] = useState<string | null>(
-    null
+    null,
   );
   const [selectedImage, setSelectedImage] = useState<{
     url: string;
@@ -89,6 +67,12 @@ export default function Chat() {
   const useRefState = useRef<{ speakingMessageId: string | null }>({
     speakingMessageId: null,
   });
+
+  // Ref to track input without triggering re-renders in callbacks
+  const inputRef = useRef(input);
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
 
   // Keep ref in sync for async loops
   useEffect(() => {
@@ -155,111 +139,144 @@ export default function Chat() {
     };
   }, []);
 
-  const playAudioChunk = async (base64Data: string, mimeType: string) => {
-    try {
-      if (
-        !audioContextRef.current ||
-        audioContextRef.current.state === "closed"
-      ) {
-        audioContextRef.current = new (window.AudioContext ||
-          (window as any).webkitAudioContext)();
-        nextStartTimeRef.current = audioContextRef.current.currentTime;
-      }
-
-      const ctx = audioContextRef.current;
-
-      if (ctx.state === "suspended") {
-        await ctx.resume();
-      }
-
-      // Extract sample rate if available in mimeType (e.g., "audio/L16;rate=24000")
-      let sampleRate = 24000;
-      const rateMatch = mimeType.match(/rate=(\d+)/);
-      if (rateMatch) {
-        sampleRate = parseInt(rateMatch[1], 10);
-      }
-
-      const binaryString = window.atob(base64Data);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      if (mimeType.includes("audio/L16")) {
-        // Convert Int16 PCM to Float32
-        const int16Array = new Int16Array(bytes.buffer);
-        const float32Array = new Float32Array(int16Array.length);
-        for (let i = 0; i < int16Array.length; i++) {
-          float32Array[i] = int16Array[i] / 32768;
+  const playAudioChunk = useCallback(
+    async (base64Data: string, mimeType: string) => {
+      try {
+        if (
+          !audioContextRef.current ||
+          audioContextRef.current.state === "closed"
+        ) {
+          audioContextRef.current = new (
+            window.AudioContext || (window as any).webkitAudioContext
+          )();
+          nextStartTimeRef.current = audioContextRef.current.currentTime;
         }
 
-        const audioBuffer = ctx.createBuffer(
-          1,
-          float32Array.length,
-          sampleRate
-        );
-        audioBuffer.getChannelData(0).set(float32Array);
+        const ctx = audioContextRef.current;
 
-        const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(ctx.destination);
+        if (ctx.state === "suspended") {
+          await ctx.resume();
+        }
 
-        const startTime = Math.max(
-          nextStartTimeRef.current,
-          ctx.currentTime + 0.1
-        );
-        source.start(startTime);
-        nextStartTimeRef.current = startTime + audioBuffer.duration;
-      } else {
-        console.warn("Unsupported streaming mimeType:", mimeType);
+        // Extract sample rate if available in mimeType (e.g., "audio/L16;rate=24000")
+        let sampleRate = 24000;
+        const rateMatch = mimeType.match(/rate=(\d+)/);
+        if (rateMatch) {
+          sampleRate = parseInt(rateMatch[1], 10);
+        }
+
+        const binaryString = window.atob(base64Data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        if (mimeType.includes("audio/L16")) {
+          // Convert Int16 PCM to Float32
+          const int16Array = new Int16Array(bytes.buffer);
+          const float32Array = new Float32Array(int16Array.length);
+          for (let i = 0; i < int16Array.length; i++) {
+            float32Array[i] = int16Array[i] / 32768;
+          }
+
+          const audioBuffer = ctx.createBuffer(
+            1,
+            float32Array.length,
+            sampleRate,
+          );
+          audioBuffer.getChannelData(0).set(float32Array);
+
+          const source = ctx.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(ctx.destination);
+
+          const startTime = Math.max(
+            nextStartTimeRef.current,
+            ctx.currentTime + 0.1,
+          );
+          source.start(startTime);
+          nextStartTimeRef.current = startTime + audioBuffer.duration;
+        } else {
+          console.warn("Unsupported streaming mimeType:", mimeType);
+        }
+      } catch (e) {
+        console.error("Error playing audio chunk:", e);
       }
-    } catch (e) {
-      console.error("Error playing audio chunk:", e);
-    }
-  };
+    },
+    [],
+  );
 
-  const speak = async (text: string, messageId: string) => {
-    if (speakingMessageId === messageId || isGeneratingSpeech === messageId) {
-      stopSpeaking();
-      return;
-    }
+  const processSentence = useCallback(
+    async (sentence: string, messageId: string) => {
+      try {
+        const response = await fetch("/api/generate-speech", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: sentence }),
+        });
 
-    stopSpeaking();
-    setIsGeneratingSpeech(messageId);
+        if (!response.ok) return;
+        if (!response.body) return;
+        if (useRefState.current.speakingMessageId !== messageId) return;
 
-    try {
-      const cleanText = text
-        .replace(/```[\s\S]*?```/g, "Code block omitted.")
-        .replace(/[*#_~`]/g, "")
-        .replace(/\$[^$]+\$/g, "formula");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-      // Better sentence splitting
-      const sentences = cleanText
-        .match(/[^.!?]+[.!?]+|[^.!?]+/g)
-        ?.map((s) => s.trim()) || [cleanText];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (useRefState.current.speakingMessageId !== messageId) {
+            reader.cancel();
+            break;
+          }
 
-      setSpeakingMessageId(messageId);
-      useRefState.current.speakingMessageId = messageId;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const data = JSON.parse(line);
+              if (data.audio) {
+                await playAudioChunk(data.audio, data.mimeType);
+              }
+            } catch (e) {
+              console.error("Error parsing audio chunk:", e);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Error in processSentence:", e);
+      }
+    },
+    [playAudioChunk],
+  );
+
+  const handleSpeakError = useCallback(
+    (err: any, text: string, messageId: string) => {
+      if (err.message === "GEMINI_MODALITY_UNSUPPORTED") {
+        console.warn(
+          "Gemini native audio not supported. Using browser fallback.",
+        );
+      } else {
+        console.error("Gemini Speech Error:", err);
+      }
+
       setIsGeneratingSpeech(null);
 
-      // Pre-fetch sentences in parallel to eliminate network delay between them
-      const sentenceTasks = sentences
-        .filter((s) => s && s.length > 0)
-        .map((sentence) => ({
-          promise: processSentence(sentence, messageId),
-        }));
-
-      // Await all tasks to ensure full playback in sequence
-      for (const task of sentenceTasks) {
-        if (useRefState.current.speakingMessageId !== messageId) break;
-        await task.promise;
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.onend = () => setSpeakingMessageId(null);
+        setSpeakingMessageId(messageId);
+        window.speechSynthesis.speak(utterance);
       }
-    } catch (err: any) {
-      handleSpeakError(err, text, messageId);
-    }
-  };
+    },
+    [],
+  );
 
-  const stopSpeaking = () => {
+  const stopSpeaking = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
@@ -274,71 +291,57 @@ export default function Chat() {
     setSpeakingMessageId(null);
     useRefState.current.speakingMessageId = null;
     setIsGeneratingSpeech(null);
-  };
+  }, []);
 
-  const processSentence = async (sentence: string, messageId: string) => {
-    try {
-      const response = await fetch("/api/generate-speech", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: sentence }),
-      });
-
-      if (!response.ok) return;
-      if (!response.body) return;
-      if (useRefState.current.speakingMessageId !== messageId) return;
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (useRefState.current.speakingMessageId !== messageId) {
-          reader.cancel();
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const data = JSON.parse(line);
-            if (data.audio) {
-              await playAudioChunk(data.audio, data.mimeType);
-            }
-          } catch (e) {
-            console.error("Error parsing audio chunk:", e);
-          }
-        }
+  const speak = useCallback(
+    async (text: string, messageId: string) => {
+      if (speakingMessageId === messageId || isGeneratingSpeech === messageId) {
+        stopSpeaking();
+        return;
       }
-    } catch (e) {
-      console.error("Error in processSentence:", e);
-    }
-  };
 
-  const handleSpeakError = (err: any, text: string, messageId: string) => {
-    if (err.message === "GEMINI_MODALITY_UNSUPPORTED") {
-      console.warn(
-        "Gemini native audio not supported. Using browser fallback."
-      );
-    } else {
-      console.error("Gemini Speech Error:", err);
-    }
+      stopSpeaking();
+      setIsGeneratingSpeech(messageId);
 
-    setIsGeneratingSpeech(null);
+      try {
+        const cleanText = text
+          .replace(/```[\s\S]*?```/g, "Code block omitted.")
+          .replace(/[*#_~`]/g, "")
+          .replace(/\$[^$]+\$/g, "formula");
 
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.onend = () => setSpeakingMessageId(null);
-      setSpeakingMessageId(messageId);
-      window.speechSynthesis.speak(utterance);
-    }
-  };
+        // Better sentence splitting
+        const sentences = cleanText
+          .match(/[^.!?]+[.!?]+|[^.!?]+/g)
+          ?.map((s) => s.trim()) || [cleanText];
+
+        setSpeakingMessageId(messageId);
+        useRefState.current.speakingMessageId = messageId;
+        setIsGeneratingSpeech(null);
+
+        // Pre-fetch sentences in parallel to eliminate network delay between them
+        const sentenceTasks = sentences
+          .filter((s) => s && s.length > 0)
+          .map((sentence) => ({
+            promise: processSentence(sentence, messageId),
+          }));
+
+        // Await all tasks to ensure full playback in sequence
+        for (const task of sentenceTasks) {
+          if (useRefState.current.speakingMessageId !== messageId) break;
+          await task.promise;
+        }
+      } catch (err: any) {
+        handleSpeakError(err, text, messageId);
+      }
+    },
+    [
+      speakingMessageId,
+      isGeneratingSpeech,
+      stopSpeaking,
+      processSentence,
+      handleSpeakError,
+    ],
+  );
 
   const toggleListening = () => {
     if (!recognitionRef.current) {
@@ -371,7 +374,7 @@ export default function Chat() {
         console.error("Error starting recognition:", err);
         setIsMicInitializing(false);
         alert(
-          "Could not start speech recognition. It might already be running or blocked."
+          "Could not start speech recognition. It might already be running or blocked.",
         );
       }
     }
@@ -409,7 +412,7 @@ export default function Chat() {
   const handleSubmit = useCallback(
     async (e?: React.FormEvent, isImage = false, overrideInput?: string) => {
       if (e) e.preventDefault();
-      const messageInput = overrideInput || input;
+      const messageInput = overrideInput || inputRef.current;
       if ((!messageInput.trim() && !selectedImage) || isLoading) return;
 
       const userMessage: Message = {
@@ -490,8 +493,8 @@ export default function Chat() {
               prev.map((msg) =>
                 msg.id === assistantMessageId
                   ? { ...msg, content: assistantContent }
-                  : msg
-              )
+                  : msg,
+              ),
             );
           }
         }
@@ -512,15 +515,15 @@ export default function Chat() {
         setIsLoading(false);
       }
     },
-    [input, selectedImage, isLoading, messages]
+    [selectedImage, isLoading, messages],
   );
 
   const handleDebug = useCallback(
-    (error: string) => {
-      const debugPrompt = `I'm getting a runtime error in the code you provided:\n\n\`\`\`\n${error}\n\`\`\`\n\nPlease fix the code and provide the corrected version.`;
+    (error: string, code: string, language: string) => {
+      const debugPrompt = `I'm getting a runtime error in the following code:\n\n\`\`\`${language}\n${code}\n\`\`\`\n\nError:\n\`\`\`\n${error}\n\`\`\`\n\nPlease fix the code and provide the corrected version.`;
       handleSubmit(undefined, false, debugPrompt);
     },
-    [handleSubmit]
+    [handleSubmit],
   );
 
   return (
@@ -558,7 +561,7 @@ export default function Chat() {
               <button
                 onClick={() =>
                   setInput(
-                    "Create a beautiful landing page header in HTML/Tailwind"
+                    "Create a beautiful landing page header in HTML/Tailwind",
                   )
                 }
                 className="px-3 py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-xs hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
@@ -578,210 +581,14 @@ export default function Chat() {
         )}
         <AnimatePresence initial={false}>
           {messages.map((m) => (
-            <motion.div
+            <MessageItem
               key={m.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn(
-                "flex gap-4",
-                m.role === "user" ? "flex-row-reverse" : "flex-row"
-              )}
-            >
-              <div
-                className={cn(
-                  "w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-1",
-                  m.role === "user"
-                    ? "bg-zinc-200 dark:bg-zinc-700"
-                    : "bg-blue-100 dark:bg-blue-900/30"
-                )}
-              >
-                {m.role === "user" ? (
-                  <User className="w-5 h-5" />
-                ) : (
-                  <Bot className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                )}
-              </div>
-              <div
-                className={cn(
-                  "max-w-[85%] rounded-2xl p-4",
-                  m.role === "user"
-                    ? "bg-blue-600 text-white rounded-tr-none"
-                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tl-none"
-                )}
-              >
-                {m.role === "user" &&
-                  m.attachments &&
-                  m.attachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      {m.attachments.map((attachment, idx) => (
-                        <img
-                          key={idx}
-                          src={attachment.url}
-                          alt="User uploaded content"
-                          className="max-w-50 h-auto rounded-lg border border-white/20"
-                          loading="lazy"
-                        />
-                      ))}
-                    </div>
-                  )}
-                {m.type === "text" ? (
-                  <div className="prose prose-sm dark:prose-invert max-w-none">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
-                      components={{
-                        code({
-                          inline,
-                          className,
-                          children,
-                          ...props
-                        }: {
-                          inline?: boolean;
-                          className?: string;
-                          children?: React.ReactNode;
-                        }) {
-                          const match = /language-(\w+)/.exec(className || "");
-                          const language = match ? match[1] : "";
-                          const code = String(children).replace(/\n$/, "");
-
-                          const isPreviewable = [
-                            "html",
-                            "jsx",
-                            "tsx",
-                            "javascript",
-                            "typescript",
-                          ].includes(language);
-
-                          if (!inline && isPreviewable) {
-                            return (
-                              <CodePreview
-                                code={code}
-                                language={language}
-                                title={`${language.toUpperCase()} Artifact`}
-                                onDebug={handleDebug}
-                              />
-                            );
-                          }
-
-                          if (!inline && language) {
-                            return (
-                              <div className="rounded-lg overflow-hidden my-4">
-                                <SyntaxHighlighter
-                                  style={vscDarkPlus}
-                                  language={language}
-                                  PreTag="div"
-                                  showLineNumbers={true}
-                                  wrapLines={true}
-                                  className="gemini-code-block"
-                                  lineNumberStyle={{ color: "#6e7681", minWidth: "2em", paddingRight: "1em", userSelect: "none" }}
-                                  {...props}
-                                >
-                                  {code}
-                                </SyntaxHighlighter>
-                              </div>
-                            );
-                          }
-
-                          return (
-                            <code
-                              className={cn(
-                                "bg-zinc-200 dark:bg-zinc-700 px-1 rounded",
-                                className
-                              )}
-                              {...props}
-                            >
-                              {children}
-                            </code>
-                          );
-                        },
-                        // Fix list rendering in markdown
-                        ul: ({ children }) => (
-                          <ul className="list-disc ml-4 space-y-1">
-                            {children}
-                          </ul>
-                        ),
-                        ol: ({ children }) => (
-                          <ol className="list-decimal ml-4 space-y-1">
-                            {children}
-                          </ol>
-                        ),
-                        p: ({ children }) => (
-                          <p className="mb-2 last:mb-0">{children}</p>
-                        ),
-                      }}
-                    >
-                      {m.content}
-                    </ReactMarkdown>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <p className="text-sm opacity-80">{m.content}</p>
-                    {m.imageUrl ? (
-                      <div className="relative group">
-                        <img
-                          src={m.imageUrl}
-                          alt="Generated AI artwork"
-                          className="rounded-xl w-full h-auto shadow-md transition-transform group-hover:scale-[1.01]"
-                          loading="lazy"
-                        />
-                        <a
-                          href={m.imageUrl}
-                          download="generated-image.png"
-                          className="absolute bottom-2 right-2 p-2 bg-black/50 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          Download
-                        </a>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-3 p-6 bg-zinc-200 dark:bg-zinc-700 rounded-xl">
-                        <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
-                        <span className="text-sm font-medium">
-                          Brewing your image...
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {m.role === "assistant" && m.type === "text" && (
-                  <div className="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-700/50 flex justify-end">
-                    <button
-                      onClick={() => speak(m.content, m.id)}
-                      disabled={isGeneratingSpeech === m.id}
-                      className={cn(
-                        "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
-                        speakingMessageId === m.id
-                          ? "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
-                          : "text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700"
-                      )}
-                      title={
-                        isGeneratingSpeech === m.id
-                          ? "Generating Gemini voice..."
-                          : speakingMessageId === m.id
-                          ? "Stop reading"
-                          : "Read aloud with Gemini"
-                      }
-                    >
-                      {isGeneratingSpeech === m.id ? (
-                        <>
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          LOADING...
-                        </>
-                      ) : speakingMessageId === m.id ? (
-                        <>
-                          <Square className="w-3 h-3 fill-current" />
-                          STOP
-                        </>
-                      ) : (
-                        <>
-                          <Volume2 className="w-3 h-3" />
-                          GEMINI SPEAK
-                        </>
-                      )}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </motion.div>
+              m={m}
+              isSpeaking={speakingMessageId === m.id}
+              isGeneratingSpeech={isGeneratingSpeech === m.id}
+              onSpeak={speak}
+              onDebug={handleDebug}
+            />
           ))}
         </AnimatePresence>
         {isLoading && (
@@ -855,15 +662,15 @@ export default function Chat() {
               isListening
                 ? "text-red-500 bg-red-50 dark:bg-red-900/20"
                 : isMicInitializing
-                ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20"
-                : "text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                  ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20"
+                  : "text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20",
             )}
             title={
               isListening
                 ? "Stop Listening"
                 : isMicInitializing
-                ? "Initializing Mic..."
-                : "Start Voice Input"
+                  ? "Initializing Mic..."
+                  : "Start Voice Input"
             }
           >
             {isMicInitializing ? (
