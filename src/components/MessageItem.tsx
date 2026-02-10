@@ -62,10 +62,10 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
       </div>
       <div
         className={cn(
-          "max-w-[85%] rounded-2xl p-4",
+          "rounded-2xl p-4",
           m.role === "user"
-            ? "bg-blue-600 text-white rounded-tr-none"
-            : "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tl-none",
+            ? "bg-blue-600 text-white rounded-tr-none max-w-[85%]"
+            : "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tl-none w-full min-w-0",
         )}
       >
         {m.role === "user" &&
