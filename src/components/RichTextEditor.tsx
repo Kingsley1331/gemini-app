@@ -15,8 +15,11 @@ import {
   Redo,
   Heading2,
   CodeSquare,
+  Maximize2,
+  Minimize2,
+  Send,
 } from "lucide-react";
-import { useEffect, useImperativeHandle, forwardRef } from "react";
+import { useEffect, useImperativeHandle, forwardRef, useState, useCallback } from "react";
 
 export interface RichTextEditorRef {
   getMarkdown: () => string;
@@ -122,7 +125,7 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
             "prose prose-sm dark:prose-invert max-w-none focus:outline-none min-h-[40px] max-h-[200px] overflow-y-auto px-4 py-3",
         },
         handleKeyDown: (_view, event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
+          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
             event.preventDefault();
             onSubmit?.();
             return true;
@@ -155,6 +158,28 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
       };
     }, [editor]);
 
+    const [isFullscreen, setIsFullscreen] = useState(false);
+
+    const toggleFullscreen = useCallback(() => {
+      setIsFullscreen((prev) => !prev);
+      // Re-focus the editor after toggling
+      setTimeout(() => editor?.commands.focus(), 50);
+    }, [editor]);
+
+    // Close fullscreen on Escape key
+    useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === "Escape" && isFullscreen) {
+          setIsFullscreen(false);
+          setTimeout(() => editor?.commands.focus(), 50);
+        }
+      };
+      if (isFullscreen) {
+        document.addEventListener("keydown", handleKeyDown);
+        return () => document.removeEventListener("keydown", handleKeyDown);
+      }
+    }, [isFullscreen, editor]);
+
     if (!editor) return null;
 
     const ToolbarButton = ({
@@ -182,93 +207,155 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
       </button>
     );
 
+    const toolbarContent = (
+      <>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleBold().run()}
+          isActive={editor.isActive("bold")}
+          title="Bold (Ctrl+B)"
+        >
+          <Bold className="w-3.5 h-3.5" />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleItalic().run()}
+          isActive={editor.isActive("italic")}
+          title="Italic (Ctrl+I)"
+        >
+          <Italic className="w-3.5 h-3.5" />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleStrike().run()}
+          isActive={editor.isActive("strike")}
+          title="Strikethrough"
+        >
+          <Strikethrough className="w-3.5 h-3.5" />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleCode().run()}
+          isActive={editor.isActive("code")}
+          title="Inline Code"
+        >
+          <Code className="w-3.5 h-3.5" />
+        </ToolbarButton>
+
+        <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1" />
+
+        <ToolbarButton
+          onClick={() =>
+            editor.chain().focus().toggleHeading({ level: 2 }).run()
+          }
+          isActive={editor.isActive("heading", { level: 2 })}
+          title="Heading"
+        >
+          <Heading2 className="w-3.5 h-3.5" />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleBulletList().run()}
+          isActive={editor.isActive("bulletList")}
+          title="Bullet List"
+        >
+          <List className="w-3.5 h-3.5" />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleOrderedList().run()}
+          isActive={editor.isActive("orderedList")}
+          title="Numbered List"
+        >
+          <ListOrdered className="w-3.5 h-3.5" />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleBlockquote().run()}
+          isActive={editor.isActive("blockquote")}
+          title="Quote"
+        >
+          <Quote className="w-3.5 h-3.5" />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+          isActive={editor.isActive("codeBlock")}
+          title="Code Block"
+        >
+          <CodeSquare className="w-3.5 h-3.5" />
+        </ToolbarButton>
+
+        <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1" />
+
+        <ToolbarButton
+          onClick={() => editor.chain().focus().undo().run()}
+          title="Undo (Ctrl+Z)"
+        >
+          <Undo className="w-3.5 h-3.5" />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().redo().run()}
+          title="Redo (Ctrl+Shift+Z)"
+        >
+          <Redo className="w-3.5 h-3.5" />
+        </ToolbarButton>
+
+        <div className="flex-1" />
+
+        <ToolbarButton
+          onClick={toggleFullscreen}
+          title={isFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
+        >
+          {isFullscreen ? (
+            <Minimize2 className="w-3.5 h-3.5" />
+          ) : (
+            <Maximize2 className="w-3.5 h-3.5" />
+          )}
+        </ToolbarButton>
+      </>
+    );
+
+    // Fullscreen overlay
+    if (isFullscreen) {
+      return (
+        <>
+          {/* Inline placeholder so the parent layout doesn't collapse */}
+          <div className="flex-1" />
+          {/* Fullscreen overlay */}
+          <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-zinc-900">
+            {/* Header */}
+            <div className="flex items-center gap-0.5 px-4 py-2 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80 flex-wrap">
+              {toolbarContent}
+            </div>
+
+            {/* Editor area - fills remaining space */}
+            <div className="flex-1 overflow-y-auto">
+              <EditorContent
+                editor={editor}
+                className="richtext-fullscreen h-full"
+              />
+            </div>
+
+            {/* Bottom bar with send button */}
+            <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80">
+              <span className="text-xs text-zinc-400">
+                Press Esc to exit fullscreen &middot; Ctrl+Enter to send
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsFullscreen(false);
+                  onSubmit?.();
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all text-sm font-medium"
+              >
+                <Send className="w-4 h-4" />
+                Send
+              </button>
+            </div>
+          </div>
+        </>
+      );
+    }
+
     return (
       <div className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-sm transition-all focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent overflow-hidden">
         {/* Toolbar */}
         <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80 flex-wrap">
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleBold().run()}
-            isActive={editor.isActive("bold")}
-            title="Bold (Ctrl+B)"
-          >
-            <Bold className="w-3.5 h-3.5" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleItalic().run()}
-            isActive={editor.isActive("italic")}
-            title="Italic (Ctrl+I)"
-          >
-            <Italic className="w-3.5 h-3.5" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleStrike().run()}
-            isActive={editor.isActive("strike")}
-            title="Strikethrough"
-          >
-            <Strikethrough className="w-3.5 h-3.5" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleCode().run()}
-            isActive={editor.isActive("code")}
-            title="Inline Code"
-          >
-            <Code className="w-3.5 h-3.5" />
-          </ToolbarButton>
-
-          <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1" />
-
-          <ToolbarButton
-            onClick={() =>
-              editor.chain().focus().toggleHeading({ level: 2 }).run()
-            }
-            isActive={editor.isActive("heading", { level: 2 })}
-            title="Heading"
-          >
-            <Heading2 className="w-3.5 h-3.5" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-            isActive={editor.isActive("bulletList")}
-            title="Bullet List"
-          >
-            <List className="w-3.5 h-3.5" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            isActive={editor.isActive("orderedList")}
-            title="Numbered List"
-          >
-            <ListOrdered className="w-3.5 h-3.5" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleBlockquote().run()}
-            isActive={editor.isActive("blockquote")}
-            title="Quote"
-          >
-            <Quote className="w-3.5 h-3.5" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-            isActive={editor.isActive("codeBlock")}
-            title="Code Block"
-          >
-            <CodeSquare className="w-3.5 h-3.5" />
-          </ToolbarButton>
-
-          <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1" />
-
-          <ToolbarButton
-            onClick={() => editor.chain().focus().undo().run()}
-            title="Undo (Ctrl+Z)"
-          >
-            <Undo className="w-3.5 h-3.5" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().redo().run()}
-            title="Redo (Ctrl+Shift+Z)"
-          >
-            <Redo className="w-3.5 h-3.5" />
-          </ToolbarButton>
+          {toolbarContent}
         </div>
 
         {/* Editor */}

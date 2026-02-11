@@ -117,6 +117,18 @@ body {
   font-size: 0.8rem;
 }
 
+/* Fullscreen rich text editor */
+.richtext-fullscreen .tiptap {
+  max-height: none;
+  min-height: 100%;
+  padding: 2rem;
+  font-size: 1rem;
+}
+
+.richtext-fullscreen {
+  height: 100%;
+}
+
 /* Force line number color in syntax highlighter */
 /* We target spans that look like line numbers based on the styles we inject */
 .gemini-code-block span[style*="user-select:none"],
