@@ -12,7 +12,9 @@ import {
   Mic,
   Upload,
   ChevronDown,
+  Type,
 } from "lucide-react";
+import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -57,6 +59,9 @@ export default function Chat() {
   );
   const [selectedModel, setSelectedModel] = useState("gemini-3-pro-preview");
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const [isRichText, setIsRichText] = useState(false);
+  const [richTextContent, setRichTextContent] = useState("");
+  const richTextRef = useRef<RichTextEditorRef>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
   const [selectedImage, setSelectedImage] = useState<{
@@ -470,7 +475,8 @@ export default function Chat() {
   const handleSubmit = useCallback(
     async (e?: React.FormEvent, isImage = false, overrideInput?: string) => {
       if (e) e.preventDefault();
-      const messageInput = overrideInput || inputRef.current;
+      const richContent = isRichText ? richTextRef.current?.getMarkdown() || "" : "";
+      const messageInput = overrideInput || (isRichText ? richContent : inputRef.current);
       if ((!messageInput.trim() && !selectedImage) || isLoading) return;
 
       const userMessage: Message = {
@@ -482,7 +488,10 @@ export default function Chat() {
       };
 
       setMessages((prev) => [...prev, userMessage]);
-      if (!overrideInput) setInput("");
+      if (!overrideInput) {
+        setInput("");
+        if (isRichText) richTextRef.current?.clear();
+      }
       setSelectedImage(null);
       setIsLoading(true);
 
@@ -574,7 +583,7 @@ export default function Chat() {
         setIsLoading(false);
       }
     },
-    [selectedImage, isLoading, messages, selectedModel],
+    [selectedImage, isLoading, messages, selectedModel, isRichText],
   );
 
   const handleDebug = useCallback(
@@ -813,15 +822,47 @@ export default function Chat() {
           >
             <ImageIcon className="w-5 h-5" />
           </button>
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Type a message, ask for code, or use /image..."
-            className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none shadow-sm transition-all"
-          />
+          <button
+            type="button"
+            onClick={() => {
+              setIsRichText((prev) => {
+                if (prev) {
+                  // Switching from rich to plain: pull content as markdown
+                  const md = richTextRef.current?.getMarkdown() || "";
+                  setInput(md);
+                }
+                return !prev;
+              });
+            }}
+            className={cn(
+              "p-2.5 rounded-xl transition-all",
+              isRichText
+                ? "text-blue-600 bg-blue-50 dark:bg-blue-900/20"
+                : "text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20",
+            )}
+            title={isRichText ? "Switch to plain text" : "Switch to rich text editor"}
+          >
+            <Type className="w-5 h-5" />
+          </button>
+          {isRichText ? (
+            <RichTextEditor
+              ref={richTextRef}
+              placeholder="Type a message with rich formatting..."
+              onSubmit={() => handleSubmit()}
+              onChange={(md) => setRichTextContent(md)}
+              initialContent={input}
+            />
+          ) : (
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Type a message, ask for code, or use /image..."
+              className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none shadow-sm transition-all"
+            />
+          )}
           <button
             type="submit"
-            disabled={(!input.trim() && !selectedImage) || isLoading}
+            disabled={(!(isRichText ? richTextContent.trim() : input.trim()) && !selectedImage) || isLoading}
             className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 shadow-lg shadow-blue-500/20 transition-all"
           >
             <Send className="w-5 h-5" />

@@ -1,0 +1,283 @@
+"use client";
+
+import { useEditor, EditorContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import Placeholder from "@tiptap/extension-placeholder";
+import {
+  Bold,
+  Italic,
+  Strikethrough,
+  Code,
+  List,
+  ListOrdered,
+  Quote,
+  Undo,
+  Redo,
+  Heading2,
+  CodeSquare,
+} from "lucide-react";
+import { useEffect, useImperativeHandle, forwardRef } from "react";
+
+export interface RichTextEditorRef {
+  getMarkdown: () => string;
+  clear: () => void;
+  focus: () => void;
+}
+
+interface RichTextEditorProps {
+  placeholder?: string;
+  onSubmit?: () => void;
+  onChange?: (markdown: string) => void;
+  initialContent?: string;
+}
+
+// Convert TipTap HTML to Markdown
+function htmlToMarkdown(html: string): string {
+  const tempDiv = document.createElement("div");
+  tempDiv.innerHTML = html;
+
+  function processNode(node: Node): string {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent || "";
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+    const el = node as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+    const children = Array.from(el.childNodes).map(processNode).join("");
+
+    switch (tag) {
+      case "p":
+        return children + "\n\n";
+      case "br":
+        return "\n";
+      case "strong":
+      case "b":
+        return `**${children}**`;
+      case "em":
+      case "i":
+        return `*${children}*`;
+      case "s":
+      case "del":
+        return `~~${children}~~`;
+      case "code":
+        return `\`${children}\``;
+      case "pre": {
+        const codeEl = el.querySelector("code");
+        const codeContent = codeEl ? codeEl.textContent || "" : children;
+        return `\n\`\`\`\n${codeContent}\n\`\`\`\n\n`;
+      }
+      case "h1":
+        return `# ${children}\n\n`;
+      case "h2":
+        return `## ${children}\n\n`;
+      case "h3":
+        return `### ${children}\n\n`;
+      case "blockquote":
+        return (
+          children
+            .trim()
+            .split("\n")
+            .map((line) => `> ${line}`)
+            .join("\n") + "\n\n"
+        );
+      case "ul":
+        return children + "\n";
+      case "ol":
+        return children + "\n";
+      case "li": {
+        const parent = el.parentElement;
+        if (parent?.tagName.toLowerCase() === "ol") {
+          const index =
+            Array.from(parent.children).indexOf(el as HTMLLIElement) + 1;
+          return `${index}. ${children.trim()}\n`;
+        }
+        return `- ${children.trim()}\n`;
+      }
+      default:
+        return children;
+    }
+  }
+
+  return processNode(tempDiv).trim();
+}
+
+const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
+  ({ placeholder, onSubmit, onChange, initialContent }, ref) => {
+    const editor = useEditor({
+      immediatelyRender: false,
+      extensions: [
+        StarterKit.configure({
+          heading: { levels: [2, 3] },
+        }),
+        Placeholder.configure({
+          placeholder: placeholder || "Type a message with rich formatting...",
+        }),
+      ],
+      content: initialContent || "",
+      editorProps: {
+        attributes: {
+          class:
+            "prose prose-sm dark:prose-invert max-w-none focus:outline-none min-h-[40px] max-h-[200px] overflow-y-auto px-4 py-3",
+        },
+        handleKeyDown: (_view, event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            onSubmit?.();
+            return true;
+          }
+          return false;
+        },
+      },
+      onUpdate: ({ editor }) => {
+        const md = htmlToMarkdown(editor.getHTML());
+        onChange?.(md);
+      },
+    });
+
+    useImperativeHandle(ref, () => ({
+      getMarkdown: () => {
+        if (!editor) return "";
+        return htmlToMarkdown(editor.getHTML());
+      },
+      clear: () => {
+        editor?.commands.clearContent();
+      },
+      focus: () => {
+        editor?.commands.focus();
+      },
+    }));
+
+    useEffect(() => {
+      return () => {
+        editor?.destroy();
+      };
+    }, [editor]);
+
+    if (!editor) return null;
+
+    const ToolbarButton = ({
+      onClick,
+      isActive,
+      children,
+      title,
+    }: {
+      onClick: () => void;
+      isActive?: boolean;
+      children: React.ReactNode;
+      title: string;
+    }) => (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title}
+        className={`p-1.5 rounded-md transition-colors ${
+          isActive
+            ? "bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400"
+            : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+        }`}
+      >
+        {children}
+      </button>
+    );
+
+    return (
+      <div className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-sm transition-all focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent overflow-hidden">
+        {/* Toolbar */}
+        <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80 flex-wrap">
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleBold().run()}
+            isActive={editor.isActive("bold")}
+            title="Bold (Ctrl+B)"
+          >
+            <Bold className="w-3.5 h-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleItalic().run()}
+            isActive={editor.isActive("italic")}
+            title="Italic (Ctrl+I)"
+          >
+            <Italic className="w-3.5 h-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleStrike().run()}
+            isActive={editor.isActive("strike")}
+            title="Strikethrough"
+          >
+            <Strikethrough className="w-3.5 h-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleCode().run()}
+            isActive={editor.isActive("code")}
+            title="Inline Code"
+          >
+            <Code className="w-3.5 h-3.5" />
+          </ToolbarButton>
+
+          <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1" />
+
+          <ToolbarButton
+            onClick={() =>
+              editor.chain().focus().toggleHeading({ level: 2 }).run()
+            }
+            isActive={editor.isActive("heading", { level: 2 })}
+            title="Heading"
+          >
+            <Heading2 className="w-3.5 h-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+            isActive={editor.isActive("bulletList")}
+            title="Bullet List"
+          >
+            <List className="w-3.5 h-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            isActive={editor.isActive("orderedList")}
+            title="Numbered List"
+          >
+            <ListOrdered className="w-3.5 h-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+            isActive={editor.isActive("blockquote")}
+            title="Quote"
+          >
+            <Quote className="w-3.5 h-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+            isActive={editor.isActive("codeBlock")}
+            title="Code Block"
+          >
+            <CodeSquare className="w-3.5 h-3.5" />
+          </ToolbarButton>
+
+          <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1" />
+
+          <ToolbarButton
+            onClick={() => editor.chain().focus().undo().run()}
+            title="Undo (Ctrl+Z)"
+          >
+            <Undo className="w-3.5 h-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().redo().run()}
+            title="Redo (Ctrl+Shift+Z)"
+          >
+            <Redo className="w-3.5 h-3.5" />
+          </ToolbarButton>
+        </div>
+
+        {/* Editor */}
+        <EditorContent editor={editor} />
+      </div>
+    );
+  },
+);
+
+RichTextEditor.displayName = "RichTextEditor";
+
+export default RichTextEditor;
