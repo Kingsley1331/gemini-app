@@ -82,7 +82,8 @@ export default function CodePreview({
             const icons = names
               .split(",")
               .map((n: string) => n.trim())
-              .filter(Boolean);
+              .filter(Boolean)
+              .filter((n: string) => !n.startsWith("type "));
             icons.forEach((n: string) => {
               const kebab = n
                 .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
@@ -298,6 +299,7 @@ export default function CodePreview({
                 .split(",")
                 .map((n: string) => n.trim())
                 .filter(Boolean)
+                .filter((n: string) => !n.startsWith("type "))
                 .map((n: string) => {
                   const parts = n.split(/\s+as\s+/);
                   const original = parts[0].trim();

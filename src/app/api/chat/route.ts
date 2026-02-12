@@ -21,37 +21,13 @@ export async function POST(req: Request) {
       );
     }
 
-    const { messages, model: userModel } = await req.json();
+    const { messages, model: userModel, systemInstruction: customSystemInstruction } = await req.json();
 
     // Re-initialize to ensure the key is correctly captured from the environment
     const currentGenAI = new GoogleGenerativeAI(apiKey);
 
-    // Gemini handles the conversation
-    const model = currentGenAI.getGenerativeModel({
-      model: userModel || "gemini-3-pro-preview",
-      safetySettings: [
-        {
-          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
-      ],
-      systemInstruction: {
-        role: "system",
-        parts: [
-          {
-            text: `You are a helpful assistant that can write code and explain complex topics including mathematics. To generate images, the user must start their message with "/image".
+    // Default system instruction for the main chat
+    const defaultSystemInstruction = `You are a helpful assistant that can write code and explain complex topics including mathematics. To generate images, the user must start their message with "/image".
 
 CRITICAL CODE PREVIEW RULES:
 Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS inside a sandboxed iframe. Follow these rules strictly to avoid runtime errors:
@@ -115,7 +91,37 @@ Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS insid
    return <p>{formula}</p>;
    For backslashes, use double backslashes in the string: "\\\\frac{a}{b}" or String.raw literals.
 
-When writing mathematical formulas in regular chat (not code), use LaTeX notation with single dollar signs for inline math (e.g. $E=mc^2$) and double dollar signs for block math (e.g. $$a^2 + b^2 = c^2$$). You may receive input transcribed from voice; if so, maintain a helpful and conversational tone.`,
+When writing mathematical formulas in regular chat (not code), use LaTeX notation with single dollar signs for inline math (e.g. $E=mc^2$) and double dollar signs for block math (e.g. $$a^2 + b^2 = c^2$$). You may receive input transcribed from voice; if so, maintain a helpful and conversational tone.`;
+
+    // Use custom system instruction if provided, otherwise use default
+    const systemInstructionText = customSystemInstruction || defaultSystemInstruction;
+
+    // Gemini handles the conversation
+    const model = currentGenAI.getGenerativeModel({
+      model: userModel || "gemini-3-pro-preview",
+      safetySettings: [
+        {
+          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+      ],
+      systemInstruction: {
+        role: "system",
+        parts: [
+          {
+            text: systemInstructionText,
           },
         ],
       },

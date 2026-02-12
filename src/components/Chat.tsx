@@ -13,8 +13,10 @@ import {
   Upload,
   ChevronDown,
   Type,
+  Wand2,
 } from "lucide-react";
 import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
+import PromptAssistant from "./PromptAssistant";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -61,6 +63,7 @@ export default function Chat() {
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isRichText, setIsRichText] = useState(false);
   const [richTextContent, setRichTextContent] = useState("");
+  const [isPromptAssistantOpen, setIsPromptAssistantOpen] = useState(false);
   const richTextRef = useRef<RichTextEditorRef>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -594,6 +597,26 @@ export default function Chat() {
     [handleSubmit],
   );
 
+  const handleKeepDraft = useCallback(
+    (draft: string) => {
+      if (isRichText) {
+        richTextRef.current?.setContent(draft);
+        setRichTextContent(draft);
+      } else {
+        // Switch to rich text mode and set content after editor mounts
+        setIsRichText(true);
+        setInput(draft); // initialContent will pick this up on mount
+        // Also set via ref after a short delay to ensure the editor is ready
+        setTimeout(() => {
+          richTextRef.current?.setContent(draft);
+          setRichTextContent(draft);
+        }, 100);
+      }
+      setIsPromptAssistantOpen(false);
+    },
+    [isRichText],
+  );
+
   return (
     <div className="flex flex-col h-[90vh] w-full max-w-5xl mx-auto bg-white dark:bg-zinc-900 rounded-2xl shadow-xl overflow-hidden border border-zinc-200 dark:border-zinc-800">
       {/* Header */}
@@ -844,6 +867,14 @@ export default function Chat() {
           >
             <Type className="w-5 h-5" />
           </button>
+          <button
+            type="button"
+            onClick={() => setIsPromptAssistantOpen(true)}
+            className="p-2.5 text-zinc-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-xl transition-all"
+            title="Prompt Assistant"
+          >
+            <Wand2 className="w-5 h-5" />
+          </button>
           {isRichText ? (
             <RichTextEditor
               ref={richTextRef}
@@ -869,6 +900,14 @@ export default function Chat() {
           </button>
         </div>
       </form>
+
+      {/* Prompt Assistant Modal */}
+      <PromptAssistant
+        isOpen={isPromptAssistantOpen}
+        onClose={() => setIsPromptAssistantOpen(false)}
+        onKeep={handleKeepDraft}
+        selectedModel={selectedModel}
+      />
     </div>
   );
 }

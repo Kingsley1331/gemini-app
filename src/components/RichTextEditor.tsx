@@ -25,6 +25,7 @@ export interface RichTextEditorRef {
   getMarkdown: () => string;
   clear: () => void;
   focus: () => void;
+  setContent: (content: string) => void;
 }
 
 interface RichTextEditorProps {
@@ -32,6 +33,139 @@ interface RichTextEditorProps {
   onSubmit?: () => void;
   onChange?: (markdown: string) => void;
   initialContent?: string;
+}
+
+// Convert Markdown to HTML for TipTap consumption
+function markdownToHtml(md: string): string {
+  // Process the markdown line by line, building HTML
+  const lines = md.split("\n");
+  let html = "";
+  let inCodeBlock = false;
+  let inList: "ul" | "ol" | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Code blocks (```)
+    if (line.trimStart().startsWith("```")) {
+      if (inCodeBlock) {
+        html += "</code></pre>";
+        inCodeBlock = false;
+      } else {
+        if (inList) {
+          html += inList === "ul" ? "</ul>" : "</ol>";
+          inList = null;
+        }
+        inCodeBlock = true;
+        html += "<pre><code>";
+      }
+      continue;
+    }
+    if (inCodeBlock) {
+      html += escapeHtml(line) + "\n";
+      continue;
+    }
+
+    // Empty line: close list if open, skip
+    if (line.trim() === "") {
+      if (inList) {
+        html += inList === "ul" ? "</ul>" : "</ol>";
+        inList = null;
+      }
+      continue;
+    }
+
+    // Apply inline formatting to a string
+    const inline = (text: string): string => {
+      let result = escapeHtml(text);
+      // Bold: **text** or __text__
+      result = result.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      result = result.replace(/__(.+?)__/g, "<strong>$1</strong>");
+      // Italic: *text* or _text_ (but not inside strong markers)
+      result = result.replace(/\*(.+?)\*/g, "<em>$1</em>");
+      result = result.replace(/(?<!\w)_(.+?)_(?!\w)/g, "<em>$1</em>");
+      // Strikethrough: ~~text~~
+      result = result.replace(/~~(.+?)~~/g, "<s>$1</s>");
+      // Inline code: `text`
+      result = result.replace(/`([^`]+)`/g, "<code>$1</code>");
+      return result;
+    };
+
+    // Headings
+    const h3Match = line.match(/^###\s+(.+)/);
+    if (h3Match) {
+      if (inList) {
+        html += inList === "ul" ? "</ul>" : "</ol>";
+        inList = null;
+      }
+      html += `<h3>${inline(h3Match[1])}</h3>`;
+      continue;
+    }
+    const h2Match = line.match(/^##\s+(.+)/);
+    if (h2Match) {
+      if (inList) {
+        html += inList === "ul" ? "</ul>" : "</ol>";
+        inList = null;
+      }
+      html += `<h2>${inline(h2Match[1])}</h2>`;
+      continue;
+    }
+
+    // Blockquote
+    const bqMatch = line.match(/^>\s?(.*)/);
+    if (bqMatch) {
+      if (inList) {
+        html += inList === "ul" ? "</ul>" : "</ol>";
+        inList = null;
+      }
+      html += `<blockquote><p>${inline(bqMatch[1])}</p></blockquote>`;
+      continue;
+    }
+
+    // Unordered list item
+    const ulMatch = line.match(/^[\-\*]\s+(.+)/);
+    if (ulMatch) {
+      if (inList !== "ul") {
+        if (inList) html += "</ol>";
+        html += "<ul>";
+        inList = "ul";
+      }
+      html += `<li>${inline(ulMatch[1])}</li>`;
+      continue;
+    }
+
+    // Ordered list item
+    const olMatch = line.match(/^\d+\.\s+(.+)/);
+    if (olMatch) {
+      if (inList !== "ol") {
+        if (inList) html += "</ul>";
+        html += "<ol>";
+        inList = "ol";
+      }
+      html += `<li>${inline(olMatch[1])}</li>`;
+      continue;
+    }
+
+    // Regular paragraph
+    if (inList) {
+      html += inList === "ul" ? "</ul>" : "</ol>";
+      inList = null;
+    }
+    html += `<p>${inline(line)}</p>`;
+  }
+
+  // Close any open tags
+  if (inCodeBlock) html += "</code></pre>";
+  if (inList) html += inList === "ul" ? "</ul>" : "</ol>";
+
+  return html;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 // Convert TipTap HTML to Markdown
@@ -149,6 +283,10 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
       },
       focus: () => {
         editor?.commands.focus();
+      },
+      setContent: (content: string) => {
+        const html = markdownToHtml(content);
+        editor?.commands.setContent(html);
       },
     }));
 
