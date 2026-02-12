@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   Send,
   Image as ImageIcon,
@@ -47,6 +47,8 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const SELECTED_MODEL_STORAGE_KEY = "selectedModel";
+
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -74,71 +76,74 @@ export default function Chat() {
   } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const models = [
-    // Gemini
-    {
-      id: "gemini-3-pro-preview",
-      name: "Gemini 3 Pro",
-      description: "Most intelligent Gemini model",
-      provider: "gemini",
-    },
-    {
-      id: "gemini-3-flash-preview",
-      name: "Gemini 3 Flash",
-      description: "Fast and versatile",
-      provider: "gemini",
-    },
-    {
-      id: "gemini-2.0-flash",
-      name: "Gemini 2.0 Flash",
-      description: "Fastest Gemini model",
-      provider: "gemini",
-    },
-    // OpenAI
-    {
-      id: "gpt-5.2-codex",
-      name: "GPT-5.2 Codex",
-      description: "Best coding model, agentic tasks",
-      provider: "openai",
-    },
-    {
-      id: "gpt-5.2",
-      name: "GPT-5.2",
-      description: "Best for coding and agentic tasks",
-      provider: "openai",
-    },
-    {
-      id: "gpt-5-mini",
-      name: "GPT-5 mini",
-      description: "Faster, cost-efficient",
-      provider: "openai",
-    },
-    {
-      id: "gpt-5-nano",
-      name: "GPT-5 nano",
-      description: "Fastest, most cost-efficient",
-      provider: "openai",
-    },
-    // Anthropic
-    {
-      id: "claude-opus-4-6",
-      name: "Claude Opus 4.6",
-      description: "Most intelligent Claude model",
-      provider: "anthropic",
-    },
-    {
-      id: "claude-sonnet-4-5",
-      name: "Claude Sonnet 4.5",
-      description: "Speed and intelligence balance",
-      provider: "anthropic",
-    },
-    {
-      id: "claude-haiku-4-5",
-      name: "Claude Haiku 4.5",
-      description: "Fastest Claude model",
-      provider: "anthropic",
-    },
-  ];
+  const models = useMemo(
+    () => [
+      // Gemini
+      {
+        id: "gemini-3-pro-preview",
+        name: "Gemini 3 Pro",
+        description: "Most intelligent Gemini model",
+        provider: "gemini",
+      },
+      {
+        id: "gemini-3-flash-preview",
+        name: "Gemini 3 Flash",
+        description: "Fast and versatile",
+        provider: "gemini",
+      },
+      {
+        id: "gemini-2.0-flash",
+        name: "Gemini 2.0 Flash",
+        description: "Fastest Gemini model",
+        provider: "gemini",
+      },
+      // OpenAI
+      {
+        id: "gpt-5.2-codex",
+        name: "GPT-5.2 Codex",
+        description: "Best coding model, agentic tasks",
+        provider: "openai",
+      },
+      {
+        id: "gpt-5.2",
+        name: "GPT-5.2",
+        description: "Best for coding and agentic tasks",
+        provider: "openai",
+      },
+      {
+        id: "gpt-5-mini",
+        name: "GPT-5 mini",
+        description: "Faster, cost-efficient",
+        provider: "openai",
+      },
+      {
+        id: "gpt-5-nano",
+        name: "GPT-5 nano",
+        description: "Fastest, most cost-efficient",
+        provider: "openai",
+      },
+      // Anthropic
+      {
+        id: "claude-opus-4-6",
+        name: "Claude Opus 4.6",
+        description: "Most intelligent Claude model",
+        provider: "anthropic",
+      },
+      {
+        id: "claude-sonnet-4-5",
+        name: "Claude Sonnet 4.5",
+        description: "Speed and intelligence balance",
+        provider: "anthropic",
+      },
+      {
+        id: "claude-haiku-4-5",
+        name: "Claude Haiku 4.5",
+        description: "Fastest Claude model",
+        provider: "anthropic",
+      },
+    ],
+    [],
+  );
 
   const providerLabels: Record<string, string> = {
     gemini: "Gemini",
@@ -154,6 +159,31 @@ export default function Chat() {
     },
     {} as Record<string, typeof models>,
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      const storedModel = window.localStorage.getItem(
+        SELECTED_MODEL_STORAGE_KEY,
+      );
+      if (storedModel && models.some((model) => model.id === storedModel)) {
+        setSelectedModel(storedModel);
+      }
+    } catch (error) {
+      console.warn("Failed to read selected model from localStorage:", error);
+    }
+  }, [models]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      window.localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, selectedModel);
+    } catch (error) {
+      console.warn("Failed to save selected model to localStorage:", error);
+    }
+  }, [selectedModel]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
