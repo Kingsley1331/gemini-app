@@ -11,6 +11,7 @@ import {
   Check,
   Bug,
   Download,
+  Smartphone,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -247,6 +248,22 @@ export default function CodePreview({
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  }, [code, language]);
+
+  const handleInstallPWA = useCallback(() => {
+    const name =
+      window.prompt("Enter a name for your app:", "My App") || "My App";
+
+    // Generate a unique ID so each preview becomes its own installable PWA
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+    // Store the code and metadata under the unique ID
+    localStorage.setItem(`pwa-preview-${id}-code`, code);
+    localStorage.setItem(`pwa-preview-${id}-language`, language);
+    localStorage.setItem(`pwa-preview-${id}-name`, name);
+
+    // Open the standalone preview page in a new tab with the unique ID
+    window.open(`/preview/${id}`, "_blank");
   }, [code, language]);
 
   const updateIframe = useCallback(() => {
@@ -604,6 +621,13 @@ export default function CodePreview({
             title="Download as ZIP"
           >
             <Download className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleInstallPWA}
+            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+            title="Install as App"
+          >
+            <Smartphone className="w-4 h-4" />
           </button>
           <button
             onClick={handleRefresh}
