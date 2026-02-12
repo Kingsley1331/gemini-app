@@ -2,9 +2,10 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Wand2, X, Send, Loader2, User, Copy, Check } from "lucide-react";
+import { Wand2, X, Send, Loader2, User, Copy, Check, Type, FileText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 
 interface PromptAssistantMessage {
   id: string;
@@ -50,6 +51,32 @@ function extractDraft(messages: PromptAssistantMessage[]): string | null {
   return null;
 }
 
+// Find the ID of the message containing the latest draft
+function findLatestDraftMessageId(messages: PromptAssistantMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "assistant" && /=== DRAFT START ===/.test(msg.content)) {
+      return msg.id;
+    }
+  }
+  return null;
+}
+
+// Build a map of message ID -> draft version number (1-indexed)
+function buildDraftVersionMap(messages: PromptAssistantMessage[]): Map<string, number> {
+  const map = new Map<string, number>();
+  let version = 1;
+  for (const msg of messages) {
+    if (msg.role === "assistant" && /=== DRAFT START ===/.test(msg.content)) {
+      map.set(msg.id, version);
+      version++;
+    }
+  }
+  return map;
+}
+
+const DRAFT_REGEX = /=== DRAFT START ===\s*([\s\S]*?)\s*=== DRAFT END ===/g;
+
 export default function PromptAssistant({
   isOpen,
   onClose,
@@ -60,8 +87,12 @@ export default function PromptAssistant({
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [copiedDraft, setCopiedDraft] = useState(false);
+  const [copiedPreviousDraft, setCopiedPreviousDraft] = useState<string | null>(null);
+  const [isRichText, setIsRichText] = useState(false);
+  const [richTextContent, setRichTextContent] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const richTextRef = useRef<RichTextEditorRef>(null);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -77,10 +108,18 @@ export default function PromptAssistant({
       setInput("");
       setIsLoading(false);
       setCopiedDraft(false);
+      setRichTextContent("");
+      richTextRef.current?.clear();
       // Focus input after animation
-      setTimeout(() => inputRef.current?.focus(), 300);
+      setTimeout(() => {
+        if (isRichText) {
+          richTextRef.current?.focus();
+        } else {
+          inputRef.current?.focus();
+        }
+      }, 300);
     }
-  }, [isOpen]);
+  }, [isOpen, isRichText]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -88,9 +127,13 @@ export default function PromptAssistant({
   }, [messages]);
 
   const currentDraft = extractDraft(messages);
+  const latestDraftMessageId = findLatestDraftMessageId(messages);
+  const draftVersionMap = buildDraftVersionMap(messages);
 
   const handleSend = useCallback(async () => {
-    const trimmed = input.trim();
+    const richContent = isRichText ? richTextRef.current?.getMarkdown() || "" : "";
+    const messageInput = isRichText ? richContent : input;
+    const trimmed = messageInput.trim();
     if (!trimmed || isLoading) return;
 
     const userMessage: PromptAssistantMessage = {
@@ -102,6 +145,10 @@ export default function PromptAssistant({
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
     setInput("");
+    if (isRichText) {
+      richTextRef.current?.clear();
+      setRichTextContent("");
+    }
     setIsLoading(true);
 
     try {
@@ -168,7 +215,7 @@ export default function PromptAssistant({
     } finally {
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, selectedModel]);
+  }, [input, isLoading, messages, selectedModel, isRichText]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -275,12 +322,81 @@ export default function PromptAssistant({
                   >
                     {m.role === "assistant" ? (
                       <div className="prose prose-sm dark:prose-invert max-w-none [&>p:first-child]:mt-0 [&>p:last-child]:mb-0">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {m.content.replace(
-                            /=== DRAFT START ===[\s\S]*?=== DRAFT END ===/g,
-                            ""
-                          ).trim()}
-                        </ReactMarkdown>
+                        {m.id === latestDraftMessageId ? (
+                          // Latest draft message: strip the draft (shown in Current Draft panel)
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {m.content.replace(
+                              /=== DRAFT START ===[\s\S]*?=== DRAFT END ===/g,
+                              ""
+                            ).trim()}
+                          </ReactMarkdown>
+                        ) : draftVersionMap.has(m.id) ? (
+                          // Older message with a draft: show draft inline
+                          (() => {
+                            const parts = m.content.split(/=== DRAFT START ===[\s\S]*?=== DRAFT END ===/);
+                            const drafts: string[] = [];
+                            let match: RegExpExecArray | null;
+                            const re = new RegExp(DRAFT_REGEX.source, "g");
+                            while ((match = re.exec(m.content)) !== null) {
+                              drafts.push(match[1].trim());
+                            }
+                            const version = draftVersionMap.get(m.id);
+                            return (
+                              <>
+                                {parts.map((part, idx) => (
+                                  <span key={idx}>
+                                    {part.trim() && (
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                        {part.trim()}
+                                      </ReactMarkdown>
+                                    )}
+                                    {idx < drafts.length && (() => {
+                                      const draftKey = `${m.id}-${idx}`;
+                                      const isCopied = copiedPreviousDraft === draftKey;
+                                      return (
+                                        <div className="my-2 p-2.5 bg-zinc-200/60 dark:bg-zinc-700/50 border border-zinc-300 dark:border-zinc-600 rounded-lg">
+                                          <div className="flex items-center justify-between mb-1.5">
+                                            <div className="flex items-center gap-1.5">
+                                              <FileText className="w-3 h-3 text-zinc-500 dark:text-zinc-400" />
+                                              <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">
+                                                Draft v{version}
+                                              </span>
+                                            </div>
+                                            <button
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(drafts[idx]);
+                                                setCopiedPreviousDraft(draftKey);
+                                                setTimeout(() => setCopiedPreviousDraft(null), 2000);
+                                              }}
+                                              className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded transition-colors"
+                                              title="Copy draft"
+                                            >
+                                              {isCopied ? (
+                                                <Check className="w-3 h-3" />
+                                              ) : (
+                                                <Copy className="w-3 h-3" />
+                                              )}
+                                            </button>
+                                          </div>
+                                          <div className="text-xs text-zinc-600 dark:text-zinc-300 leading-relaxed [&>p:first-child]:mt-0 [&>p:last-child]:mb-0 select-text">
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                              {drafts[idx]}
+                                            </ReactMarkdown>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+                                  </span>
+                                ))}
+                              </>
+                            );
+                          })()
+                        ) : (
+                          // Regular assistant message (no draft)
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {m.content}
+                          </ReactMarkdown>
+                        )}
                       </div>
                     ) : (
                       <p className="whitespace-pre-wrap">{m.content}</p>
@@ -338,8 +454,8 @@ export default function PromptAssistant({
 
             {/* Current Draft Section */}
             {currentDraft && (
-              <div className="mx-4 mb-3 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl">
-                <div className="flex items-center justify-between mb-2">
+              <div className="mx-4 mb-3 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl shrink-0 max-h-[30vh] flex flex-col">
+                <div className="flex items-center justify-between mb-2 shrink-0">
                   <span className="text-xs font-semibold text-purple-700 dark:text-purple-300 uppercase tracking-wide">
                     Current Draft
                   </span>
@@ -355,7 +471,7 @@ export default function PromptAssistant({
                     )}
                   </button>
                 </div>
-                <div className="prose prose-sm dark:prose-invert max-w-none text-zinc-800 dark:text-zinc-200 leading-relaxed [&>p:first-child]:mt-0 [&>p:last-child]:mb-0">
+                <div className="overflow-y-auto prose prose-sm dark:prose-invert max-w-none text-zinc-800 dark:text-zinc-200 leading-relaxed [&>p:first-child]:mt-0 [&>p:last-child]:mb-0">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {currentDraft}
                   </ReactMarkdown>
@@ -364,21 +480,60 @@ export default function PromptAssistant({
             )}
 
             {/* Input Area */}
-            <div className="px-4 pb-4 pt-2 border-t border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
+            <div className="shrink-0 px-4 pb-4 pt-2 border-t border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
               <div className="flex items-center gap-2">
-                <input
-                  ref={inputRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Describe your idea or answer questions..."
-                  disabled={isLoading}
-                  className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none shadow-sm transition-all disabled:opacity-50"
-                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRichText((prev) => {
+                      if (prev) {
+                        // Switching from rich to plain: pull content as markdown
+                        const md = richTextRef.current?.getMarkdown() || "";
+                        setInput(md);
+                      } else {
+                        // Switching from plain to rich: pass content to editor after mount
+                        setTimeout(() => {
+                          if (input.trim()) {
+                            richTextRef.current?.setContent(input);
+                            setRichTextContent(input);
+                          }
+                        }, 100);
+                      }
+                      return !prev;
+                    });
+                  }}
+                  className={`p-2.5 rounded-xl transition-all shrink-0 ${
+                    isRichText
+                      ? "text-purple-600 bg-purple-50 dark:bg-purple-900/20"
+                      : "text-zinc-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                  }`}
+                  title={isRichText ? "Switch to plain text" : "Switch to rich text editor"}
+                >
+                  <Type className="w-5 h-5" />
+                </button>
+                {isRichText ? (
+                  <RichTextEditor
+                    ref={richTextRef}
+                    placeholder="Describe your idea or answer questions..."
+                    onSubmit={() => handleSend()}
+                    onChange={(md) => setRichTextContent(md)}
+                    initialContent={input}
+                  />
+                ) : (
+                  <input
+                    ref={inputRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Describe your idea or answer questions..."
+                    disabled={isLoading}
+                    className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none shadow-sm transition-all disabled:opacity-50"
+                  />
+                )}
                 <button
                   onClick={handleSend}
-                  disabled={!input.trim() || isLoading}
-                  className="p-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 disabled:opacity-50 disabled:hover:bg-purple-600 shadow-lg shadow-purple-500/20 transition-all"
+                  disabled={!(isRichText ? richTextContent.trim() : input.trim()) || isLoading}
+                  className="p-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 disabled:opacity-50 disabled:hover:bg-purple-600 shadow-lg shadow-purple-500/20 transition-all shrink-0"
                   title="Send"
                 >
                   {isLoading ? (
