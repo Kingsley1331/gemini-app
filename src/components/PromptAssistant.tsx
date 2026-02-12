@@ -355,9 +355,11 @@ export default function PromptAssistant({
                     )}
                   </button>
                 </div>
-                <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap leading-relaxed">
-                  {currentDraft}
-                </p>
+                <div className="prose prose-sm dark:prose-invert max-w-none text-zinc-800 dark:text-zinc-200 leading-relaxed [&>p:first-child]:mt-0 [&>p:last-child]:mb-0">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {currentDraft}
+                  </ReactMarkdown>
+                </div>
               </div>
             )}
 
