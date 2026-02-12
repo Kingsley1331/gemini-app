@@ -270,14 +270,22 @@ export default function CodePreview({
   const updateIframe = useCallback(() => {
     if (!iframeRef.current) return;
 
+    // Detect if "html"-tagged code is actually React/JSX
+    const isReactCode =
+      /import\s.*from\s/.test(code) ||
+      /export\s+default\s+function/.test(code) ||
+      /useState|useEffect|useRef|useCallback/.test(code);
+
+    const effectiveLanguage = language === "html" && isReactCode ? "tsx" : language;
+
     let content = "";
-    if (language === "html") {
+    if (effectiveLanguage === "html") {
       content = code;
     } else if (
-      language === "jsx" ||
-      language === "tsx" ||
-      language === "javascript" ||
-      language === "typescript"
+      effectiveLanguage === "jsx" ||
+      effectiveLanguage === "tsx" ||
+      effectiveLanguage === "javascript" ||
+      effectiveLanguage === "typescript"
     ) {
       // Clean up the code: convert lucide imports to const declarations,
       // strip all other imports, and handle exports
