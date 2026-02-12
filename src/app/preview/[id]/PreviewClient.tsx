@@ -5,6 +5,15 @@ import { useParams } from "next/navigation";
 
 const SW_CACHE_NAME = "preview-pwa-v1";
 
+// CDN scripts used by the preview — must be cached for offline support
+const CDN_URLS = [
+  "https://unpkg.com/@babel/standalone/babel.min.js",
+  "https://unpkg.com/react@18/umd/react.production.min.js",
+  "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
+  "https://unpkg.com/lucide@latest",
+  "https://cdn.tailwindcss.com",
+];
+
 interface PreviewData {
   code: string;
   language: string;
@@ -162,7 +171,7 @@ async function cacheForOffline(
   try {
     const cache = await caches.open(SW_CACHE_NAME);
 
-    // Cache the standalone HTML at the preview URL
+    // 1) Cache the standalone HTML at the preview URL
     await cache.put(
       new Request(`/preview/${id}`),
       new Response(standaloneHTML, {
@@ -170,7 +179,7 @@ async function cacheForOffline(
       })
     );
 
-    // Fetch and cache the manifest so it's available offline too
+    // 2) Fetch and cache the manifest so it's available offline too
     const manifestUrl = `/preview/${id}/manifest.json?name=${encodeURIComponent(name)}`;
     try {
       const manifestResp = await fetch(manifestUrl);
@@ -180,6 +189,36 @@ async function cacheForOffline(
     } catch {
       // manifest caching is best-effort
     }
+
+    // 3) Cache all CDN scripts for offline use.
+    //    Some CDNs (e.g. cdn.tailwindcss.com) don't set CORS headers,
+    //    so we use no-cors mode which returns an opaque response — the
+    //    browser can still execute these when served by the service worker.
+    await Promise.allSettled(
+      CDN_URLS.map(async (url) => {
+        const existing = await cache.match(url);
+        if (existing) return; // already cached
+
+        try {
+          // Try CORS first (gives a readable response)
+          const resp = await fetch(url, { mode: "cors" });
+          if (resp.ok) {
+            await cache.put(new Request(url), resp);
+            return;
+          }
+        } catch {
+          // CORS failed — fall through to no-cors
+        }
+
+        try {
+          // Fallback: opaque response (works for script execution)
+          const resp = await fetch(url, { mode: "no-cors" });
+          await cache.put(new Request(url), resp);
+        } catch {
+          // best-effort
+        }
+      })
+    );
   } catch {
     // caching is best-effort; the app still works online without it
   }
