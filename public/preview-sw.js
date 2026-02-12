@@ -1,19 +1,11 @@
-// Service Worker for Preview PWA
+// Service Worker for Preview PWA — enables fully offline operation
 const CACHE_NAME = "preview-pwa-v1";
 
-// CDN assets to pre-cache for offline support
-const PRECACHE_URLS = [
-  "/preview",
-  "/icons/icon-192.png",
-  "/icons/icon-512.png",
-  "https://unpkg.com/@babel/standalone/babel.min.js",
-  "https://unpkg.com/react@18/umd/react.production.min.js",
-  "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
-  "https://unpkg.com/lucide@latest",
-  "https://cdn.tailwindcss.com",
-];
+// Only pre-cache local assets (CDN scripts are cached on-demand when
+// loaded via <script> tags, which don't have CORS restrictions)
+const PRECACHE_URLS = ["/icons/icon-192.png", "/icons/icon-512.png"];
 
-// Install — pre-cache key assets
+// Install — pre-cache local assets
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
@@ -23,7 +15,7 @@ self.addEventListener("install", (event) => {
   );
 });
 
-// Activate — clean up old caches
+// Activate — clean up old caches and take control immediately
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
@@ -39,39 +31,70 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Fetch — cache-first strategy for cached assets, network-first for everything else
+// Fetch handler
+// - Navigation to /preview/*: cache-first (serves the standalone HTML that
+//   the page wrote into the cache on first load — works without the server)
+// - Everything else: network-first with cache fallback (caches CDN scripts
+//   on first successful load so they're available offline later)
 self.addEventListener("fetch", (event) => {
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) {
-        return cached;
-      }
+  const url = new URL(event.request.url);
 
-      return fetch(event.request)
-        .then((response) => {
-          // Cache successful GET responses
-          if (
-            response &&
-            response.status === 200 &&
-            event.request.method === "GET"
-          ) {
-            const responseClone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseClone);
-            });
-          }
-          return response;
+  // Navigation requests to /preview/* — serve cached standalone HTML
+  if (
+    event.request.mode === "navigate" &&
+    url.pathname.startsWith("/preview/")
+  ) {
+    event.respondWith(
+      caches
+        .match(event.request)
+        .then((cached) => {
+          if (cached) return cached;
+          return fetch(event.request).then((response) => {
+            if (response && response.status === 200) {
+              const clone = response.clone();
+              caches
+                .open(CACHE_NAME)
+                .then((cache) => cache.put(event.request, clone));
+            }
+            return response;
+          });
         })
         .catch(() => {
-          // Offline fallback for navigation requests
-          if (event.request.mode === "navigate") {
-            return caches.match("/preview");
-          }
+          return new Response(
+            "<html><body style='display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;color:#71717a'>" +
+              "<div style='text-align:center'><h1 style='color:#18181b'>Offline</h1><p>This preview is not available offline yet.</p></div>" +
+              "</body></html>",
+            { headers: { "Content-Type": "text/html" } }
+          );
+        })
+    );
+    return;
+  }
+
+  // All other requests — network-first, cache on success, serve cache on failure
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        if (
+          response &&
+          response.status === 200 &&
+          event.request.method === "GET"
+        ) {
+          const clone = response.clone();
+          caches
+            .open(CACHE_NAME)
+            .then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      })
+      .catch(() => {
+        return caches.match(event.request).then((cached) => {
+          if (cached) return cached;
           return new Response("Offline", {
             status: 503,
             statusText: "Service Unavailable",
           });
         });
-    })
+      })
   );
 });
