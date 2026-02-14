@@ -24,6 +24,123 @@ interface CodePreviewProps {
   onDebug?: (error: string, code: string, language: string) => void;
 }
 
+const EXTERNAL_IMPORT_BLOCKLIST = new Set([
+  "fs",
+  "path",
+  "os",
+  "net",
+  "tls",
+  "http",
+  "https",
+  "zlib",
+  "stream",
+  "child_process",
+  "worker_threads",
+  "node:fs",
+  "node:path",
+  "node:os",
+  "node:net",
+  "node:tls",
+  "node:http",
+  "node:https",
+  "node:zlib",
+  "node:stream",
+  "node:child_process",
+  "node:worker_threads",
+]);
+
+function buildExternalImportPreamble(sourceCode: string): string {
+  const importFromRegex = /(^|\n)\s*import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]\s*;?/g;
+  const sideEffectRegex = /(^|\n)\s*import\s+['"]([^'"]+)['"]\s*;?/g;
+  const lines: string[] = [];
+  let moduleCount = 0;
+
+  const shouldResolveDynamically = (specifier: string): boolean => {
+    if (
+      specifier.startsWith(".") ||
+      specifier.startsWith("/") ||
+      specifier.startsWith("next/")
+    ) {
+      return false;
+    }
+    if (
+      specifier === "react" ||
+      specifier === "react-dom" ||
+      specifier === "lucide-react"
+    ) {
+      return false;
+    }
+    const bareName = specifier.startsWith("@")
+      ? specifier.split("/").slice(0, 2).join("/")
+      : specifier.split("/")[0];
+    return !EXTERNAL_IMPORT_BLOCKLIST.has(bareName);
+  };
+
+  const mapNamedImports = (namedBlock: string): string =>
+    namedBlock
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .filter((part) => !part.startsWith("type "))
+      .map((part) => {
+        const segments = part.split(/\s+as\s+/);
+        const left = segments[0]?.trim();
+        const right = segments[1]?.trim();
+        return right ? `${left}: ${right}` : left;
+      })
+      .filter(Boolean)
+      .join(", ");
+
+  let match: RegExpExecArray | null;
+  while ((match = importFromRegex.exec(sourceCode)) !== null) {
+    const rawClause = match[2]?.trim() || "";
+    const specifier = match[3]?.trim() || "";
+    if (!rawClause || rawClause.startsWith("type ") || !specifier) continue;
+    if (!shouldResolveDynamically(specifier)) continue;
+
+    const modVar = `__extMod${moduleCount++}`;
+    lines.push(`const ${modVar} = await __importFrom("${specifier}");`);
+
+    const defaultAndNamed = rawClause.match(
+      /^([A-Za-z_$][\w$]*)\s*,\s*\{([\s\S]*)\}$/,
+    );
+    const namespaceImport = rawClause.match(/^\*\s+as\s+([A-Za-z_$][\w$]*)$/);
+    const namedOnlyImport = rawClause.match(/^\{([\s\S]*)\}$/);
+    const defaultOnlyImport = rawClause.match(/^([A-Za-z_$][\w$]*)$/);
+
+    if (defaultAndNamed) {
+      const defaultLocal = defaultAndNamed[1];
+      const mappedNamed = mapNamedImports(defaultAndNamed[2]);
+      lines.push(`const ${defaultLocal} = ${modVar}.default ?? ${modVar};`);
+      if (mappedNamed) lines.push(`const { ${mappedNamed} } = ${modVar};`);
+      continue;
+    }
+
+    if (namespaceImport) {
+      lines.push(`const ${namespaceImport[1]} = ${modVar};`);
+      continue;
+    }
+
+    if (namedOnlyImport) {
+      const mappedNamed = mapNamedImports(namedOnlyImport[1]);
+      if (mappedNamed) lines.push(`const { ${mappedNamed} } = ${modVar};`);
+      continue;
+    }
+
+    if (defaultOnlyImport) {
+      lines.push(`const ${defaultOnlyImport[1]} = ${modVar}.default ?? ${modVar};`);
+    }
+  }
+
+  while ((match = sideEffectRegex.exec(sourceCode)) !== null) {
+    const specifier = match[2]?.trim() || "";
+    if (!specifier || !shouldResolveDynamically(specifier)) continue;
+    lines.push(`await __importFrom("${specifier}");`);
+  }
+
+  return lines.join("\n");
+}
+
 export default function CodePreview({
   code,
   language,
@@ -126,6 +243,7 @@ export default function CodePreview({
         (dlDefaultExportName && dlDefaultExportName !== "App"
           ? `\nconst App = ${dlDefaultExportName};\n`
           : "");
+      const externalImportPreamble = buildExternalImportPreamble(code);
 
       const iconSection =
         lucideIconDecls.length > 0
@@ -206,17 +324,40 @@ export default function CodePreview({
         "        return LucideIcon;",
         "      }",
         "",
+        "      const __externalImportCache = {};",
+        "      async function __importFrom(specifier) {",
+        "        if (__externalImportCache[specifier]) return __externalImportCache[specifier];",
+        "        const isRemote = /^https?:\\/\\//.test(specifier);",
+        "        const isRelative = specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('next/');",
+        "        if (!isRemote && isRelative) throw new Error('Unsupported import in preview: ' + specifier);",
+        "        const url = isRemote ? specifier : ('https://esm.sh/' + specifier + '?bundle');",
+        "        const mod = await import(url);",
+        "        __externalImportCache[specifier] = mod;",
+        "        return mod;",
+        "      }",
+        "",
         iconSection,
         "",
-        "      // APP CODE",
+        "      (async () => {",
+        "        try {",
+        externalImportPreamble,
+        "",
+        "          // APP CODE",
         processedCode,
         "",
-        "      // Render",
-        "      const container = document.getElementById('root');",
-        "      const root = ReactDOM.createRoot(container);",
-        "      if (typeof App !== 'undefined') {",
-        "        root.render(React.createElement(React.StrictMode, null, React.createElement(App)));",
-        "      }",
+        "          // Render",
+        "          const container = document.getElementById('root');",
+        "          const root = ReactDOM.createRoot(container);",
+        "          if (typeof App !== 'undefined') {",
+        "            root.render(React.createElement(React.StrictMode, null, React.createElement(App)));",
+        "          }",
+        "        } catch (err) {",
+        "          const container = document.getElementById('root');",
+        "          if (container) {",
+        "            container.innerHTML = '<div style=\"color:#ef4444;background:#fee2e2;padding:1rem;border:1px solid #fecaca;border-radius:.5rem;margin:1rem;font-family:monospace;\"><b>Runtime Error:</b><pre style=\"white-space:pre-wrap;\">' + (err && (err.stack || err.toString()) ? (err.stack || err.toString()) : String(err)) + '</pre></div>';",
+        "          }",
+        "        }",
+        "      })();",
         "    </script>",
         "  </body>",
         "</html>",
@@ -396,6 +537,7 @@ export default function CodePreview({
       };
 
       const finalCode = escapeLatex(cleanedCode);
+      const externalImportPreamble = buildExternalImportPreamble(code);
 
       // Basic React/JS runner template
       content = `
@@ -484,6 +626,20 @@ export default function CodePreview({
                 return LucideIcon;
               }
 
+              const __externalImportCache = {};
+              async function __importFrom(specifier) {
+                if (__externalImportCache[specifier]) return __externalImportCache[specifier];
+                const isRemote = /^https?:\\/\\//.test(specifier);
+                const isRelative = specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('next/');
+                if (!isRemote && isRelative) {
+                  throw new Error('Unsupported import in preview: ' + specifier);
+                }
+                const url = isRemote ? specifier : ('https://esm.sh/' + specifier + '?bundle');
+                const mod = await import(url);
+                __externalImportCache[specifier] = mod;
+                return mod;
+              }
+
               // Pre-create ALL lucide icons as global variables so they're
               // always available regardless of import patterns.
               // IMPORTANT: Skip names that collide with JS built-ins (Map, Set, Text, etc.)
@@ -523,42 +679,45 @@ export default function CodePreview({
                 reportError(event.reason);
               };
 
-              try {
-                ${finalCode}
-                
-                // Final render logic
-                const container = document.getElementById('root');
-                const root = ReactDOM.createRoot(container);
-                
-                if (typeof App !== 'undefined') {
-                  root.render(
-                    React.createElement(React.StrictMode, null, React.createElement(App))
-                  );
-                } else if (typeof main !== 'undefined') {
-                  main();
-                } else {
-                  const noAppMsg = "No 'App' component found. Please define 'export default function App()'.";
-                  console.error(noAppMsg);
-                  window.parent.postMessage({ type: 'preview-error', message: noAppMsg }, '*');
-                  container.innerHTML = '<div style="padding: 20px; color: #ef4444;">Error: No <b>App</b> component found. Please define <code>export default function App()</code>.</div>';
-                }
-                
-                // Initialize lucide icons if any
-                setTimeout(() => {
-                  if (window.lucide) {
-                    window.lucide.createIcons();
+              (async () => {
+                try {
+                  ${externalImportPreamble}
+                  ${finalCode}
+                  
+                  // Final render logic
+                  const container = document.getElementById('root');
+                  const root = ReactDOM.createRoot(container);
+                  
+                  if (typeof App !== 'undefined') {
+                    root.render(
+                      React.createElement(React.StrictMode, null, React.createElement(App))
+                    );
+                  } else if (typeof main !== 'undefined') {
+                    main();
+                  } else {
+                    const noAppMsg = "No 'App' component found. Please define 'export default function App()'.";
+                    console.error(noAppMsg);
+                    window.parent.postMessage({ type: 'preview-error', message: noAppMsg }, '*');
+                    container.innerHTML = '<div style="padding: 20px; color: #ef4444;">Error: No <b>App</b> component found. Please define <code>export default function App()</code>.</div>';
                   }
-                }, 100);
-              } catch (err) {
-                console.error("Preview Error:", err);
-                reportError(err);
-                document.getElementById('root').innerHTML = \`
-                  <div style="color: #ef4444; background: #fee2e2; padding: 1.5rem; border: 1px solid #fecaca; border-radius: 0.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; margin: 1rem;">
-                    <h3 style="margin-top: 0; color: #991b1b; font-size: 1.125rem;">Runtime Error</h3>
-                    <pre style="white-space: pre-wrap; margin: 0; font-size: 0.875rem; line-height: 1.5;">\${err.stack || err.toString()}</pre>
-                  </div>
-                \`;
-              }
+                  
+                  // Initialize lucide icons if any
+                  setTimeout(() => {
+                    if (window.lucide) {
+                      window.lucide.createIcons();
+                    }
+                  }, 100);
+                } catch (err) {
+                  console.error("Preview Error:", err);
+                  reportError(err);
+                  document.getElementById('root').innerHTML = \`
+                    <div style="color: #ef4444; background: #fee2e2; padding: 1.5rem; border: 1px solid #fecaca; border-radius: 0.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; margin: 1rem;">
+                      <h3 style="margin-top: 0; color: #991b1b; font-size: 1.125rem;">Runtime Error</h3>
+                      <pre style="white-space: pre-wrap; margin: 0; font-size: 0.875rem; line-height: 1.5;">\${err.stack || err.toString()}</pre>
+                    </div>
+                  \`;
+                }
+              })();
             </script>
           </body>
         </html>

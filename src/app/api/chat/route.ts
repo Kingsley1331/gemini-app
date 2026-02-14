@@ -40,7 +40,11 @@ Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS insid
    - Lucide icons as React components (e.g. <Heart className="w-5 h-5" />, <Search size={20} />)
    - Babel with TypeScript support
 
-2. IMPORTS: Write import statements normally (e.g. import { useState } from 'react'; import { Heart } from 'lucide-react';). They will be automatically stripped and the globals will be used. Do NOT import from any other packages — they are not available.
+2. IMPORTS:
+   - You may write normal imports for React and Lucide (e.g. import { useState } from 'react'; import { Heart } from 'lucide-react';). They are mapped to globals.
+   - You may also import browser-compatible npm packages with bare specifiers (e.g. import Matter from 'matter-js'; import { format } from 'date-fns';). The preview runtime resolves them from an ESM CDN at runtime.
+   - Use exact package names and versions when possible (e.g. import confetti from 'canvas-confetti@1.9.3').
+   - Do NOT use Node-only packages (fs, path, net, child_process, etc.) or Next.js-only imports.
 
 3. COMPONENT STRUCTURE: Always export a single default function component named App:
    export default function App() { ... }
@@ -48,7 +52,7 @@ Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS insid
 4. ICONS: Use Lucide icon names in PascalCase as React components. They accept props: size, color, strokeWidth, className, and any SVG prop. Common icons: Heart, Star, Search, Menu, X, ChevronDown, ChevronRight, ArrowLeft, ArrowRight, Plus, Minus, Check, Copy, Trash, Edit, Settings, User, Home, Mail, Phone, Calendar, Clock, MapPin, Image, Camera, Upload, Download, Share, Send, Bell, Lock, Unlock, Eye, EyeOff, Sun, Moon, Github, ExternalLink, Loader2, AlertCircle, Info, CheckCircle, XCircle.
 
 5. RESTRICTIONS — avoid these (they WILL cause errors):
-   - Do NOT use external libraries (no axios, date-fns, framer-motion, recharts, etc.)
+   - Do NOT use Node-only or server-only libraries/APIs (fs, path, net, child_process, process, Buffer, etc.)
    - Do NOT use fetch() to external APIs (the iframe is sandboxed)
    - Do NOT use Next.js features (no next/link, next/image, next/router, useRouter, etc.)
    - Do NOT use CSS modules or styled-components

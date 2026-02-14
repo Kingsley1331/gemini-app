@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
 
-const SW_CACHE_NAME = "preview-pwa-v1";
+const SW_CACHE_NAME = "preview-pwa-v2";
 
 // CDN scripts used by the preview — must be cached for offline support
 const CDN_URLS = [
@@ -18,6 +18,123 @@ interface PreviewData {
   code: string;
   language: string;
   name: string;
+}
+
+const EXTERNAL_IMPORT_BLOCKLIST = new Set([
+  "fs",
+  "path",
+  "os",
+  "net",
+  "tls",
+  "http",
+  "https",
+  "zlib",
+  "stream",
+  "child_process",
+  "worker_threads",
+  "node:fs",
+  "node:path",
+  "node:os",
+  "node:net",
+  "node:tls",
+  "node:http",
+  "node:https",
+  "node:zlib",
+  "node:stream",
+  "node:child_process",
+  "node:worker_threads",
+]);
+
+function buildExternalImportPreamble(sourceCode: string): string {
+  const importFromRegex = /(^|\n)\s*import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]\s*;?/g;
+  const sideEffectRegex = /(^|\n)\s*import\s+['"]([^'"]+)['"]\s*;?/g;
+  const lines: string[] = [];
+  let moduleCount = 0;
+
+  const shouldResolveDynamically = (specifier: string): boolean => {
+    if (
+      specifier.startsWith(".") ||
+      specifier.startsWith("/") ||
+      specifier.startsWith("next/")
+    ) {
+      return false;
+    }
+    if (
+      specifier === "react" ||
+      specifier === "react-dom" ||
+      specifier === "lucide-react"
+    ) {
+      return false;
+    }
+    const bareName = specifier.startsWith("@")
+      ? specifier.split("/").slice(0, 2).join("/")
+      : specifier.split("/")[0];
+    return !EXTERNAL_IMPORT_BLOCKLIST.has(bareName);
+  };
+
+  const mapNamedImports = (namedBlock: string): string =>
+    namedBlock
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .filter((part) => !part.startsWith("type "))
+      .map((part) => {
+        const segments = part.split(/\s+as\s+/);
+        const left = segments[0]?.trim();
+        const right = segments[1]?.trim();
+        return right ? `${left}: ${right}` : left;
+      })
+      .filter(Boolean)
+      .join(", ");
+
+  let match: RegExpExecArray | null;
+  while ((match = importFromRegex.exec(sourceCode)) !== null) {
+    const rawClause = match[2]?.trim() || "";
+    const specifier = match[3]?.trim() || "";
+    if (!rawClause || rawClause.startsWith("type ") || !specifier) continue;
+    if (!shouldResolveDynamically(specifier)) continue;
+
+    const modVar = `__extMod${moduleCount++}`;
+    lines.push(`const ${modVar} = await __importFrom("${specifier}");`);
+
+    const defaultAndNamed = rawClause.match(
+      /^([A-Za-z_$][\w$]*)\s*,\s*\{([\s\S]*)\}$/,
+    );
+    const namespaceImport = rawClause.match(/^\*\s+as\s+([A-Za-z_$][\w$]*)$/);
+    const namedOnlyImport = rawClause.match(/^\{([\s\S]*)\}$/);
+    const defaultOnlyImport = rawClause.match(/^([A-Za-z_$][\w$]*)$/);
+
+    if (defaultAndNamed) {
+      const defaultLocal = defaultAndNamed[1];
+      const mappedNamed = mapNamedImports(defaultAndNamed[2]);
+      lines.push(`const ${defaultLocal} = ${modVar}.default ?? ${modVar};`);
+      if (mappedNamed) lines.push(`const { ${mappedNamed} } = ${modVar};`);
+      continue;
+    }
+
+    if (namespaceImport) {
+      lines.push(`const ${namespaceImport[1]} = ${modVar};`);
+      continue;
+    }
+
+    if (namedOnlyImport) {
+      const mappedNamed = mapNamedImports(namedOnlyImport[1]);
+      if (mappedNamed) lines.push(`const { ${mappedNamed} } = ${modVar};`);
+      continue;
+    }
+
+    if (defaultOnlyImport) {
+      lines.push(`const ${defaultOnlyImport[1]} = ${modVar}.default ?? ${modVar};`);
+    }
+  }
+
+  while ((match = sideEffectRegex.exec(sourceCode)) !== null) {
+    const specifier = match[2]?.trim() || "";
+    if (!specifier || !shouldResolveDynamically(specifier)) continue;
+    lines.push(`await __importFrom("${specifier}");`);
+  }
+
+  return lines.join("\n");
 }
 
 function readPreviewData(id: string): PreviewData | null {
@@ -36,7 +153,6 @@ export default function PreviewClient() {
 
   // Since SSR is disabled, we can read localStorage directly during render
   const previewData = id ? readPreviewData(id) : null;
-  const appName = previewData?.name ?? "My App";
 
   useEffect(() => {
     if (!id || !previewData) return;
@@ -369,6 +485,19 @@ function buildStandaloneHTML(
         });
       }
 
+      const __externalImportCache = {};
+      async function __importFrom(specifier) {
+        if (__externalImportCache[specifier]) return __externalImportCache[specifier];
+        const isRemote = /^https?:\\/\\//.test(specifier);
+        const isRelative = specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('next/');
+        if (!isRemote && isRelative) throw new Error('Unsupported import in preview: ' + specifier);
+        const url = isRemote ? specifier : ('https://esm.sh/' + specifier + '?bundle');
+        const mod = await import(url);
+        __externalImportCache[specifier] = mod;
+        return mod;
+      }
+
+      (async () => {
       try {
         ${processedCode}
 
@@ -393,6 +522,7 @@ function buildStandaloneHTML(
           '<h3 style="margin-top: 0; color: #991b1b;">Runtime Error</h3>' +
           '<pre style="white-space: pre-wrap; margin: 0; font-size: 0.875rem;">' + (err.stack || err.toString()) + '</pre></div>';
       }
+      })();
     <\/script>
   </body>
 </html>`;
@@ -508,6 +638,19 @@ function buildPreviewHTML(
         });
       }
 
+      const __externalImportCache = {};
+      async function __importFrom(specifier) {
+        if (__externalImportCache[specifier]) return __externalImportCache[specifier];
+        const isRemote = /^https?:\\/\\//.test(specifier);
+        const isRelative = specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('next/');
+        if (!isRemote && isRelative) throw new Error('Unsupported import in preview: ' + specifier);
+        const url = isRemote ? specifier : ('https://esm.sh/' + specifier + '?bundle');
+        const mod = await import(url);
+        __externalImportCache[specifier] = mod;
+        return mod;
+      }
+
+      (async () => {
       try {
         ${processedCode}
 
@@ -532,6 +675,7 @@ function buildPreviewHTML(
           '<h3 style="margin-top: 0; color: #991b1b;">Runtime Error</h3>' +
           '<pre style="white-space: pre-wrap; margin: 0; font-size: 0.875rem;">' + (err.stack || err.toString()) + '</pre></div>';
       }
+      })();
     <\/script>
   </body>
 </html>`;
@@ -561,6 +705,7 @@ function processCode(code: string, language: string): string {
 
   if (language === "html") return code;
 
+  const externalImportPreamble = buildExternalImportPreamble(code);
   const defaultExportMatch = code.match(/export\s+default\s+function\s+(\w+)/);
   const defaultExportName = defaultExportMatch ? defaultExportMatch[1] : null;
 
@@ -632,5 +777,5 @@ function processCode(code: string, language: string): string {
     return _m;
   });
 
-  return result;
+  return [externalImportPreamble, result].filter(Boolean).join("\n");
 }
