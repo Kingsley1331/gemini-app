@@ -42,13 +42,13 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        "flex gap-4",
+        "flex gap-2.5 sm:gap-4",
         m.role === "user" ? "flex-row-reverse" : "flex-row",
       )}
     >
       <div
         className={cn(
-          "w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-1",
+          "mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full sm:h-8 sm:w-8",
           m.role === "user"
             ? "bg-zinc-200 dark:bg-zinc-700"
             : "bg-blue-100 dark:bg-blue-900/30",
@@ -62,9 +62,9 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
       </div>
       <div
         className={cn(
-          "rounded-2xl p-4",
+          "min-w-0 rounded-2xl p-3 sm:p-4",
           m.role === "user"
-            ? "bg-blue-600 text-white rounded-tr-none max-w-[85%]"
+            ? "max-w-[92%] rounded-tr-none bg-blue-600 text-white sm:max-w-[85%]"
             : "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tl-none w-full min-w-0",
         )}
       >
@@ -77,14 +77,14 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
                   key={idx}
                   src={attachment.url}
                   alt="User uploaded content"
-                  className="max-w-50 h-auto rounded-lg border border-white/20"
+                  className="h-auto w-full max-w-full rounded-lg border border-white/20 sm:w-auto sm:max-w-50"
                   loading="lazy"
                 />
               ))}
             </div>
           )}
         {m.type === "text" ? (
-          <div className="prose prose-sm dark:prose-invert max-w-none">
+          <div className="prose prose-sm max-w-none break-words dark:prose-invert">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[rehypeKatex]}
@@ -124,7 +124,7 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
 
                   if (!inline && language) {
                     return (
-                      <div className="rounded-lg overflow-hidden my-4">
+                      <div className="my-4 overflow-x-auto rounded-lg">
                         <SyntaxHighlighter
                           style={vscDarkPlus}
                           language={language}

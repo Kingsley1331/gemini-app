@@ -256,7 +256,7 @@ export default function PromptAssistant({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4"
         >
           {/* Backdrop */}
           <motion.div
@@ -273,10 +273,10 @@ export default function PromptAssistant({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             transition={{ type: "spring", damping: 25, stiffness: 300 }}
-            className="relative z-10 w-full max-w-2xl h-[80vh] max-h-175 bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-zinc-200 dark:border-zinc-700 flex flex-col overflow-hidden"
+            className="relative z-10 flex h-[92dvh] max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 sm:h-[80vh] sm:max-h-[80vh]"
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
+            <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-800/50 sm:px-5 sm:py-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-purple-500 rounded-lg">
                   <Wand2 className="w-5 h-5 text-white" />
@@ -300,7 +300,7 @@ export default function PromptAssistant({
             </div>
 
             {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
               {messages.map((m) => (
                 <div
                   key={m.id}
@@ -314,7 +314,7 @@ export default function PromptAssistant({
                     </div>
                   )}
                   <div
-                    className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
+                    className={`max-w-[90%] rounded-2xl px-3 py-2.5 text-sm sm:max-w-[80%] sm:px-4 sm:py-3 ${
                       m.role === "user"
                         ? "bg-blue-600 text-white rounded-br-md"
                         : "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-bl-md"
@@ -454,7 +454,7 @@ export default function PromptAssistant({
 
             {/* Current Draft Section */}
             {currentDraft && (
-              <div className="mx-4 mb-3 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl shrink-0 max-h-[30vh] flex flex-col">
+              <div className="mx-3 mb-3 flex max-h-[32vh] shrink-0 flex-col rounded-xl border border-purple-200 bg-purple-50 p-3 dark:border-purple-800 dark:bg-purple-900/20 sm:mx-4 sm:max-h-[30vh]">
                 <div className="flex items-center justify-between mb-2 shrink-0">
                   <span className="text-xs font-semibold text-purple-700 dark:text-purple-300 uppercase tracking-wide">
                     Current Draft
@@ -480,8 +480,8 @@ export default function PromptAssistant({
             )}
 
             {/* Input Area */}
-            <div className="shrink-0 px-4 pb-4 pt-2 border-t border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
-              <div className="flex items-center gap-2">
+            <div className="shrink-0 border-t border-zinc-200 bg-zinc-50 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 dark:border-zinc-700 dark:bg-zinc-800/50 sm:px-4 sm:pb-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <button
                   type="button"
                   onClick={() => {
@@ -502,7 +502,7 @@ export default function PromptAssistant({
                       return !prev;
                     });
                   }}
-                  className={`p-2.5 rounded-xl transition-all shrink-0 ${
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-all sm:h-10 sm:w-10 ${
                     isRichText
                       ? "text-purple-600 bg-purple-50 dark:bg-purple-900/20"
                       : "text-zinc-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
@@ -527,13 +527,13 @@ export default function PromptAssistant({
                     onKeyDown={handleKeyDown}
                     placeholder="Describe your idea or answer questions..."
                     disabled={isLoading}
-                    className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none shadow-sm transition-all disabled:opacity-50"
+                    className="w-full flex-1 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm outline-none shadow-sm transition-all focus:border-transparent focus:ring-2 focus:ring-purple-500 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800"
                   />
                 )}
                 <button
                   onClick={handleSend}
                   disabled={!(isRichText ? richTextContent.trim() : input.trim()) || isLoading}
-                  className="p-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 disabled:opacity-50 disabled:hover:bg-purple-600 shadow-lg shadow-purple-500/20 transition-all shrink-0"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-purple-600 text-white shadow-lg shadow-purple-500/20 transition-all hover:bg-purple-700 disabled:opacity-50 disabled:hover:bg-purple-600 sm:h-10 sm:w-10"
                   title="Send"
                 >
                   {isLoading ? (
@@ -545,17 +545,17 @@ export default function PromptAssistant({
               </div>
 
               {/* Footer Buttons */}
-              <div className="flex items-center justify-end gap-2 mt-3">
+              <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
                 <button
                   onClick={onClose}
-                  className="px-4 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-700/50 rounded-lg transition-colors"
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-100"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleKeep}
                   disabled={!currentDraft}
-                  className="px-5 py-2 text-sm font-medium bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:hover:bg-purple-600 shadow-md shadow-purple-500/20 transition-all"
+                  className="rounded-lg bg-purple-600 px-5 py-2 text-sm font-medium text-white shadow-md shadow-purple-500/20 transition-all hover:bg-purple-700 disabled:opacity-50 disabled:hover:bg-purple-600"
                 >
                   Keep
                 </button>

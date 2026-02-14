@@ -20,6 +20,123 @@ interface PreviewData {
   name: string;
 }
 
+const EXTERNAL_IMPORT_BLOCKLIST = new Set([
+  "fs",
+  "path",
+  "os",
+  "net",
+  "tls",
+  "http",
+  "https",
+  "zlib",
+  "stream",
+  "child_process",
+  "worker_threads",
+  "node:fs",
+  "node:path",
+  "node:os",
+  "node:net",
+  "node:tls",
+  "node:http",
+  "node:https",
+  "node:zlib",
+  "node:stream",
+  "node:child_process",
+  "node:worker_threads",
+]);
+
+function buildExternalImportPreamble(sourceCode: string): string {
+  const importFromRegex = /(^|\n)\s*import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]\s*;?/g;
+  const sideEffectRegex = /(^|\n)\s*import\s+['"]([^'"]+)['"]\s*;?/g;
+  const lines: string[] = [];
+  let moduleCount = 0;
+
+  const shouldResolveDynamically = (specifier: string): boolean => {
+    if (
+      specifier.startsWith(".") ||
+      specifier.startsWith("/") ||
+      specifier.startsWith("next/")
+    ) {
+      return false;
+    }
+    if (
+      specifier === "react" ||
+      specifier === "react-dom" ||
+      specifier === "lucide-react"
+    ) {
+      return false;
+    }
+    const bareName = specifier.startsWith("@")
+      ? specifier.split("/").slice(0, 2).join("/")
+      : specifier.split("/")[0];
+    return !EXTERNAL_IMPORT_BLOCKLIST.has(bareName);
+  };
+
+  const mapNamedImports = (namedBlock: string): string =>
+    namedBlock
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .filter((part) => !part.startsWith("type "))
+      .map((part) => {
+        const segments = part.split(/\s+as\s+/);
+        const left = segments[0]?.trim();
+        const right = segments[1]?.trim();
+        return right ? `${left}: ${right}` : left;
+      })
+      .filter(Boolean)
+      .join(", ");
+
+  let match: RegExpExecArray | null;
+  while ((match = importFromRegex.exec(sourceCode)) !== null) {
+    const rawClause = match[2]?.trim() || "";
+    const specifier = match[3]?.trim() || "";
+    if (!rawClause || rawClause.startsWith("type ") || !specifier) continue;
+    if (!shouldResolveDynamically(specifier)) continue;
+
+    const modVar = `__extMod${moduleCount++}`;
+    lines.push(`const ${modVar} = await __importFrom("${specifier}");`);
+
+    const defaultAndNamed = rawClause.match(
+      /^([A-Za-z_$][\w$]*)\s*,\s*\{([\s\S]*)\}$/,
+    );
+    const namespaceImport = rawClause.match(/^\*\s+as\s+([A-Za-z_$][\w$]*)$/);
+    const namedOnlyImport = rawClause.match(/^\{([\s\S]*)\}$/);
+    const defaultOnlyImport = rawClause.match(/^([A-Za-z_$][\w$]*)$/);
+
+    if (defaultAndNamed) {
+      const defaultLocal = defaultAndNamed[1];
+      const mappedNamed = mapNamedImports(defaultAndNamed[2]);
+      lines.push(`const ${defaultLocal} = ${modVar}.default ?? ${modVar};`);
+      if (mappedNamed) lines.push(`const { ${mappedNamed} } = ${modVar};`);
+      continue;
+    }
+
+    if (namespaceImport) {
+      lines.push(`const ${namespaceImport[1]} = ${modVar};`);
+      continue;
+    }
+
+    if (namedOnlyImport) {
+      const mappedNamed = mapNamedImports(namedOnlyImport[1]);
+      if (mappedNamed) lines.push(`const { ${mappedNamed} } = ${modVar};`);
+      continue;
+    }
+
+    if (defaultOnlyImport) {
+      lines.push(`const ${defaultOnlyImport[1]} = ${modVar}.default ?? ${modVar};`);
+    }
+  }
+
+  while ((match = sideEffectRegex.exec(sourceCode)) !== null) {
+    const specifier = match[2]?.trim() || "";
+    if (!specifier || !shouldResolveDynamically(specifier)) continue;
+    lines.push(`await __importFrom("${specifier}");`);
+  }
+
+  return lines.join("\n");
+}
+
 function readPreviewData(id: string): PreviewData | null {
   const code = localStorage.getItem(`pwa-preview-${id}-code`);
   if (!code) return null;
@@ -80,7 +197,9 @@ export default function PreviewClient() {
     document.title = name;
 
     const setMeta = (nameAttr: string, content: string) => {
-      let el = document.querySelector(`meta[name="${nameAttr}"]`) as HTMLMetaElement | null;
+      let el = document.querySelector(
+        `meta[name="${nameAttr}"]`,
+      ) as HTMLMetaElement | null;
       if (!el) {
         el = document.createElement("meta");
         el.name = nameAttr;
@@ -95,7 +214,9 @@ export default function PreviewClient() {
     setMeta("apple-mobile-web-app-title", name);
 
     // Manifest link
-    let manifestLink = document.querySelector('link[rel="manifest"]') as HTMLLinkElement | null;
+    let manifestLink = document.querySelector(
+      'link[rel="manifest"]',
+    ) as HTMLLinkElement | null;
     if (!manifestLink) {
       manifestLink = document.createElement("link");
       manifestLink.rel = "manifest";
@@ -107,7 +228,9 @@ export default function PreviewClient() {
     manifestLink.href = manifestUrl;
 
     // Apple touch icon
-    let touchIcon = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement | null;
+    let touchIcon = document.querySelector(
+      'link[rel="apple-touch-icon"]',
+    ) as HTMLLinkElement | null;
     if (!touchIcon) {
       touchIcon = document.createElement("link");
       touchIcon.rel = "apple-touch-icon";
@@ -309,7 +432,7 @@ async function cacheForOffline(
       new Request(`/preview/${id}`),
       new Response(standaloneHTML, {
         headers: { "Content-Type": "text/html; charset=utf-8" },
-      })
+      }),
     );
 
     // 2) Fetch and cache the manifest so it's available offline too
@@ -364,7 +487,7 @@ async function cacheForOffline(
         } catch {
           // best-effort
         }
-      })
+      }),
     );
   } catch {
     // caching is best-effort; the app still works online without it
@@ -384,6 +507,9 @@ function buildStandaloneHTML(
   id: string,
   iconHref: string
 ): string {
+  // Auto-detect React code mislabeled as "html"
+  language = detectEffectiveLanguage(code, language);
+
   const processedCode = processCode(code, language);
 
   // For raw HTML, wrap it with the manifest + SW registration
@@ -399,7 +525,7 @@ function buildStandaloneHTML(
     if (code.includes("</head>")) {
       return code.replace(
         "</head>",
-        `${manifestLink}\n${metaTheme}\n${swScript}\n</head>`
+        `${manifestLink}\n${metaTheme}\n${swScript}\n</head>`,
       );
     }
     return `${manifestLink}\n${metaTheme}\n${swScript}\n${code}`;
@@ -508,6 +634,19 @@ function buildStandaloneHTML(
         });
       }
 
+      const __externalImportCache = {};
+      async function __importFrom(specifier) {
+        if (__externalImportCache[specifier]) return __externalImportCache[specifier];
+        const isRemote = /^https?:\\/\\//.test(specifier);
+        const isRelative = specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('next/');
+        if (!isRemote && isRelative) throw new Error('Unsupported import in preview: ' + specifier);
+        const url = isRemote ? specifier : ('https://esm.sh/' + specifier + '?bundle');
+        const mod = await import(url);
+        __externalImportCache[specifier] = mod;
+        return mod;
+      }
+
+      (async () => {
       try {
         ${processedCode}
 
@@ -532,6 +671,7 @@ function buildStandaloneHTML(
           '<h3 style="margin-top: 0; color: #991b1b;">Runtime Error</h3>' +
           '<pre style="white-space: pre-wrap; margin: 0; font-size: 0.875rem;">' + (err.stack || err.toString()) + '</pre></div>';
       }
+      })();
     <\/script>
   </body>
 </html>`;
@@ -543,8 +683,11 @@ function buildStandaloneHTML(
 function buildPreviewHTML(
   code: string,
   language: string,
-  appName: string
+  appName: string,
 ): string {
+  // Auto-detect React code mislabeled as "html"
+  language = detectEffectiveLanguage(code, language);
+
   if (language === "html") {
     return code;
   }
@@ -644,6 +787,19 @@ function buildPreviewHTML(
         });
       }
 
+      const __externalImportCache = {};
+      async function __importFrom(specifier) {
+        if (__externalImportCache[specifier]) return __externalImportCache[specifier];
+        const isRemote = /^https?:\\/\\//.test(specifier);
+        const isRelative = specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('next/');
+        if (!isRemote && isRelative) throw new Error('Unsupported import in preview: ' + specifier);
+        const url = isRemote ? specifier : ('https://esm.sh/' + specifier + '?bundle');
+        const mod = await import(url);
+        __externalImportCache[specifier] = mod;
+        return mod;
+      }
+
+      (async () => {
       try {
         ${processedCode}
 
@@ -668,34 +824,44 @@ function buildPreviewHTML(
           '<h3 style="margin-top: 0; color: #991b1b;">Runtime Error</h3>' +
           '<pre style="white-space: pre-wrap; margin: 0; font-size: 0.875rem;">' + (err.stack || err.toString()) + '</pre></div>';
       }
+      })();
     <\/script>
   </body>
 </html>`;
 }
 
 // ---------------------------------------------------------------------------
+// Detect whether "html"-tagged code is actually React/JSX so we process it
+// correctly instead of returning raw source as-is.
+// ---------------------------------------------------------------------------
+function detectEffectiveLanguage(code: string, language: string): string {
+  if (language === "html") {
+    const isReactCode =
+      /import\s.*from\s/.test(code) ||
+      /export\s+default\s+function/.test(code) ||
+      /useState|useEffect|useRef|useCallback/.test(code);
+    if (isReactCode) return "tsx";
+  }
+  return language;
+}
+
+// ---------------------------------------------------------------------------
 // Shared code processing — strips imports/exports, handles lucide icons, etc.
 // ---------------------------------------------------------------------------
 function processCode(code: string, language: string): string {
+  // Auto-detect React code mislabeled as "html"
+  language = detectEffectiveLanguage(code, language);
+
   if (language === "html") return code;
 
-  const defaultExportMatch = code.match(
-    /export\s+default\s+function\s+(\w+)/
-  );
-  const defaultExportName = defaultExportMatch
-    ? defaultExportMatch[1]
-    : null;
+  const externalImportPreamble = buildExternalImportPreamble(code);
+  const defaultExportMatch = code.match(/export\s+default\s+function\s+(\w+)/);
+  const defaultExportName = defaultExportMatch ? defaultExportMatch[1] : null;
 
   const cleanedCode =
     code
-      .replace(
-        /import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
-        ""
-      )
-      .replace(
-        /import\s+type\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g,
-        ""
-      )
+      .replace(/import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
+      .replace(/import\s+type\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
       .replace(
         /import\s*\{([^}]*)\}\s*from\s*['"]lucide-react['"];?\n?/g,
         (_match: string, names: string) => {
@@ -707,8 +873,7 @@ function processCode(code: string, language: string): string {
               .map((n: string) => {
                 const parts = n.split(/\s+as\s+/);
                 const original = parts[0].trim();
-                const alias =
-                  parts.length > 1 ? parts[1].trim() : original;
+                const alias = parts.length > 1 ? parts[1].trim() : original;
                 const kebab = original
                   .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
                   .toLowerCase();
@@ -724,26 +889,17 @@ function processCode(code: string, language: string): string {
               })
               .join("\n") + "\n"
           );
-        }
+        },
       )
-      .replace(
-        /import\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
-        ""
-      )
+      .replace(/import\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
       .replace(
         /import\s+\w+\s*,?\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
-        ""
+        "",
       )
       .replace(/import\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
-      .replace(
-        /import\s+\*\s+as\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g,
-        ""
-      )
+      .replace(/import\s+\*\s+as\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
       .replace(/import\s*['"][^'"]*['"];?\n?/g, "")
-      .replace(
-        /export\s+default\s+function\s+(\w+)/,
-        "function $1"
-      )
+      .replace(/export\s+default\s+function\s+(\w+)/, "function $1")
       .replace(/export\s+default\s+/, "const App = ")
       .replace(/export\s+/g, "") +
     (defaultExportName && defaultExportName !== "App"
@@ -760,20 +916,15 @@ function processCode(code: string, language: string): string {
         .replace(/"/g, '\\"')
         .replace(/\n/g, "\\n");
       return '{"$$' + escaped + '$$"}';
-    }
+    },
   );
-  result = result.replace(
-    /\$([^$\n]+?)\$/g,
-    (_m: string, inner: string) => {
-      if (/[\\^_]/.test(inner) || /^[A-Za-z]$/.test(inner)) {
-        const escaped = inner
-          .replace(/\\/g, "\\\\")
-          .replace(/"/g, '\\"');
-        return '{"$' + escaped + '$"}';
-      }
-      return _m;
+  result = result.replace(/\$([^$\n]+?)\$/g, (_m: string, inner: string) => {
+    if (/[\\^_]/.test(inner) || /^[A-Za-z]$/.test(inner)) {
+      const escaped = inner.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      return '{"$' + escaped + '$"}';
     }
-  );
+    return _m;
+  });
 
-  return result;
+  return [externalImportPreamble, result].filter(Boolean).join("\n");
 }
