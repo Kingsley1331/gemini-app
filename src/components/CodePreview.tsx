@@ -926,7 +926,7 @@ export default function CodePreview({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1 sm:gap-2">
           {preparedPwaId && preparedPwaName ? (
             <button
               onClick={openIconModal}
@@ -939,7 +939,6 @@ export default function CodePreview({
               </span>
             </button>
           ) : null}
-        <div className="flex flex-wrap items-center gap-1 sm:gap-2">
           <button
             onClick={copyToClipboard}
             className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
