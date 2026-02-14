@@ -1,5 +1,5 @@
 // Service Worker for Preview PWA — enables fully offline operation
-const CACHE_NAME = "preview-pwa-v1";
+const CACHE_NAME = "preview-pwa-v2";
 
 // Install — pre-cache local icon assets
 self.addEventListener("install", (event) => {
@@ -34,33 +34,39 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
   // ── Navigation to /preview/* ──
-  // Cache-first: serve the standalone HTML that was cached by the page.
+  // Network-first while online to avoid stale preview runtimes,
+  // then fall back to cache for offline support.
   if (
     event.request.mode === "navigate" &&
     url.pathname.startsWith("/preview/")
   ) {
     event.respondWith(
-      caches
-        .match(event.request)
-        .then((cached) => {
-          if (cached) return cached;
-          return fetch(event.request).then((response) => {
-            if (response && response.status === 200) {
-              const clone = response.clone();
-              caches
-                .open(CACHE_NAME)
-                .then((cache) => cache.put(event.request, clone));
-            }
-            return response;
-          });
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches
+              .open(CACHE_NAME)
+              .then((cache) => cache.put(event.request, clone));
+          }
+          return response;
         })
+        .catch(() =>
+          caches.match(event.request).then((cached) => {
+            if (cached) return cached;
+            return new Response(
+              "<html><body style='display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;color:#71717a'>" +
+                "<div style='text-align:center'><h1 style='color:#18181b'>Offline</h1><p>This preview is not available offline yet. Open it once while online to enable offline access.</p></div>" +
+                "</body></html>",
+              { headers: { "Content-Type": "text/html" } },
+            );
+          }),
+        )
         .catch(() => {
-          return new Response(
-            "<html><body style='display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;color:#71717a'>" +
-              "<div style='text-align:center'><h1 style='color:#18181b'>Offline</h1><p>This preview is not available offline yet. Open it once while online to enable offline access.</p></div>" +
-              "</body></html>",
-            { headers: { "Content-Type": "text/html" } }
-          );
+          return new Response("Offline", {
+            status: 503,
+            statusText: "Service Unavailable",
+          });
         })
     );
     return;
