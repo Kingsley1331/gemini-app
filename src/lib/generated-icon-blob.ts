@@ -14,12 +14,12 @@ export async function storeGeneratedIconsInBlob(
   if (!hasBlobStorage) return null;
 
   const [blob192, blob512] = await Promise.all([
-    put(getIconPath(id, 192), icon192, {
+    put(getIconPath(id, 192), Buffer.from(icon192), {
       access: "public",
       addRandomSuffix: false,
       contentType: "image/png",
     }),
-    put(getIconPath(id, 512), icon512, {
+    put(getIconPath(id, 512), Buffer.from(icon512), {
       access: "public",
       addRandomSuffix: false,
       contentType: "image/png",
