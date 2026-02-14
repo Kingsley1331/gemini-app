@@ -160,7 +160,7 @@ export default function PreviewClient() {
   const previewData = id ? readPreviewData(id) : null;
   const icon192Href = useMemo(() => {
     const base = hasGeneratedIcon
-      ? `/generated-icons/${id}/icon-192.png`
+      ? `/api/preview/${id}/generate-icon?size=192`
       : "/icons/icon.svg";
     return iconVersion ? `${base}?v=${iconVersion}` : base;
   }, [hasGeneratedIcon, iconVersion, id]);
@@ -168,7 +168,7 @@ export default function PreviewClient() {
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    fetch(`/generated-icons/${id}/icon-192.png`, {
+    fetch(`/api/preview/${id}/generate-icon?size=192`, {
       method: "HEAD",
       cache: "no-store",
     })
@@ -223,6 +223,8 @@ export default function PreviewClient() {
       document.head.appendChild(manifestLink);
     }
     const manifestUrl = `/preview/${id}/manifest.json?name=${encodeURIComponent(name)}${
+      hasGeneratedIcon ? "&generated=1" : ""
+    }${
       iconVersion ? `&v=${iconVersion}` : ""
     }`;
     manifestLink.href = manifestUrl;
@@ -271,7 +273,7 @@ export default function PreviewClient() {
         manifestUrl,
         icon192Href,
         hasGeneratedIcon
-          ? `/generated-icons/${id}/icon-512.png${iconVersion ? `?v=${iconVersion}` : ""}`
+          ? `/api/preview/${id}/generate-icon?size=512${iconVersion ? `&v=${iconVersion}` : ""}`
           : "/icons/icon.svg",
       ]);
 

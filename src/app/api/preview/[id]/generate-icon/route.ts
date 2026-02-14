@@ -1,7 +1,10 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { mkdir, rm, writeFile } from "fs/promises";
-import path from "path";
 import { NextRequest, NextResponse } from "next/server";
+import {
+  deleteGeneratedIcons,
+  getGeneratedIcon,
+  setGeneratedIcons,
+} from "@/lib/generated-icon-store";
 
 export const runtime = "nodejs";
 
@@ -87,23 +90,19 @@ export async function POST(
       generateIconData(192),
     ]);
 
-    const outputDir = path.join(process.cwd(), "public", "generated-icons", id);
-    await mkdir(outputDir, { recursive: true });
-
-    const icon512Path = path.join(outputDir, "icon-512.png");
-    const icon192Path = path.join(outputDir, "icon-192.png");
-    await Promise.all([
-      writeFile(icon512Path, icon512Buffer),
-      writeFile(icon192Path, icon192Buffer),
-    ]);
-
     const timestamp = Date.now();
+    setGeneratedIcons(id, {
+      icon192: icon192Buffer,
+      icon512: icon512Buffer,
+      timestamp,
+    });
+
     return NextResponse.json({
       success: true,
       id,
       icons: {
-        icon192: `/generated-icons/${id}/icon-192.png?v=${timestamp}`,
-        icon512: `/generated-icons/${id}/icon-512.png?v=${timestamp}`,
+        icon192: `/api/preview/${id}/generate-icon?size=192&v=${timestamp}`,
+        icon512: `/api/preview/${id}/generate-icon?size=512&v=${timestamp}`,
       },
       timestamp,
     });
@@ -116,14 +115,57 @@ export async function POST(
   }
 }
 
+export async function GET(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const sizeParam = req.nextUrl.searchParams.get("size");
+  const size = sizeParam === "512" ? 512 : sizeParam === "192" ? 192 : null;
+
+  if (!size) {
+    return NextResponse.json(
+      { error: "Query parameter 'size' must be 192 or 512" },
+      { status: 400 }
+    );
+  }
+
+  const iconBuffer = getGeneratedIcon(id, size);
+  if (!iconBuffer) {
+    return NextResponse.json({ error: "Generated icon not found" }, { status: 404 });
+  }
+
+  return new NextResponse(iconBuffer, {
+    status: 200,
+    headers: {
+      "Content-Type": "image/png",
+      "Cache-Control": "public, max-age=300",
+    },
+  });
+}
+
+export async function HEAD(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const sizeParam = req.nextUrl.searchParams.get("size");
+  const size = sizeParam === "512" ? 512 : sizeParam === "192" ? 192 : null;
+  const exists = size ? Boolean(getGeneratedIcon(id, size)) : false;
+
+  return new NextResponse(null, {
+    status: exists ? 200 : 404,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
 export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const outputDir = path.join(process.cwd(), "public", "generated-icons", id);
-    await rm(outputDir, { recursive: true, force: true });
+    deleteGeneratedIcons(id);
 
     return NextResponse.json({
       success: true,

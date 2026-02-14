@@ -1,7 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { constants } from "fs";
-import { access } from "fs/promises";
-import path from "path";
 
 export async function GET(
   request: NextRequest,
@@ -10,32 +7,18 @@ export async function GET(
   const { id } = await params;
   const { searchParams } = new URL(request.url);
   const name = searchParams.get("name") || "My App";
+  const useGeneratedIcons = searchParams.get("generated") === "1";
 
-  const generatedDir = path.join(process.cwd(), "public", "generated-icons", id);
-  const icon192File = path.join(generatedDir, "icon-192.png");
-  const icon512File = path.join(generatedDir, "icon-512.png");
-
-  const generatedIconsExist = await Promise.all([
-    access(icon192File, constants.F_OK).then(
-      () => true,
-      () => false
-    ),
-    access(icon512File, constants.F_OK).then(
-      () => true,
-      () => false
-    ),
-  ]).then(([has192, has512]) => has192 && has512);
-
-  const icons = generatedIconsExist
+  const icons = useGeneratedIcons
     ? [
         {
-          src: `/generated-icons/${id}/icon-192.png`,
+          src: `/api/preview/${id}/generate-icon?size=192`,
           sizes: "192x192",
           type: "image/png",
           purpose: "any maskable",
         },
         {
-          src: `/generated-icons/${id}/icon-512.png`,
+          src: `/api/preview/${id}/generate-icon?size=512`,
           sizes: "512x512",
           type: "image/png",
           purpose: "any maskable",
