@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import Image from "next/image";
 import {
   Play,
   Code,
@@ -12,6 +13,8 @@ import {
   Bug,
   Download,
   Smartphone,
+  Sparkles,
+  BadgeCheck,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -22,6 +25,21 @@ interface CodePreviewProps {
   language: string;
   title?: string;
   onDebug?: (error: string, code: string, language: string) => void;
+}
+
+function createPwaPreviewId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function scheduleGeneratedIconCleanup(id: string, delayMs = 25000) {
+  window.setTimeout(() => {
+    fetch(`/api/preview/${id}/generate-icon`, {
+      method: "DELETE",
+      keepalive: true,
+    }).catch(() => {
+      // cleanup is best-effort
+    });
+  }, delayMs);
 }
 
 export default function CodePreview({
@@ -38,6 +56,16 @@ export default function CodePreview({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isGeneratingPwaIcon, setIsGeneratingPwaIcon] = useState(false);
+  const [showIconModal, setShowIconModal] = useState(false);
+  const [iconModalName, setIconModalName] = useState("My App");
+  const [iconModalPrompt, setIconModalPrompt] = useState("");
+  const [iconModalStatus, setIconModalStatus] = useState<string | null>(null);
+  const [preparedPwaId, setPreparedPwaId] = useState<string | null>(null);
+  const [preparedPwaName, setPreparedPwaName] = useState<string | null>(null);
+  const [generatedCandidateId, setGeneratedCandidateId] = useState<string | null>(null);
+  const [generatedCandidateName, setGeneratedCandidateName] = useState<string | null>(null);
+  const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const copyToClipboard = () => {
@@ -252,11 +280,23 @@ export default function CodePreview({
   }, [code, language]);
 
   const handleInstallPWA = useCallback(() => {
+    if (preparedPwaId && preparedPwaName) {
+      localStorage.setItem(`pwa-preview-${preparedPwaId}-code`, code);
+      localStorage.setItem(`pwa-preview-${preparedPwaId}-language`, language);
+      localStorage.setItem(`pwa-preview-${preparedPwaId}-name`, preparedPwaName);
+      window.open(`/preview/${preparedPwaId}`, "_blank");
+      scheduleGeneratedIconCleanup(preparedPwaId);
+      setPreparedPwaId(null);
+      setPreparedPwaName(null);
+      setGeneratedIconPreviewUrl(null);
+      return;
+    }
+
     const name =
       window.prompt("Enter a name for your app:", "My App") || "My App";
 
     // Generate a unique ID so each preview becomes its own installable PWA
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const id = createPwaPreviewId();
 
     // Store the code and metadata under the unique ID
     localStorage.setItem(`pwa-preview-${id}-code`, code);
@@ -265,7 +305,91 @@ export default function CodePreview({
 
     // Open the standalone preview page in a new tab with the unique ID
     window.open(`/preview/${id}`, "_blank");
-  }, [code, language]);
+  }, [code, language, preparedPwaId, preparedPwaName]);
+
+  const handleInstallPWAWithIcon = useCallback(async () => {
+    if (isGeneratingPwaIcon) return;
+
+    const name = iconModalName.trim() || "My App";
+    const id = generatedCandidateId || preparedPwaId || createPwaPreviewId();
+    localStorage.setItem(`pwa-preview-${id}-code`, code);
+    localStorage.setItem(`pwa-preview-${id}-language`, language);
+    localStorage.setItem(`pwa-preview-${id}-name`, name);
+
+    setIsGeneratingPwaIcon(true);
+    setIconModalStatus("Generating icon...");
+    try {
+      const res = await fetch(`/api/preview/${id}/generate-icon`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          prompt:
+            iconModalPrompt.trim() ||
+            `Create a clean, high-contrast, minimal app icon for "${name}" that matches this ${language} preview app. Centered symbol, no text, no watermark, readable at small sizes.`,
+          pro: true,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.details || data?.error || "Icon generation failed");
+      }
+      setGeneratedCandidateId(id);
+      setGeneratedCandidateName(name);
+      setGeneratedIconPreviewUrl(
+        data?.icons?.icon192 || `/generated-icons/${id}/icon-192.png?v=${Date.now()}`
+      );
+      setIconModalStatus("Preview ready. Keep it or regenerate.");
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Unable to generate icon right now.";
+      setIconModalStatus(message);
+    } finally {
+      setIsGeneratingPwaIcon(false);
+    }
+  }, [
+    code,
+    generatedCandidateId,
+    iconModalName,
+    iconModalPrompt,
+    isGeneratingPwaIcon,
+    language,
+    preparedPwaId,
+  ]);
+
+  const handleKeepGeneratedIcon = useCallback(() => {
+    if (!generatedCandidateId || !generatedCandidateName || !generatedIconPreviewUrl) {
+      setIconModalStatus("Generate an icon first.");
+      return;
+    }
+    setPreparedPwaId(generatedCandidateId);
+    setPreparedPwaName(generatedCandidateName);
+    setIconModalStatus("Icon kept. Use Install as App to open the matching preview.");
+    setShowIconModal(false);
+  }, [generatedCandidateId, generatedCandidateName, generatedIconPreviewUrl]);
+
+  const closeIconModal = useCallback(() => {
+    if (generatedCandidateId && generatedCandidateId !== preparedPwaId) {
+      scheduleGeneratedIconCleanup(generatedCandidateId, 2000);
+    }
+    setShowIconModal(false);
+  }, [generatedCandidateId, preparedPwaId]);
+
+  const openIconModal = useCallback(() => {
+    const defaultName =
+      preparedPwaName ||
+      (title && title !== "Preview" ? title : "My App");
+    setIconModalName(defaultName);
+    setIconModalPrompt("");
+    setIconModalStatus(null);
+    setGeneratedCandidateId(null);
+    setGeneratedCandidateName(null);
+    setGeneratedIconPreviewUrl(null);
+    setShowIconModal(true);
+  }, [preparedPwaName, title]);
 
   const updateIframe = useCallback(() => {
     if (!iframeRef.current) return;
@@ -606,6 +730,18 @@ export default function CodePreview({
         </div>
 
         <div className="flex items-center gap-2">
+          {preparedPwaId && preparedPwaName ? (
+            <button
+              onClick={openIconModal}
+              className="flex items-center gap-1 px-2 py-1 rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:opacity-90 transition-opacity"
+              title={`Icon ready for ${preparedPwaName}. Click to review or regenerate.`}
+            >
+              <BadgeCheck className="w-3.5 h-3.5" />
+              <span className="text-[10px] font-semibold uppercase tracking-wide">
+                Icon Ready
+              </span>
+            </button>
+          ) : null}
           <button
             onClick={copyToClipboard}
             className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
@@ -630,6 +766,14 @@ export default function CodePreview({
             title="Install as App"
           >
             <Smartphone className="w-4 h-4" />
+          </button>
+          <button
+            onClick={openIconModal}
+            disabled={isGeneratingPwaIcon}
+            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors disabled:opacity-50"
+            title="Generate App Icon"
+          >
+            <Sparkles className="w-4 h-4" />
           </button>
           <button
             onClick={handleRefresh}
@@ -688,6 +832,93 @@ export default function CodePreview({
           </div>
         )}
       </div>
+
+      {showIconModal ? (
+        <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-xl rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-2xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                Generate PWA Icon
+              </h3>
+              <button
+                onClick={closeIconModal}
+                className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+              App Name
+            </label>
+            <input
+              value={iconModalName}
+              onChange={(e) => setIconModalName(e.target.value)}
+              className="w-full mb-3 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100"
+              placeholder="My App"
+            />
+
+            <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+              Icon Prompt (optional)
+            </label>
+            <textarea
+              value={iconModalPrompt}
+              onChange={(e) => setIconModalPrompt(e.target.value)}
+              className="w-full mb-3 min-h-[90px] rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100"
+              placeholder="Leave blank to auto-generate a prompt that matches this preview app."
+            />
+
+            {iconModalStatus ? (
+              <p className="mb-3 text-xs text-zinc-600 dark:text-zinc-300">{iconModalStatus}</p>
+            ) : null}
+
+            {generatedIconPreviewUrl ? (
+              <div className="mb-3 rounded-md border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/40 p-3">
+                <p className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+                  Icon Preview
+                </p>
+                <div className="w-24 h-24 rounded-xl overflow-hidden border border-zinc-300 dark:border-zinc-600">
+                  <Image
+                    src={generatedIconPreviewUrl}
+                    alt="Generated app icon preview"
+                    width={96}
+                    height={96}
+                    className="w-full h-full object-cover"
+                    unoptimized
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={closeIconModal}
+                className="px-3 py-1.5 text-xs rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleInstallPWAWithIcon}
+                disabled={isGeneratingPwaIcon}
+                className="px-3 py-1.5 text-xs rounded-md bg-zinc-900 text-white disabled:opacity-50"
+              >
+                {isGeneratingPwaIcon
+                  ? "Generating..."
+                  : generatedIconPreviewUrl
+                    ? "Regenerate"
+                    : "Generate Icon"}
+              </button>
+              <button
+                onClick={handleKeepGeneratedIcon}
+                disabled={!generatedIconPreviewUrl || isGeneratingPwaIcon}
+                className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 text-white disabled:opacity-50"
+              >
+                Keep Icon
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

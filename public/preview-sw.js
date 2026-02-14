@@ -1,16 +1,9 @@
 // Service Worker for Preview PWA — enables fully offline operation
-const CACHE_NAME = "preview-pwa-v1";
+const CACHE_NAME = "preview-pwa-v2";
 
-// Install — pre-cache local icon assets
+// Install — keep minimal to avoid hard-failing on missing generated icons
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) =>
-        cache.addAll(["/icons/icon-192.png", "/icons/icon-512.png"])
-      )
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil(self.skipWaiting());
 });
 
 // Activate — clean up old caches and take control immediately

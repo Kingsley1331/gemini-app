@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 
-const SW_CACHE_NAME = "preview-pwa-v1";
+const SW_CACHE_NAME = "preview-pwa-v2";
 
 // CDN scripts used by the preview — must be cached for offline support
 const CDN_URLS = [
@@ -33,10 +33,43 @@ function readPreviewData(id: string): PreviewData | null {
 export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const cleanupScheduledRef = useRef(false);
+  const [iconVersion, setIconVersion] = useState<number>(0);
+  const [hasGeneratedIcon, setHasGeneratedIcon] = useState(false);
+  const [isGeneratingIcon, setIsGeneratingIcon] = useState(false);
+  const [iconStatus, setIconStatus] = useState<string | null>(null);
 
   // Since SSR is disabled, we can read localStorage directly during render
   const previewData = id ? readPreviewData(id) : null;
-  const appName = previewData?.name ?? "My App";
+  const icon192Href = useMemo(() => {
+    const base = hasGeneratedIcon
+      ? `/generated-icons/${id}/icon-192.png`
+      : "/icons/icon.svg";
+    return iconVersion ? `${base}?v=${iconVersion}` : base;
+  }, [hasGeneratedIcon, iconVersion, id]);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    fetch(`/generated-icons/${id}/icon-192.png`, {
+      method: "HEAD",
+      cache: "no-store",
+    })
+      .then((resp) => {
+        if (!cancelled) {
+          setHasGeneratedIcon(resp.ok);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHasGeneratedIcon(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
   useEffect(() => {
     if (!id || !previewData) return;
@@ -68,7 +101,10 @@ export default function PreviewClient() {
       manifestLink.rel = "manifest";
       document.head.appendChild(manifestLink);
     }
-    manifestLink.href = `/preview/${id}/manifest.json?name=${encodeURIComponent(name)}`;
+    const manifestUrl = `/preview/${id}/manifest.json?name=${encodeURIComponent(name)}${
+      iconVersion ? `&v=${iconVersion}` : ""
+    }`;
+    manifestLink.href = manifestUrl;
 
     // Apple touch icon
     let touchIcon = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement | null;
@@ -77,7 +113,7 @@ export default function PreviewClient() {
       touchIcon.rel = "apple-touch-icon";
       document.head.appendChild(touchIcon);
     }
-    touchIcon.href = "/icons/icon-192.png";
+    touchIcon.href = icon192Href;
 
     // 1) Register the service worker first
     const swReady =
@@ -105,10 +141,61 @@ export default function PreviewClient() {
 
     // 3) Build a fully self-contained standalone page and cache it
     //    This is what the SW will serve when the dev server is off
-    const standaloneHTML = buildStandaloneHTML(code, language, name, id);
+    const standaloneHTML = buildStandaloneHTML(code, language, name, id, icon192Href);
 
-    swReady.then(() => cacheForOffline(id, name, standaloneHTML));
-  }, [id, previewData]);
+    swReady.then(async () => {
+      await cacheForOffline(id, name, standaloneHTML, [
+        manifestUrl,
+        icon192Href,
+        hasGeneratedIcon
+          ? `/generated-icons/${id}/icon-512.png${iconVersion ? `?v=${iconVersion}` : ""}`
+          : "/icons/icon.svg",
+      ]);
+
+      // After assets are cached for this preview, remove generated icon files from /public.
+      if (hasGeneratedIcon && !cleanupScheduledRef.current) {
+        cleanupScheduledRef.current = true;
+        window.setTimeout(() => {
+          fetch(`/api/preview/${id}/generate-icon`, {
+            method: "DELETE",
+            keepalive: true,
+          }).catch(() => {
+            // cleanup is best-effort
+          });
+        }, 12000);
+      }
+    });
+  }, [hasGeneratedIcon, icon192Href, iconVersion, id, previewData]);
+
+  const handleGenerateIcon = async () => {
+    if (!id || !previewData || isGeneratingIcon) return;
+    setIsGeneratingIcon(true);
+    setIconStatus("Generating PWA icon...");
+    try {
+      const res = await fetch(`/api/preview/${id}/generate-icon`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: previewData.name,
+          prompt: `Create a clean, high-contrast, minimal app icon for "${previewData.name}". Centered symbol, no text, no watermark, readable at small sizes.`,
+          pro: true,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.details || data?.error || "Failed to generate icon");
+      }
+      const version = typeof data?.timestamp === "number" ? data.timestamp : Date.now();
+      setHasGeneratedIcon(true);
+      setIconVersion(version);
+      setIconStatus("PWA icon generated.");
+      window.setTimeout(() => setIconStatus(null), 2500);
+    } catch (error) {
+      setIconStatus(error instanceof Error ? error.message : "Icon generation failed");
+    } finally {
+      setIsGeneratingIcon(false);
+    }
+  };
 
   if (!previewData) {
     return (
@@ -144,19 +231,64 @@ export default function PreviewClient() {
   }
 
   return (
-    <iframe
-      ref={iframeRef}
-      style={{
-        position: "fixed",
-        inset: 0,
-        width: "100%",
-        height: "100%",
-        border: "none",
-        backgroundColor: "white",
-      }}
-      sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
-      title="Preview App"
-    />
+    <>
+      <iframe
+        ref={iframeRef}
+        style={{
+          position: "fixed",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          border: "none",
+          backgroundColor: "white",
+        }}
+        sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
+        title="Preview App"
+      />
+      <div
+        style={{
+          position: "fixed",
+          top: "0.75rem",
+          right: "0.75rem",
+          zIndex: 1000,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-end",
+          gap: "0.5rem",
+        }}
+      >
+        <button
+          onClick={handleGenerateIcon}
+          disabled={isGeneratingIcon}
+          style={{
+            border: "1px solid #27272a",
+            background: isGeneratingIcon ? "#a1a1aa" : "#18181b",
+            color: "#fff",
+            borderRadius: "8px",
+            padding: "0.45rem 0.7rem",
+            fontSize: "0.85rem",
+            cursor: isGeneratingIcon ? "not-allowed" : "pointer",
+            boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
+          }}
+        >
+          {isGeneratingIcon ? "Generating..." : "Generate PWA Icon"}
+        </button>
+        {iconStatus ? (
+          <div
+            style={{
+              background: "rgba(24,24,27,0.92)",
+              color: "#fff",
+              fontSize: "0.75rem",
+              padding: "0.35rem 0.5rem",
+              borderRadius: "6px",
+              maxWidth: "280px",
+            }}
+          >
+            {iconStatus}
+          </div>
+        ) : null}
+      </div>
+    </>
   );
 }
 
@@ -166,7 +298,8 @@ export default function PreviewClient() {
 async function cacheForOffline(
   id: string,
   name: string,
-  standaloneHTML: string
+  standaloneHTML: string,
+  extraUrls: string[]
 ) {
   try {
     const cache = await caches.open(SW_CACHE_NAME);
@@ -190,7 +323,21 @@ async function cacheForOffline(
       // manifest caching is best-effort
     }
 
-    // 3) Cache all CDN scripts for offline use.
+    // 3) Cache current icon + latest manifest URL (with version, if provided).
+    await Promise.allSettled(
+      extraUrls.map(async (url) => {
+        try {
+          const resp = await fetch(url);
+          if (resp.ok) {
+            await cache.put(new Request(url), resp);
+          }
+        } catch {
+          // best-effort
+        }
+      })
+    );
+
+    // 4) Cache all CDN scripts for offline use.
     //    Some CDNs (e.g. cdn.tailwindcss.com) don't set CORS headers,
     //    so we use no-cors mode which returns an opaque response — the
     //    browser can still execute these when served by the service worker.
@@ -234,7 +381,8 @@ function buildStandaloneHTML(
   code: string,
   language: string,
   appName: string,
-  id: string
+  id: string,
+  iconHref: string
 ): string {
   const processedCode = processCode(code, language);
 
@@ -265,7 +413,7 @@ function buildStandaloneHTML(
     <meta name="theme-color" content="#18181b" />
     <title>${appName}</title>
     <link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}">
-    <link rel="apple-touch-icon" href="/icons/icon-192.png">
+    <link rel="apple-touch-icon" href="${iconHref}">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="${appName}">
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
