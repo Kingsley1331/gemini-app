@@ -9,13 +9,16 @@ function extractInlineData(response: {
   candidates?: Array<{
     content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> };
   }>;
-}) {
+}): { data: string; mimeType: string } | null {
   const candidates = response.candidates || [];
   for (const candidate of candidates) {
     const parts = candidate.content?.parts || [];
     for (const part of parts) {
       if (part.inlineData?.data && part.inlineData?.mimeType) {
-        return part.inlineData;
+        return {
+          data: part.inlineData.data,
+          mimeType: part.inlineData.mimeType,
+        };
       }
     }
   }
