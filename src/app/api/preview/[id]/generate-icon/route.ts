@@ -135,7 +135,8 @@ export async function GET(
     return NextResponse.json({ error: "Generated icon not found" }, { status: 404 });
   }
 
-  return new NextResponse(iconBuffer, {
+  const iconBytes = new Uint8Array(iconBuffer);
+  return new NextResponse(iconBytes, {
     status: 200,
     headers: {
       "Content-Type": "image/png",
