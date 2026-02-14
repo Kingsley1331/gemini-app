@@ -129,6 +129,13 @@ body {
   height: 100%;
 }
 
+@media (max-width: 640px) {
+  .richtext-fullscreen .tiptap {
+    padding: 1rem;
+    font-size: 0.95rem;
+  }
+}
+
 /* Force line number color in syntax highlighter */
 /* We target spans that look like line numbers based on the styles we inject */
 .gemini-code-block span[style*="user-select:none"],

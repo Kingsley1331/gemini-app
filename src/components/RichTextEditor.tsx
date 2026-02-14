@@ -35,6 +35,35 @@ interface RichTextEditorProps {
   initialContent?: string;
 }
 
+interface ToolbarButtonProps {
+  onClick: () => void;
+  isActive?: boolean;
+  children: React.ReactNode;
+  title: string;
+}
+
+function ToolbarButton({
+  onClick,
+  isActive,
+  children,
+  title,
+}: ToolbarButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`flex h-10 w-10 items-center justify-center rounded-md transition-colors sm:h-8 sm:w-8 ${
+        isActive
+          ? "bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400"
+          : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 // Convert Markdown to HTML for TipTap consumption
 function markdownToHtml(md: string): string {
   // Process the markdown line by line, building HTML
@@ -256,7 +285,7 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
       editorProps: {
         attributes: {
           class:
-            "prose prose-sm dark:prose-invert max-w-none focus:outline-none min-h-[40px] max-h-[200px] overflow-y-auto px-4 py-3",
+            "prose prose-sm dark:prose-invert max-w-none focus:outline-none min-h-[44px] max-h-[180px] sm:max-h-[220px] overflow-y-auto px-4 py-3",
         },
         handleKeyDown: (_view, event) => {
           if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -320,31 +349,6 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
 
     if (!editor) return null;
 
-    const ToolbarButton = ({
-      onClick,
-      isActive,
-      children,
-      title,
-    }: {
-      onClick: () => void;
-      isActive?: boolean;
-      children: React.ReactNode;
-      title: string;
-    }) => (
-      <button
-        type="button"
-        onClick={onClick}
-        title={title}
-        className={`p-1.5 rounded-md transition-colors ${
-          isActive
-            ? "bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400"
-            : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
-        }`}
-      >
-        {children}
-      </button>
-    );
-
     const toolbarContent = (
       <>
         <ToolbarButton
@@ -376,7 +380,7 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
           <Code className="w-3.5 h-3.5" />
         </ToolbarButton>
 
-        <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1" />
+        <div className="mx-1 hidden h-4 w-px bg-zinc-300 dark:bg-zinc-600 sm:block" />
 
         <ToolbarButton
           onClick={() =>
@@ -416,7 +420,7 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
           <CodeSquare className="w-3.5 h-3.5" />
         </ToolbarButton>
 
-        <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1" />
+        <div className="mx-1 hidden h-4 w-px bg-zinc-300 dark:bg-zinc-600 sm:block" />
 
         <ToolbarButton
           onClick={() => editor.chain().focus().undo().run()}
@@ -455,7 +459,7 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
           {/* Fullscreen overlay */}
           <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-zinc-900">
             {/* Header */}
-            <div className="flex items-center gap-0.5 px-4 py-2 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80 flex-wrap">
+            <div className="flex flex-wrap items-center gap-0.5 border-b border-zinc-200 bg-zinc-50 px-2 py-2 dark:border-zinc-700 dark:bg-zinc-800/80 sm:px-4">
               {toolbarContent}
             </div>
 
@@ -468,7 +472,7 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
             </div>
 
             {/* Bottom bar with send button */}
-            <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80">
+            <div className="flex flex-col gap-2 border-t border-zinc-200 bg-zinc-50 px-3 py-3 dark:border-zinc-700 dark:bg-zinc-800/80 sm:flex-row sm:items-center sm:justify-between sm:px-4">
               <span className="text-xs text-zinc-400">
                 Press Esc to exit fullscreen &middot; Ctrl+Enter to send
               </span>
@@ -478,7 +482,7 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
                   setIsFullscreen(false);
                   onSubmit?.();
                 }}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all text-sm font-medium"
+                className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-blue-500/20 transition-all hover:bg-blue-700"
               >
                 <Send className="w-4 h-4" />
                 Send
@@ -490,9 +494,9 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
     }
 
     return (
-      <div className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-sm transition-all focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent overflow-hidden">
+      <div className="flex-1 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm transition-all focus-within:border-transparent focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-800">
         {/* Toolbar */}
-        <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80 flex-wrap">
+        <div className="flex flex-wrap items-center gap-0.5 border-b border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800/80">
           {toolbarContent}
         </div>
 

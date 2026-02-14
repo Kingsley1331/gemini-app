@@ -729,29 +729,31 @@ export default function Chat() {
   );
 
   return (
-    <div className="flex flex-col h-[90vh] w-full max-w-5xl mx-auto bg-white dark:bg-zinc-900 rounded-2xl shadow-xl overflow-hidden border border-zinc-200 dark:border-zinc-800">
+    <div className="flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900 sm:h-[90vh] sm:rounded-2xl">
       {/* Header */}
-      <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-3 border-b border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/50 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+        <div className="flex min-w-0 items-center gap-2">
           <div className="p-2 bg-blue-500 rounded-lg">
             <Sparkles className="w-5 h-5 text-white" />
           </div>
-          <div>
-            <h2 className="font-bold text-zinc-900 dark:text-zinc-100">
+          <div className="min-w-0">
+            <h2 className="truncate font-bold text-zinc-900 dark:text-zinc-100">
               AI Chat & NanoBanana
             </h2>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
               Chat, Code, and Generate Images
             </p>
           </div>
         </div>
 
-        <div className="relative" ref={modelDropdownRef}>
+        <div className="relative w-full sm:w-auto" ref={modelDropdownRef}>
           <button
             onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm font-medium hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors"
+            className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 sm:w-auto sm:justify-start sm:py-1.5"
           >
-            <span>{models.find((m) => m.id === selectedModel)?.name}</span>
+            <span className="truncate">
+              {models.find((m) => m.id === selectedModel)?.name}
+            </span>
             <ChevronDown
               className={`w-4 h-4 transition-transform ${isModelDropdownOpen ? "rotate-180" : ""}`}
             />
@@ -763,7 +765,7 @@ export default function Chat() {
                 initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="absolute right-0 top-full mt-2 w-72 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-xl z-50 overflow-hidden max-h-[70vh] overflow-y-auto"
+                className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-800 sm:left-auto sm:right-0 sm:w-72"
               >
                 {Object.entries(groupedModels).map(
                   ([provider, providerModels], groupIndex) => (
@@ -812,9 +814,9 @@ export default function Chat() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+      <div className="flex-1 space-y-6 overflow-y-auto p-3 sm:p-4">
         {messages.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-zinc-400 space-y-2">
+          <div className="flex h-full flex-col items-center justify-center space-y-2 px-3 text-center text-sm text-zinc-400 sm:text-base">
             <Bot className="w-12 h-12 opacity-20" />
             <p>Start a conversation, write some code, or generate an image</p>
             <div className="flex flex-wrap justify-center gap-2 mt-4">
@@ -893,7 +895,7 @@ export default function Chat() {
       {/* Input */}
       <form
         onSubmit={(e) => handleSubmit(e)}
-        className="p-4 bg-zinc-50 dark:bg-zinc-900/50 border-t border-zinc-200 dark:border-zinc-800"
+        className="border-t border-zinc-200 bg-zinc-50 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] dark:border-zinc-800 dark:bg-zinc-900/50 sm:p-4"
       >
         {selectedImage && (
           <div className="mb-4 relative inline-block">
@@ -912,7 +914,7 @@ export default function Chat() {
             </button>
           </div>
         )}
-        <div className="relative flex items-center gap-3">
+        <div className="relative flex flex-col gap-3">
           <input
             type="file"
             ref={fileInputRef}
@@ -927,116 +929,120 @@ export default function Chat() {
             accept=".tsx,.jsx,.js,.ts,.html"
             className="hidden"
           />
-          <button
-            type="button"
-            onClick={toggleListening}
-            className={cn(
-              "p-2.5 rounded-xl transition-all",
-              isListening
-                ? "text-red-500 bg-red-50 dark:bg-red-900/20"
-                : isMicInitializing
-                  ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20"
-                  : "text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20",
-            )}
-            title={
-              isListening
-                ? "Stop Listening"
-                : isMicInitializing
-                  ? "Initializing Mic..."
-                  : "Start Voice Input"
-            }
-          >
-            {isMicInitializing ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : isListening ? (
-              <Mic className="w-5 h-5 animate-pulse" />
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            <button
+              type="button"
+              onClick={toggleListening}
+              className={cn(
+                "flex h-11 w-11 items-center justify-center rounded-xl transition-all sm:h-10 sm:w-10",
+                isListening
+                  ? "bg-red-50 text-red-500 dark:bg-red-900/20"
+                  : isMicInitializing
+                    ? "bg-amber-50 text-amber-500 dark:bg-amber-900/20"
+                    : "text-zinc-500 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20",
+              )}
+              title={
+                isListening
+                  ? "Stop Listening"
+                  : isMicInitializing
+                    ? "Initializing Mic..."
+                    : "Start Voice Input"
+              }
+            >
+              {isMicInitializing ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : isListening ? (
+                <Mic className="h-5 w-5 animate-pulse" />
+              ) : (
+                <Mic className="h-5 w-5" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex h-11 w-11 items-center justify-center rounded-xl text-zinc-500 transition-all hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 sm:h-10 sm:w-10"
+              title="Upload Image"
+            >
+              <Paperclip className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => codeFileInputRef.current?.click()}
+              className="flex h-11 w-11 items-center justify-center rounded-xl text-zinc-500 transition-all hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 sm:h-10 sm:w-10"
+              title="Upload Code for Preview"
+            >
+              <Upload className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => handleSubmit(e as unknown as React.FormEvent, true)}
+              className="flex h-11 w-11 items-center justify-center rounded-xl text-zinc-500 transition-all hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 sm:h-10 sm:w-10"
+              title="Generate Image"
+            >
+              <ImageIcon className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsRichText((prev) => {
+                  if (prev) {
+                    // Switching from rich to plain: pull content as markdown
+                    const md = richTextRef.current?.getMarkdown() || "";
+                    setInput(md);
+                  }
+                  return !prev;
+                });
+              }}
+              className={cn(
+                "flex h-11 w-11 items-center justify-center rounded-xl transition-all sm:h-10 sm:w-10",
+                isRichText
+                  ? "bg-blue-50 text-blue-600 dark:bg-blue-900/20"
+                  : "text-zinc-500 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20",
+              )}
+              title={
+                isRichText ? "Switch to plain text" : "Switch to rich text editor"
+              }
+            >
+              <Type className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsPromptAssistantOpen(true)}
+              className="flex h-11 w-11 items-center justify-center rounded-xl text-zinc-500 transition-all hover:bg-purple-50 hover:text-purple-600 dark:hover:bg-purple-900/20 sm:h-10 sm:w-10"
+              title="Prompt Assistant"
+            >
+              <Wand2 className="h-5 w-5" />
+            </button>
+          </div>
+          <div className="flex min-w-0 items-end gap-2">
+            {isRichText ? (
+              <RichTextEditor
+                ref={richTextRef}
+                placeholder="Type a message with rich formatting..."
+                onSubmit={() => handleSubmit()}
+                onChange={(md) => setRichTextContent(md)}
+                initialContent={input}
+              />
             ) : (
-              <Mic className="w-5 h-5" />
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Type a message, ask for code, or use /image..."
+                className="min-w-0 flex-1 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm outline-none transition-all focus:border-transparent focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-800"
+              />
             )}
-          </button>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="p-2.5 text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
-            title="Upload Image"
-          >
-            <Paperclip className="w-5 h-5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => codeFileInputRef.current?.click()}
-            className="p-2.5 text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
-            title="Upload Code for Preview"
-          >
-            <Upload className="w-5 h-5" />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => handleSubmit(e as unknown as React.FormEvent, true)}
-            className="p-2.5 text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
-            title="Generate Image"
-          >
-            <ImageIcon className="w-5 h-5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setIsRichText((prev) => {
-                if (prev) {
-                  // Switching from rich to plain: pull content as markdown
-                  const md = richTextRef.current?.getMarkdown() || "";
-                  setInput(md);
-                }
-                return !prev;
-              });
-            }}
-            className={cn(
-              "p-2.5 rounded-xl transition-all",
-              isRichText
-                ? "text-blue-600 bg-blue-50 dark:bg-blue-900/20"
-                : "text-zinc-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20",
-            )}
-            title={
-              isRichText ? "Switch to plain text" : "Switch to rich text editor"
-            }
-          >
-            <Type className="w-5 h-5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsPromptAssistantOpen(true)}
-            className="p-2.5 text-zinc-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-xl transition-all"
-            title="Prompt Assistant"
-          >
-            <Wand2 className="w-5 h-5" />
-          </button>
-          {isRichText ? (
-            <RichTextEditor
-              ref={richTextRef}
-              placeholder="Type a message with rich formatting..."
-              onSubmit={() => handleSubmit()}
-              onChange={(md) => setRichTextContent(md)}
-              initialContent={input}
-            />
-          ) : (
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Type a message, ask for code, or use /image..."
-              className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none shadow-sm transition-all"
-            />
-          )}
-          <button
-            type="submit"
-            disabled={
-              (!(isRichText ? richTextContent.trim() : input.trim()) &&
-                !selectedImage) ||
-              isLoading
-            }
-            className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 shadow-lg shadow-blue-500/20 transition-all"
-          >
-            <Send className="w-5 h-5" />
-          </button>
+            <button
+              type="submit"
+              disabled={
+                (!(isRichText ? richTextContent.trim() : input.trim()) &&
+                  !selectedImage) ||
+                isLoading
+              }
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-500/20 transition-all hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 sm:h-12 sm:w-12"
+            >
+              <Send className="h-5 w-5" />
+            </button>
+          </div>
         </div>
       </form>
 

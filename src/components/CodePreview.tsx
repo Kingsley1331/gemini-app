@@ -761,18 +761,18 @@ export default function CodePreview({
   return (
     <div
       className={`flex flex-col border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden bg-white dark:bg-zinc-950 my-4 ${
-        isFullscreen ? "fixed inset-4 z-50" : "w-full"
+        isFullscreen ? "fixed inset-1 z-50 sm:inset-4" : "w-full"
       }`}
     >
-      <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-col gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900/50 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-4">
           <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
             {title}
           </span>
           <div className="flex bg-zinc-200 dark:bg-zinc-800 p-0.5 rounded-lg">
             <button
               onClick={() => setActiveTab("preview")}
-              className={`px-3 py-1 text-xs rounded-md transition-all ${
+              className={`rounded-md px-3 py-1 text-xs transition-all ${
                 activeTab === "preview"
                   ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm"
                   : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
@@ -782,7 +782,7 @@ export default function CodePreview({
             </button>
             <button
               onClick={() => setActiveTab("code")}
-              className={`px-3 py-1 text-xs rounded-md transition-all ${
+              className={`rounded-md px-3 py-1 text-xs transition-all ${
                 activeTab === "code"
                   ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm"
                   : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
@@ -794,7 +794,7 @@ export default function CodePreview({
           {error && onDebug && activeTab === "preview" && (
             <button
               onClick={() => onDebug(error, code, language)}
-              className="flex items-center gap-1.5 px-3 py-1 bg-red-500 hover:bg-red-600 text-white text-[10px] font-bold rounded-md transition-all shadow-sm animate-pulse"
+              className="flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1 text-[10px] font-bold text-white shadow-sm transition-all hover:bg-red-600 sm:text-[11px]"
             >
               <Bug className="w-3 h-3" />
               DEBUG WITH GEMINI
@@ -802,10 +802,10 @@ export default function CodePreview({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1 sm:gap-2">
           <button
             onClick={copyToClipboard}
-            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             title="Copy code"
           >
             {copied ? (
@@ -816,28 +816,28 @@ export default function CodePreview({
           </button>
           <button
             onClick={handleDownload}
-            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             title="Download as ZIP"
           >
             <Download className="w-4 h-4" />
           </button>
           <button
             onClick={handleInstallPWA}
-            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             title="Install as App"
           >
             <Smartphone className="w-4 h-4" />
           </button>
           <button
             onClick={handleRefresh}
-            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             title="Reload preview"
           >
             <RotateCcw className="w-4 h-4" />
           </button>
           <button
             onClick={() => setIsFullscreen(!isFullscreen)}
-            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
           >
             {isFullscreen ? (
@@ -849,16 +849,16 @@ export default function CodePreview({
         </div>
       </div>
 
-      <div className="relative flex-1 min-h-[500px] bg-zinc-50 dark:bg-zinc-900/20">
+      <div className="relative flex-1 min-h-[320px] bg-zinc-50 dark:bg-zinc-900/20 sm:min-h-[500px]">
         {activeTab === "preview" ? (
           <iframe
             ref={iframeRef}
-            className="w-full h-full min-h-[500px] border-none bg-white"
+            className="h-full min-h-[320px] w-full border-none bg-white sm:min-h-[500px]"
             sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
             title="Code Preview"
           />
         ) : (
-          <div className="h-full overflow-auto max-h-[600px] bg-[#1e1e1e]">
+          <div className="h-full max-h-[55vh] overflow-auto bg-[#1e1e1e] sm:max-h-[600px]">
             <SyntaxHighlighter
               language={language}
               style={vscDarkPlus}
