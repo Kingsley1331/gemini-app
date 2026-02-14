@@ -47,7 +47,9 @@ export default function PreviewClient() {
     document.title = name;
 
     const setMeta = (nameAttr: string, content: string) => {
-      let el = document.querySelector(`meta[name="${nameAttr}"]`) as HTMLMetaElement | null;
+      let el = document.querySelector(
+        `meta[name="${nameAttr}"]`,
+      ) as HTMLMetaElement | null;
       if (!el) {
         el = document.createElement("meta");
         el.name = nameAttr;
@@ -62,7 +64,9 @@ export default function PreviewClient() {
     setMeta("apple-mobile-web-app-title", name);
 
     // Manifest link
-    let manifestLink = document.querySelector('link[rel="manifest"]') as HTMLLinkElement | null;
+    let manifestLink = document.querySelector(
+      'link[rel="manifest"]',
+    ) as HTMLLinkElement | null;
     if (!manifestLink) {
       manifestLink = document.createElement("link");
       manifestLink.rel = "manifest";
@@ -71,7 +75,9 @@ export default function PreviewClient() {
     manifestLink.href = `/preview/${id}/manifest.json?name=${encodeURIComponent(name)}`;
 
     // Apple touch icon
-    let touchIcon = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement | null;
+    let touchIcon = document.querySelector(
+      'link[rel="apple-touch-icon"]',
+    ) as HTMLLinkElement | null;
     if (!touchIcon) {
       touchIcon = document.createElement("link");
       touchIcon.rel = "apple-touch-icon";
@@ -166,7 +172,7 @@ export default function PreviewClient() {
 async function cacheForOffline(
   id: string,
   name: string,
-  standaloneHTML: string
+  standaloneHTML: string,
 ) {
   try {
     const cache = await caches.open(SW_CACHE_NAME);
@@ -176,7 +182,7 @@ async function cacheForOffline(
       new Request(`/preview/${id}`),
       new Response(standaloneHTML, {
         headers: { "Content-Type": "text/html; charset=utf-8" },
-      })
+      }),
     );
 
     // 2) Fetch and cache the manifest so it's available offline too
@@ -217,7 +223,7 @@ async function cacheForOffline(
         } catch {
           // best-effort
         }
-      })
+      }),
     );
   } catch {
     // caching is best-effort; the app still works online without it
@@ -234,8 +240,11 @@ function buildStandaloneHTML(
   code: string,
   language: string,
   appName: string,
-  id: string
+  id: string,
 ): string {
+  // Auto-detect React code mislabeled as "html"
+  language = detectEffectiveLanguage(code, language);
+
   const processedCode = processCode(code, language);
 
   // For raw HTML, wrap it with the manifest + SW registration
@@ -251,7 +260,7 @@ function buildStandaloneHTML(
     if (code.includes("</head>")) {
       return code.replace(
         "</head>",
-        `${manifestLink}\n${metaTheme}\n${swScript}\n</head>`
+        `${manifestLink}\n${metaTheme}\n${swScript}\n</head>`,
       );
     }
     return `${manifestLink}\n${metaTheme}\n${swScript}\n${code}`;
@@ -395,8 +404,11 @@ function buildStandaloneHTML(
 function buildPreviewHTML(
   code: string,
   language: string,
-  appName: string
+  appName: string,
 ): string {
+  // Auto-detect React code mislabeled as "html"
+  language = detectEffectiveLanguage(code, language);
+
   if (language === "html") {
     return code;
   }
@@ -526,28 +538,36 @@ function buildPreviewHTML(
 }
 
 // ---------------------------------------------------------------------------
+// Detect whether "html"-tagged code is actually React/JSX so we process it
+// correctly instead of returning raw source as-is.
+// ---------------------------------------------------------------------------
+function detectEffectiveLanguage(code: string, language: string): string {
+  if (language === "html") {
+    const isReactCode =
+      /import\s.*from\s/.test(code) ||
+      /export\s+default\s+function/.test(code) ||
+      /useState|useEffect|useRef|useCallback/.test(code);
+    if (isReactCode) return "tsx";
+  }
+  return language;
+}
+
+// ---------------------------------------------------------------------------
 // Shared code processing — strips imports/exports, handles lucide icons, etc.
 // ---------------------------------------------------------------------------
 function processCode(code: string, language: string): string {
+  // Auto-detect React code mislabeled as "html"
+  language = detectEffectiveLanguage(code, language);
+
   if (language === "html") return code;
 
-  const defaultExportMatch = code.match(
-    /export\s+default\s+function\s+(\w+)/
-  );
-  const defaultExportName = defaultExportMatch
-    ? defaultExportMatch[1]
-    : null;
+  const defaultExportMatch = code.match(/export\s+default\s+function\s+(\w+)/);
+  const defaultExportName = defaultExportMatch ? defaultExportMatch[1] : null;
 
   const cleanedCode =
     code
-      .replace(
-        /import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
-        ""
-      )
-      .replace(
-        /import\s+type\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g,
-        ""
-      )
+      .replace(/import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
+      .replace(/import\s+type\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
       .replace(
         /import\s*\{([^}]*)\}\s*from\s*['"]lucide-react['"];?\n?/g,
         (_match: string, names: string) => {
@@ -559,8 +579,7 @@ function processCode(code: string, language: string): string {
               .map((n: string) => {
                 const parts = n.split(/\s+as\s+/);
                 const original = parts[0].trim();
-                const alias =
-                  parts.length > 1 ? parts[1].trim() : original;
+                const alias = parts.length > 1 ? parts[1].trim() : original;
                 const kebab = original
                   .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
                   .toLowerCase();
@@ -576,26 +595,17 @@ function processCode(code: string, language: string): string {
               })
               .join("\n") + "\n"
           );
-        }
+        },
       )
-      .replace(
-        /import\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
-        ""
-      )
+      .replace(/import\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g, "")
       .replace(
         /import\s+\w+\s*,?\s*\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
-        ""
+        "",
       )
       .replace(/import\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
-      .replace(
-        /import\s+\*\s+as\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g,
-        ""
-      )
+      .replace(/import\s+\*\s+as\s+\w+\s+from\s*['"][^'"]*['"];?\n?/g, "")
       .replace(/import\s*['"][^'"]*['"];?\n?/g, "")
-      .replace(
-        /export\s+default\s+function\s+(\w+)/,
-        "function $1"
-      )
+      .replace(/export\s+default\s+function\s+(\w+)/, "function $1")
       .replace(/export\s+default\s+/, "const App = ")
       .replace(/export\s+/g, "") +
     (defaultExportName && defaultExportName !== "App"
@@ -612,20 +622,15 @@ function processCode(code: string, language: string): string {
         .replace(/"/g, '\\"')
         .replace(/\n/g, "\\n");
       return '{"$$' + escaped + '$$"}';
-    }
+    },
   );
-  result = result.replace(
-    /\$([^$\n]+?)\$/g,
-    (_m: string, inner: string) => {
-      if (/[\\^_]/.test(inner) || /^[A-Za-z]$/.test(inner)) {
-        const escaped = inner
-          .replace(/\\/g, "\\\\")
-          .replace(/"/g, '\\"');
-        return '{"$' + escaped + '$"}';
-      }
-      return _m;
+  result = result.replace(/\$([^$\n]+?)\$/g, (_m: string, inner: string) => {
+    if (/[\\^_]/.test(inner) || /^[A-Za-z]$/.test(inner)) {
+      const escaped = inner.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      return '{"$' + escaped + '$"}';
     }
-  );
+    return _m;
+  });
 
   return result;
 }

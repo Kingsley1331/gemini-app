@@ -101,12 +101,12 @@ When writing mathematical formulas in regular chat (not code), use LaTeX notatio
 async function streamGemini(
   modelId: string,
   messages: ChatMessage[],
-  systemInstructionText: string
+  systemInstructionText: string,
 ): Promise<ReadableStream<Uint8Array>> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "GEMINI_API_KEY is not defined in environment variables. Check your .env.local file and restart your server."
+      "GEMINI_API_KEY is not defined in environment variables. Check your .env.local file and restart your server.",
     );
   }
 
@@ -189,12 +189,13 @@ async function streamGemini(
         if (!hasText) {
           controller.enqueue(
             encoder.encode(
-              "I'm sorry, I couldn't generate a response. Please try again."
-            )
+              "I'm sorry, I couldn't generate a response. Please try again.",
+            ),
           );
         }
       } catch (error) {
-        const errMsg = error instanceof Error ? error.message : "Unknown Gemini error";
+        const errMsg =
+          error instanceof Error ? error.message : "Unknown Gemini error";
         controller.enqueue(encoder.encode(`\n\n**Error (Gemini):** ${errMsg}`));
       } finally {
         controller.close();
@@ -206,12 +207,12 @@ async function streamGemini(
 async function streamOpenAI(
   modelId: string,
   messages: ChatMessage[],
-  systemInstructionText: string
+  systemInstructionText: string,
 ): Promise<ReadableStream<Uint8Array>> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "OPENAI_API_KEY is not defined in environment variables. Check your .env.local file and restart your server."
+      "OPENAI_API_KEY is not defined in environment variables. Check your .env.local file and restart your server.",
     );
   }
 
@@ -223,23 +224,26 @@ async function streamOpenAI(
   ];
 
   for (const msg of messages) {
-    const role: "user" | "assistant" = msg.role === "user" ? "user" : "assistant";
+    const role: "user" | "assistant" =
+      msg.role === "user" ? "user" : "assistant";
 
     // If there are image attachments, use multimodal content parts for user messages
     if (role === "user" && msg.attachments && msg.attachments.length > 0) {
       const contentParts: Array<
         | { type: "input_text"; text: string }
         | { type: "input_image"; image_url: string }
-      > = [
-        { type: "input_text", text: msg.content },
-      ];
+      > = [{ type: "input_text", text: msg.content }];
       for (const attachment of msg.attachments) {
         contentParts.push({
           type: "input_image",
           image_url: `data:${attachment.mimeType};base64,${attachment.data}`,
         });
       }
-      openaiInput.push({ type: "message", role: "user", content: contentParts });
+      openaiInput.push({
+        type: "message",
+        role: "user",
+        content: contentParts,
+      });
     } else {
       openaiInput.push({ type: "message", role, content: msg.content });
     }
@@ -258,7 +262,9 @@ async function streamOpenAI(
         let hasText = false;
         for await (const event of stream) {
           const text =
-            event.type === "response.output_text.delta" ? event.delta : undefined;
+            event.type === "response.output_text.delta"
+              ? event.delta
+              : undefined;
           if (text) {
             hasText = true;
             controller.enqueue(encoder.encode(text));
@@ -267,12 +273,13 @@ async function streamOpenAI(
         if (!hasText) {
           controller.enqueue(
             encoder.encode(
-              "I'm sorry, I couldn't generate a response. Please try again."
-            )
+              "I'm sorry, I couldn't generate a response. Please try again.",
+            ),
           );
         }
       } catch (error) {
-        const errMsg = error instanceof Error ? error.message : "Unknown OpenAI error";
+        const errMsg =
+          error instanceof Error ? error.message : "Unknown OpenAI error";
         controller.enqueue(encoder.encode(`\n\n**Error (OpenAI):** ${errMsg}`));
       } finally {
         controller.close();
@@ -284,12 +291,12 @@ async function streamOpenAI(
 async function streamAnthropic(
   modelId: string,
   messages: ChatMessage[],
-  systemInstructionText: string
+  systemInstructionText: string,
 ): Promise<ReadableStream<Uint8Array>> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "ANTHROPIC_API_KEY is not defined in environment variables. Check your .env.local file and restart your server."
+      "ANTHROPIC_API_KEY is not defined in environment variables. Check your .env.local file and restart your server.",
     );
   }
 
@@ -299,7 +306,8 @@ async function streamAnthropic(
   const anthropicMessages: Anthropic.MessageParam[] = [];
 
   for (const msg of messages) {
-    const role: "user" | "assistant" = msg.role === "user" ? "user" : "assistant";
+    const role: "user" | "assistant" =
+      msg.role === "user" ? "user" : "assistant";
 
     if (role === "user" && msg.attachments && msg.attachments.length > 0) {
       const contentBlocks: Anthropic.ContentBlockParam[] = [
@@ -355,13 +363,16 @@ async function streamAnthropic(
         if (!hasText) {
           controller.enqueue(
             encoder.encode(
-              "I'm sorry, I couldn't generate a response. Please try again."
-            )
+              "I'm sorry, I couldn't generate a response. Please try again.",
+            ),
           );
         }
       } catch (error) {
-        const errMsg = error instanceof Error ? error.message : "Unknown Anthropic error";
-        controller.enqueue(encoder.encode(`\n\n**Error (Anthropic):** ${errMsg}`));
+        const errMsg =
+          error instanceof Error ? error.message : "Unknown Anthropic error";
+        controller.enqueue(
+          encoder.encode(`\n\n**Error (Anthropic):** ${errMsg}`),
+        );
       } finally {
         controller.close();
       }
@@ -396,7 +407,7 @@ export async function POST(req: Request) {
         stream = await streamAnthropic(
           modelId,
           messages,
-          systemInstructionText
+          systemInstructionText,
         );
         break;
       case "gemini":
@@ -415,7 +426,7 @@ export async function POST(req: Request) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(
       { error: "Chat Error", details: message },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
