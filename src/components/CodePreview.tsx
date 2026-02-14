@@ -31,7 +31,7 @@ function createPwaPreviewId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
-function scheduleGeneratedIconCleanup(id: string, delayMs = 25000) {
+function scheduleGeneratedIconCleanup(id: string, delayMs = 10 * 60 * 1000) {
   window.setTimeout(() => {
     fetch(`/api/preview/${id}/generate-icon`, {
       method: "DELETE",
@@ -184,6 +184,17 @@ export default function CodePreview({
   const [generatedCandidateName, setGeneratedCandidateName] = useState<string | null>(null);
   const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Remove legacy large icon data-url keys left by earlier builds.
+  useEffect(() => {
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (/^pwa-preview-.*-icon-(192|512)$/.test(key)) {
+        localStorage.removeItem(key);
+      }
+    }
+  }, []);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(code);
@@ -429,6 +440,7 @@ export default function CodePreview({
       localStorage.setItem(`pwa-preview-${preparedPwaId}-code`, code);
       localStorage.setItem(`pwa-preview-${preparedPwaId}-language`, language);
       localStorage.setItem(`pwa-preview-${preparedPwaId}-name`, preparedPwaName);
+      localStorage.setItem(`pwa-preview-${preparedPwaId}-has-generated-icon`, "1");
       window.open(`/preview/${preparedPwaId}`, "_blank");
       scheduleGeneratedIconCleanup(preparedPwaId);
       setPreparedPwaId(null);
@@ -491,8 +503,18 @@ export default function CodePreview({
       }
       setGeneratedCandidateId(id);
       setGeneratedCandidateName(name);
+      localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+
+      // Persist icon base64 data so PreviewClient can cache them in the SW
+      // cache — ensures the icons are available for PWA install even when the
+      // server API route can't serve them (e.g. serverless cold start).
+      const icon192b64 = data?.iconDataUrls?.icon192?.replace(/^data:[^,]+,/, "");
+      const icon512b64 = data?.iconDataUrls?.icon512?.replace(/^data:[^,]+,/, "");
+      if (icon192b64) localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
+      if (icon512b64) localStorage.setItem(`pwa-preview-${id}-icon512-b64`, icon512b64);
+
       setGeneratedIconPreviewUrl(
-        data?.icons?.icon192 || `/generated-icons/${id}/icon-192.png?v=${Date.now()}`
+        data?.icons?.icon192 || `/api/preview/${id}/generate-icon?size=192&v=${Date.now()}`
       );
       setIconModalStatus("Preview ready. Keep it or regenerate.");
     } catch (err) {
@@ -523,7 +545,11 @@ export default function CodePreview({
     setPreparedPwaName(generatedCandidateName);
     setIconModalStatus("Icon kept. Use Install as App to open the matching preview.");
     setShowIconModal(false);
-  }, [generatedCandidateId, generatedCandidateName, generatedIconPreviewUrl]);
+  }, [
+    generatedCandidateId,
+    generatedCandidateName,
+    generatedIconPreviewUrl,
+  ]);
 
   const closeIconModal = useCallback(() => {
     if (generatedCandidateId && generatedCandidateId !== preparedPwaId) {

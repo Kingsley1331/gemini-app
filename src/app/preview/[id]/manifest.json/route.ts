@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getGeneratedIcon } from "@/lib/generated-icon-store";
+import { getGeneratedIconBlobUrl } from "@/lib/generated-icon-blob";
 
 export async function GET(
   request: NextRequest,
@@ -7,9 +9,15 @@ export async function GET(
   const { id } = await params;
   const { searchParams } = new URL(request.url);
   const name = searchParams.get("name") || "My App";
-  const useGeneratedIcons = searchParams.get("generated") === "1";
 
-  const icons = useGeneratedIcons
+  // Auto-detect generated icons server-side so we don't depend on the client
+  // passing a query flag.  Check in-memory store first (fast), then blob.
+  const clientHint = searchParams.get("generated") === "1";
+  const memoryHit = Boolean(getGeneratedIcon(id, 192));
+  const blobHit = !memoryHit ? Boolean(await getGeneratedIconBlobUrl(id, 192)) : false;
+  const hasGeneratedIcons = clientHint || memoryHit || blobHit;
+
+  const icons = hasGeneratedIcons
     ? [
         {
           src: `/api/preview/${id}/generate-icon?size=192`,

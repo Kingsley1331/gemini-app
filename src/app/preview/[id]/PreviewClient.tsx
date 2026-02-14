@@ -18,6 +18,7 @@ interface PreviewData {
   code: string;
   language: string;
   name: string;
+  hasGeneratedIconHint?: boolean;
 }
 
 const EXTERNAL_IMPORT_BLOCKLIST = new Set([
@@ -144,29 +145,48 @@ function readPreviewData(id: string): PreviewData | null {
     code,
     language: localStorage.getItem(`pwa-preview-${id}-language`) || "jsx",
     name: localStorage.getItem(`pwa-preview-${id}-name`) || "My App",
+    hasGeneratedIconHint:
+      localStorage.getItem(`pwa-preview-${id}-has-generated-icon`) === "1",
   };
 }
 
 export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const cleanupScheduledRef = useRef(false);
   const [iconVersion, setIconVersion] = useState<number>(0);
-  const [hasGeneratedIcon, setHasGeneratedIcon] = useState(false);
   const [isGeneratingIcon, setIsGeneratingIcon] = useState(false);
   const [iconStatus, setIconStatus] = useState<string | null>(null);
 
   // Since SSR is disabled, we can read localStorage directly during render
   const previewData = id ? readPreviewData(id) : null;
+
+  // Initialise from localStorage hint synchronously so the very first render
+  // already includes &generated=1 in the manifest link.  This avoids a brief
+  // window where the browser could read the manifest without generated icons.
+  const [hasGeneratedIcon, setHasGeneratedIcon] = useState(
+    () => previewData?.hasGeneratedIconHint ?? false,
+  );
+
   const icon192Href = useMemo(() => {
     const base = hasGeneratedIcon
       ? `/api/preview/${id}/generate-icon?size=192`
       : "/icons/icon.svg";
-    return iconVersion ? `${base}?v=${iconVersion}` : base;
+    // Use & (not ?) when the base already contains a query string
+    if (!iconVersion) return base;
+    const separator = base.includes("?") ? "&" : "?";
+    return `${base}${separator}v=${iconVersion}`;
   }, [hasGeneratedIcon, iconVersion, id]);
 
   useEffect(() => {
     if (!id) return;
+
+    // If localStorage already told us icons exist, trust it and only use the
+    // HEAD request as an upgrade path (never downgrade back to false).
+    const hintSaysYes = previewData?.hasGeneratedIconHint ?? false;
+    if (hintSaysYes) {
+      setHasGeneratedIcon(true);
+    }
+
     let cancelled = false;
     fetch(`/api/preview/${id}/generate-icon?size=192`, {
       method: "HEAD",
@@ -174,11 +194,18 @@ export default function PreviewClient() {
     })
       .then((resp) => {
         if (!cancelled) {
-          setHasGeneratedIcon(resp.ok);
+          // Only flip to true from the server; never override a localStorage
+          // hint of "true" with a transient server 404 (e.g. cold start).
+          if (resp.ok) {
+            setHasGeneratedIcon(true);
+          } else if (!hintSaysYes) {
+            setHasGeneratedIcon(false);
+          }
         }
       })
       .catch(() => {
-        if (!cancelled) {
+        // Network error — keep the hint if we have one
+        if (!cancelled && !hintSaysYes) {
           setHasGeneratedIcon(false);
         }
       });
@@ -186,7 +213,49 @@ export default function PreviewClient() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, previewData?.hasGeneratedIconHint]);
+
+  // Pre-cache generated icon PNGs in the SW Cache API from localStorage.
+  // This ensures the icons are available when the browser fetches them for
+  // the PWA install dialog, even if the API route can't serve them (e.g.
+  // serverless cold start, different lambda instance, server restart).
+  useEffect(() => {
+    if (!id || !hasGeneratedIcon) return;
+    const icon192b64 = localStorage.getItem(`pwa-preview-${id}-icon192-b64`);
+    const icon512b64 = localStorage.getItem(`pwa-preview-${id}-icon512-b64`);
+    if (!icon192b64 && !icon512b64) return;
+
+    (async () => {
+      try {
+        const cache = await caches.open(SW_CACHE_NAME);
+        const b64ToResponse = (b64: string) => {
+          const raw = atob(b64);
+          const bytes = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+          return new Response(bytes, {
+            headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" },
+          });
+        };
+        if (icon192b64) {
+          await cache.put(
+            new Request(`/api/preview/${id}/generate-icon?size=192`),
+            b64ToResponse(icon192b64),
+          );
+        }
+        if (icon512b64) {
+          await cache.put(
+            new Request(`/api/preview/${id}/generate-icon?size=512`),
+            b64ToResponse(icon512b64),
+          );
+        }
+        // Clean up — data is now in the SW cache
+        localStorage.removeItem(`pwa-preview-${id}-icon192-b64`);
+        localStorage.removeItem(`pwa-preview-${id}-icon512-b64`);
+      } catch {
+        // caching is best-effort
+      }
+    })();
+  }, [id, hasGeneratedIcon]);
 
   useEffect(() => {
     if (!id || !previewData) return;
@@ -266,7 +335,7 @@ export default function PreviewClient() {
 
     // 3) Build a fully self-contained standalone page and cache it
     //    This is what the SW will serve when the dev server is off
-    const standaloneHTML = buildStandaloneHTML(code, language, name, id, icon192Href);
+    const standaloneHTML = buildStandaloneHTML(code, language, name, id, icon192Href, hasGeneratedIcon);
 
     swReady.then(async () => {
       await cacheForOffline(id, name, standaloneHTML, [
@@ -276,19 +345,6 @@ export default function PreviewClient() {
           ? `/api/preview/${id}/generate-icon?size=512${iconVersion ? `&v=${iconVersion}` : ""}`
           : "/icons/icon.svg",
       ]);
-
-      // After assets are cached for this preview, remove generated icon files from /public.
-      if (hasGeneratedIcon && !cleanupScheduledRef.current) {
-        cleanupScheduledRef.current = true;
-        window.setTimeout(() => {
-          fetch(`/api/preview/${id}/generate-icon`, {
-            method: "DELETE",
-            keepalive: true,
-          }).catch(() => {
-            // cleanup is best-effort
-          });
-        }, 12000);
-      }
     });
   }, [hasGeneratedIcon, icon192Href, iconVersion, id, previewData]);
 
@@ -437,18 +493,10 @@ async function cacheForOffline(
       }),
     );
 
-    // 2) Fetch and cache the manifest so it's available offline too
-    const manifestUrl = `/preview/${id}/manifest.json?name=${encodeURIComponent(name)}`;
-    try {
-      const manifestResp = await fetch(manifestUrl);
-      if (manifestResp.ok) {
-        await cache.put(new Request(manifestUrl), manifestResp);
-      }
-    } catch {
-      // manifest caching is best-effort
-    }
-
-    // 3) Cache current icon + latest manifest URL (with version, if provided).
+    // 2) Cache the manifest (with generated flag) + icon URLs.
+    //    The correct manifest URL (including &generated=1 when applicable) is
+    //    passed in via extraUrls so we don't build a second, potentially wrong,
+    //    manifest URL here.
     await Promise.allSettled(
       extraUrls.map(async (url) => {
         try {
@@ -507,7 +555,8 @@ function buildStandaloneHTML(
   language: string,
   appName: string,
   id: string,
-  iconHref: string
+  iconHref: string,
+  useGeneratedIcons: boolean = false,
 ): string {
   // Auto-detect React code mislabeled as "html"
   language = detectEffectiveLanguage(code, language);
@@ -521,7 +570,7 @@ function buildStandaloneHTML(
         navigator.serviceWorker.register('/preview-sw.js', { scope: '/preview' });
       }
     <\/script>`;
-    const manifestLink = `<link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}">`;
+    const manifestLink = `<link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}${useGeneratedIcons ? "&generated=1" : ""}">`;
     const metaTheme = `<meta name="theme-color" content="#18181b">`;
 
     if (code.includes("</head>")) {
@@ -540,7 +589,7 @@ function buildStandaloneHTML(
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#18181b" />
     <title>${appName}</title>
-    <link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}">
+    <link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}${useGeneratedIcons ? "&generated=1" : ""}">
     <link rel="apple-touch-icon" href="${iconHref}">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="${appName}">

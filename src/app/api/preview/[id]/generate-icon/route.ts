@@ -1,12 +1,51 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
+import { access, mkdir, readFile, rm, writeFile } from "fs/promises";
+import { constants } from "fs";
+import { tmpdir } from "os";
+import path from "path";
 import {
   deleteGeneratedIcons,
   getGeneratedIcon,
   setGeneratedIcons,
 } from "@/lib/generated-icon-store";
+import {
+  deleteGeneratedIconBlobs,
+  getGeneratedIconBlobUrl,
+  storeGeneratedIconsInBlob,
+} from "@/lib/generated-icon-blob";
 
 export const runtime = "nodejs";
+
+function getTmpIconDir(id: string) {
+  return path.join(tmpdir(), "gemini-app-generated-icons", id);
+}
+
+async function writeTmpGeneratedIcons(id: string, icon192: Buffer, icon512: Buffer) {
+  const dir = getTmpIconDir(id);
+  await mkdir(dir, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(dir, "icon-192.png"), icon192),
+    writeFile(path.join(dir, "icon-512.png"), icon512),
+  ]);
+}
+
+async function readTmpGeneratedIcon(
+  id: string,
+  size: 192 | 512
+): Promise<Buffer | null> {
+  const filePath = path.join(getTmpIconDir(id), `icon-${size}.png`);
+  try {
+    await access(filePath, constants.F_OK);
+    return await readFile(filePath);
+  } catch {
+    return null;
+  }
+}
+
+async function deleteTmpGeneratedIcons(id: string) {
+  await rm(getTmpIconDir(id), { recursive: true, force: true });
+}
 
 function extractInlineData(response: {
   candidates?: Array<{
@@ -91,18 +130,33 @@ export async function POST(
     ]);
 
     const timestamp = Date.now();
+    const icon192DataUrl = `data:image/png;base64,${icon192Buffer.toString("base64")}`;
+    const icon512DataUrl = `data:image/png;base64,${icon512Buffer.toString("base64")}`;
+    const blobUrls = await storeGeneratedIconsInBlob(
+      id,
+      new Uint8Array(icon192Buffer),
+      new Uint8Array(icon512Buffer)
+    );
+
     setGeneratedIcons(id, {
       icon192: icon192Buffer,
       icon512: icon512Buffer,
       timestamp,
     });
+    await writeTmpGeneratedIcons(id, icon192Buffer, icon512Buffer);
 
     return NextResponse.json({
       success: true,
       id,
       icons: {
-        icon192: `/api/preview/${id}/generate-icon?size=192&v=${timestamp}`,
-        icon512: `/api/preview/${id}/generate-icon?size=512&v=${timestamp}`,
+        icon192:
+          blobUrls?.url192 ?? `/api/preview/${id}/generate-icon?size=192&v=${timestamp}`,
+        icon512:
+          blobUrls?.url512 ?? `/api/preview/${id}/generate-icon?size=512&v=${timestamp}`,
+      },
+      iconDataUrls: {
+        icon192: icon192DataUrl,
+        icon512: icon512DataUrl,
       },
       timestamp,
     });
@@ -130,8 +184,25 @@ export async function GET(
     );
   }
 
-  const iconBuffer = getGeneratedIcon(id, size);
+  const memoryIcon = getGeneratedIcon(id, size);
+  const tmpIcon = memoryIcon ? null : await readTmpGeneratedIcon(id, size);
+  const iconBuffer = memoryIcon ?? tmpIcon;
   if (!iconBuffer) {
+    const blobUrl = await getGeneratedIconBlobUrl(id, size);
+    if (blobUrl) {
+      const blobResp = await fetch(blobUrl);
+      if (blobResp.ok) {
+        const arrayBuffer = await blobResp.arrayBuffer();
+        return new NextResponse(new Uint8Array(arrayBuffer), {
+          status: 200,
+          headers: {
+            "Content-Type": "image/png",
+            "Cache-Control": "public, max-age=300",
+          },
+        });
+      }
+    }
+
     return NextResponse.json({ error: "Generated icon not found" }, { status: 404 });
   }
 
@@ -152,7 +223,10 @@ export async function HEAD(
   const { id } = await params;
   const sizeParam = req.nextUrl.searchParams.get("size");
   const size = sizeParam === "512" ? 512 : sizeParam === "192" ? 192 : null;
-  const exists = size ? Boolean(getGeneratedIcon(id, size)) : false;
+  const memoryExists = size ? Boolean(getGeneratedIcon(id, size)) : false;
+  const tmpExists = size ? Boolean(await readTmpGeneratedIcon(id, size)) : false;
+  const blobExists = size ? Boolean(await getGeneratedIconBlobUrl(id, size)) : false;
+  const exists = memoryExists || tmpExists || blobExists;
 
   return new NextResponse(null, {
     status: exists ? 200 : 404,
@@ -167,6 +241,8 @@ export async function DELETE(
   try {
     const { id } = await params;
     deleteGeneratedIcons(id);
+    await deleteTmpGeneratedIcons(id);
+    await deleteGeneratedIconBlobs(id);
 
     return NextResponse.json({
       success: true,
