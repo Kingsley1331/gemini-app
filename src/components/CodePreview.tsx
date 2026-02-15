@@ -477,7 +477,9 @@ export default function CodePreview({
     if (isGeneratingPwaIcon) return;
 
     const name = iconModalName.trim() || "My App";
-    const id = generatedCandidateId || preparedPwaId || createPwaPreviewId();
+    // Always use a fresh ID for a new generation — never reuse preparedPwaId,
+    // which already has a kept icon the user chose to keep.
+    const id = generatedCandidateId || createPwaPreviewId();
     localStorage.setItem(`pwa-preview-${id}-code`, code);
     localStorage.setItem(`pwa-preview-${id}-language`, language);
     localStorage.setItem(`pwa-preview-${id}-name`, name);
@@ -533,7 +535,6 @@ export default function CodePreview({
     iconModalPrompt,
     isGeneratingPwaIcon,
     language,
-    preparedPwaId,
   ]);
 
   const handleKeepGeneratedIcon = useCallback(() => {

@@ -4,6 +4,7 @@ import { access, mkdir, readFile, rm, writeFile } from "fs/promises";
 import { constants } from "fs";
 import { tmpdir } from "os";
 import path from "path";
+import sharp from "sharp";
 import {
   deleteGeneratedIcons,
   getGeneratedIcon,
@@ -97,37 +98,36 @@ export async function POST(
     const modelName = pro ? "gemini-3-pro-image-preview" : "gemini-2.5-flash-image";
     const model = genAI.getGenerativeModel({ model: modelName });
 
-    const generateIconData = async (size: 192 | 512) => {
-      const result = await model.generateContent({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `${basePrompt}\n\nOutput requirements:\n- PNG only\n- Square ${size}x${size}\n- Keep composition centered and readable at small sizes`,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          // @ts-expect-error - Official multimodal generation modality
-          responseModalities: ["IMAGE"],
+    // Generate a single 512x512 icon and resize to 192x192 so both sizes
+    // show the same image (two separate API calls would produce different icons).
+    const result = await model.generateContent({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `${basePrompt}\n\nOutput requirements:\n- PNG only\n- Square 512x512\n- Keep composition centered and readable at small sizes`,
+            },
+          ],
         },
-      });
+      ],
+      generationConfig: {
+        // @ts-expect-error - Official multimodal generation modality
+        responseModalities: ["IMAGE"],
+      },
+    });
 
-      const response = await result.response;
-      const inlineData = extractInlineData(response);
-      if (!inlineData) {
-        throw new Error(`No image data returned for ${size}x${size} icon`);
-      }
+    const response = await result.response;
+    const inlineData = extractInlineData(response);
+    if (!inlineData) {
+      throw new Error("No image data returned for icon generation");
+    }
 
-      return Buffer.from(inlineData.data, "base64");
-    };
-
-    const [icon512Buffer, icon192Buffer] = await Promise.all([
-      generateIconData(512),
-      generateIconData(192),
-    ]);
+    const icon512Buffer = Buffer.from(inlineData.data, "base64");
+    const icon192Buffer = await sharp(icon512Buffer)
+      .resize(192, 192, { fit: "cover" })
+      .png()
+      .toBuffer();
 
     const timestamp = Date.now();
     const icon192DataUrl = `data:image/png;base64,${icon192Buffer.toString("base64")}`;
