@@ -154,8 +154,6 @@ export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iconVersion, setIconVersion] = useState<number>(0);
-  const [isGeneratingIcon, setIsGeneratingIcon] = useState(false);
-  const [iconStatus, setIconStatus] = useState<string | null>(null);
 
   // Since SSR is disabled, we can read localStorage directly during render
   const previewData = id ? readPreviewData(id) : null;
@@ -348,36 +346,6 @@ export default function PreviewClient() {
     });
   }, [hasGeneratedIcon, icon192Href, iconVersion, id, previewData]);
 
-  const handleGenerateIcon = async () => {
-    if (!id || !previewData || isGeneratingIcon) return;
-    setIsGeneratingIcon(true);
-    setIconStatus("Generating PWA icon...");
-    try {
-      const res = await fetch(`/api/preview/${id}/generate-icon`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: previewData.name,
-          prompt: `Create a clean, high-contrast, minimal app icon for "${previewData.name}". Centered symbol, no text, no watermark, readable at small sizes.`,
-          pro: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.details || data?.error || "Failed to generate icon");
-      }
-      const version = typeof data?.timestamp === "number" ? data.timestamp : Date.now();
-      setHasGeneratedIcon(true);
-      setIconVersion(version);
-      setIconStatus("PWA icon generated.");
-      window.setTimeout(() => setIconStatus(null), 2500);
-    } catch (error) {
-      setIconStatus(error instanceof Error ? error.message : "Icon generation failed");
-    } finally {
-      setIsGeneratingIcon(false);
-    }
-  };
-
   if (!previewData) {
     return (
       <div
@@ -412,64 +380,19 @@ export default function PreviewClient() {
   }
 
   return (
-    <>
-      <iframe
-        ref={iframeRef}
-        style={{
-          position: "fixed",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          border: "none",
-          backgroundColor: "white",
-        }}
-        sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
-        title="Preview App"
-      />
-      <div
-        style={{
-          position: "fixed",
-          top: "0.75rem",
-          right: "0.75rem",
-          zIndex: 1000,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-end",
-          gap: "0.5rem",
-        }}
-      >
-        <button
-          onClick={handleGenerateIcon}
-          disabled={isGeneratingIcon}
-          style={{
-            border: "1px solid #27272a",
-            background: isGeneratingIcon ? "#a1a1aa" : "#18181b",
-            color: "#fff",
-            borderRadius: "8px",
-            padding: "0.45rem 0.7rem",
-            fontSize: "0.85rem",
-            cursor: isGeneratingIcon ? "not-allowed" : "pointer",
-            boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
-          }}
-        >
-          {isGeneratingIcon ? "Generating..." : "Generate PWA Icon"}
-        </button>
-        {iconStatus ? (
-          <div
-            style={{
-              background: "rgba(24,24,27,0.92)",
-              color: "#fff",
-              fontSize: "0.75rem",
-              padding: "0.35rem 0.5rem",
-              borderRadius: "6px",
-              maxWidth: "280px",
-            }}
-          >
-            {iconStatus}
-          </div>
-        ) : null}
-      </div>
-    </>
+    <iframe
+      ref={iframeRef}
+      style={{
+        position: "fixed",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        border: "none",
+        backgroundColor: "white",
+      }}
+      sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
+      title="Preview App"
+    />
   );
 }
 
