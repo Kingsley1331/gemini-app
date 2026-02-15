@@ -515,9 +515,12 @@ export default function CodePreview({
       if (icon192b64) localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
       if (icon512b64) localStorage.setItem(`pwa-preview-${id}-icon512-b64`, icon512b64);
 
-      setGeneratedIconPreviewUrl(
-        data?.icons?.icon192 || `/api/preview/${id}/generate-icon?size=192&v=${Date.now()}`
-      );
+      // Always append a unique timestamp to bust the browser/Next.js image cache
+      // so the thumbnail updates after regeneration on the same ID.
+      const cacheBust = Date.now();
+      const baseIconUrl = data?.icons?.icon192 || `/api/preview/${id}/generate-icon?size=192`;
+      const separator = baseIconUrl.includes("?") ? "&" : "?";
+      setGeneratedIconPreviewUrl(`${baseIconUrl}${separator}v=${cacheBust}`);
       setIconModalStatus("Preview ready. Keep it or regenerate.");
     } catch (err) {
       const message =
