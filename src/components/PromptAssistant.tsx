@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Wand2, X, Send, Loader2, User, Copy, Check, Type, FileText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -11,6 +11,11 @@ interface PromptAssistantMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+}
+
+interface OptionGroup {
+  category: string;
+  options: string[];
 }
 
 interface PromptAssistantProps {
@@ -27,11 +32,26 @@ When the user shares their idea:
 2. After getting answers, present a refined prompt draft.
 3. Ask if they want any changes.
 4. Continue refining until they are satisfied.
+5. When useful, provide optional additions the user can choose from.
 
 IMPORTANT: Every time you present or update a draft prompt, you MUST wrap it between these exact markers:
 === DRAFT START ===
 [the refined prompt here]
 === DRAFT END ===
+
+When you provide options, you MUST wrap them between these exact markers:
+=== OPTIONS START ===
+- option one
+- option two
+=== OPTIONS END ===
+
+Use one option per line.
+Always include an OPTIONS block when:
+- you ask clarifying questions (include likely answer choices),
+- you propose optional additions,
+- or you offer alternative directions.
+If no specific options are available, include at least one safe fallback option such as:
+- Use your best judgment and keep it concise.
 
 Keep your conversational responses concise. Focus on making the prompt specific, actionable, and well-structured. Do not answer the prompt itself — only help craft it.`;
 
@@ -76,6 +96,202 @@ function buildDraftVersionMap(messages: PromptAssistantMessage[]): Map<string, n
 }
 
 const DRAFT_REGEX = /=== DRAFT START ===\s*([\s\S]*?)\s*=== DRAFT END ===/g;
+const OPTIONS_BLOCK_REGEX = /=== OPTIONS START ===\s*([\s\S]*?)\s*=== OPTIONS END ===/g;
+
+function parseOptionsBlock(rawOptions: string): string[] {
+  const seen = new Set<string>();
+  const options: string[] = [];
+
+  rawOptions
+    .split("\n")
+    .map((line) => line.trim())
+    .forEach((line) => {
+      if (!line) return;
+
+      // Accept bullet, numbered, or checkbox-style markdown lines.
+      const cleaned = line
+        .replace(/^[-*]\s+/, "")
+        .replace(/^\d+\.\s+/, "")
+        .replace(/^\[(?: |x|X)\]\s*/, "")
+        .trim();
+
+      if (!cleaned || seen.has(cleaned)) return;
+      seen.add(cleaned);
+      options.push(cleaned);
+    });
+
+  return options;
+}
+
+function dedupeOptions(options: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  const questionStarterRegex =
+    /^(what|why|how|when|where|which|who|whom|whose|is|are|am|do|does|did|can|could|should|would|will|have|has|had)\b/i;
+
+  options.forEach((option) => {
+    let cleaned = option
+      .trim()
+      .replace(/\s+/g, " ")
+      .replace(/[.?!]+$/, "");
+
+    // If an option contains only one side of parentheses, remove it.
+    // Example: "(HTML" -> "HTML", "JS)" -> "JS".
+    const hasOpenParen = cleaned.includes("(");
+    const hasCloseParen = cleaned.includes(")");
+    if (hasOpenParen !== hasCloseParen) {
+      cleaned = cleaned.replace(/[()]/g, "").trim();
+    }
+
+    // Do not surface question-like text as checkbox options.
+    if (cleaned.includes("?")) return;
+    if (questionStarterRegex.test(cleaned)) return;
+
+    if (!cleaned || seen.has(cleaned)) return;
+    seen.add(cleaned);
+    normalized.push(cleaned);
+  });
+
+  return normalized;
+}
+
+function normalizeCategory(category: string): string {
+  let normalized = category.trim().replace(/\*\*/g, "").replace(/\s+/g, " ");
+
+  // If intro text and first numbered question are on one line
+  // (e.g. "... clarifying questions: 1. What platform/language?"),
+  // keep only the numbered question tail.
+  const numberedTailMatch = normalized.match(/(\d+\.\s*[^?]+\??)\s*$/);
+  if (numberedTailMatch) {
+    normalized = numberedTailMatch[1];
+  }
+
+  return normalized
+    .replace(/^\d+\.\s*/, "")
+    .replace(/^[-*]\s+/, "")
+    .replace(/\?\s*$/, "")
+    .replace(/\s+/g, " ");
+}
+
+function mergeOptionGroups(groups: OptionGroup[]): OptionGroup[] {
+  const grouped = new Map<string, string[]>();
+
+  groups.forEach((group) => {
+    const category = normalizeCategory(group.category) || "Options";
+    const existing = grouped.get(category) || [];
+    grouped.set(category, dedupeOptions([...existing, ...group.options]));
+  });
+
+  return Array.from(grouped.entries())
+    .map(([category, options]) => ({ category, options }))
+    .filter((group) => group.options.length > 0);
+}
+
+function splitInlineOptions(raw: string): string[] {
+  const cleaned = raw
+    .replace(/^for example[:,]?\s*/i, "")
+    .replace(/^examples?[:,]?\s*/i, "")
+    .replace(/\?\s*$/, "")
+    .trim();
+
+  if (!cleaned) return [];
+
+  const parts = cleaned
+    .replace(/\s+or\s+/gi, ", ")
+    .replace(/\s*\/\s*/g, ", ")
+    .replace(/\s*;\s*/g, ", ")
+    .split(",")
+    .map((part) =>
+      part
+        .trim()
+        .replace(/^and\s+/i, "")
+        .replace(/^or\s+/i, "")
+        .replace(/^[-*]\s+/, "")
+        .trim()
+    )
+    .filter(Boolean);
+
+  return dedupeOptions(parts);
+}
+
+function extractQuestionInlineOptionGroups(content: string): OptionGroup[] {
+  const text = stripOptionsBlocks(content)
+    .replace(/=== DRAFT START ===[\s\S]*?=== DRAFT END ===/g, "")
+    .trim();
+
+  if (!text) return [];
+
+  const groups: OptionGroup[] = [];
+  const noMarkdown = text.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
+  const questionWithContextRegex = /([^?]{8,}\?)\s*([^?]+)/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = questionWithContextRegex.exec(noMarkdown)) !== null) {
+    const category = normalizeCategory(match[1] || "");
+    const trailing = match[2]?.trim() || "";
+    const options = splitInlineOptions(trailing);
+    if (!category || options.length === 0) continue;
+    groups.push({ category, options });
+  }
+
+  return mergeOptionGroups(groups);
+}
+
+function extractLatestOptionGroups(messages: PromptAssistantMessage[]): OptionGroup[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "assistant") continue;
+
+    const regex = new RegExp(OPTIONS_BLOCK_REGEX.source, "g");
+    let match: RegExpExecArray | null;
+    let latestBlock: string | null = null;
+
+    while ((match = regex.exec(msg.content)) !== null) {
+      latestBlock = match[1];
+    }
+
+    const inlineGroups = extractQuestionInlineOptionGroups(msg.content);
+    const blockOptions = latestBlock ? parseOptionsBlock(latestBlock) : [];
+    const blockGroups =
+      blockOptions.length > 0
+        ? [{ category: "Additional options", options: blockOptions }]
+        : [];
+
+    const mergedGroups = mergeOptionGroups([...inlineGroups, ...blockGroups]);
+    if (mergedGroups.length > 0) {
+      return mergedGroups;
+    }
+  }
+
+  return [];
+}
+
+function stripOptionsBlocks(content: string): string {
+  return content.replace(OPTIONS_BLOCK_REGEX, "").trim();
+}
+
+function stripInlineQuestionOptions(content: string): string {
+  return content
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.includes("?")) return line;
+
+      const markdownless = trimmed.replace(/\*\*/g, "");
+      const qIndex = markdownless.indexOf("?");
+      if (qIndex === -1) return line;
+
+      const trailing = markdownless.slice(qIndex + 1).trim();
+      if (!trailing) return line;
+      if (splitInlineOptions(trailing).length === 0) return line;
+
+      // If this line looks like a clarifying question with inline choices,
+      // keep only the question text and render choices as checkboxes below.
+      const questionOnly = normalizeCategory(markdownless.slice(0, qIndex + 1));
+      return questionOnly ? `${questionOnly}?` : line;
+    })
+    .join("\n");
+}
 
 export default function PromptAssistant({
   isOpen,
@@ -90,13 +306,15 @@ export default function PromptAssistant({
   const [copiedPreviousDraft, setCopiedPreviousDraft] = useState<string | null>(null);
   const [isRichText, setIsRichText] = useState(false);
   const [richTextContent, setRichTextContent] = useState("");
+  const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const richTextRef = useRef<RichTextEditorRef>(null);
+  const wasOpenRef = useRef(false);
 
   // Reset state when modal opens
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !wasOpenRef.current) {
       setMessages([
         {
           id: "welcome",
@@ -109,6 +327,7 @@ export default function PromptAssistant({
       setIsLoading(false);
       setCopiedDraft(false);
       setRichTextContent("");
+      setSelectedOptions([]);
       richTextRef.current?.clear();
       // Focus input after animation
       setTimeout(() => {
@@ -119,7 +338,8 @@ export default function PromptAssistant({
         }
       }, 300);
     }
-  }, [isOpen, isRichText]);
+    wasOpenRef.current = isOpen;
+  }, [isOpen]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -129,10 +349,36 @@ export default function PromptAssistant({
   const currentDraft = extractDraft(messages);
   const latestDraftMessageId = findLatestDraftMessageId(messages);
   const draftVersionMap = buildDraftVersionMap(messages);
+  const currentOptionGroups = useMemo(() => extractLatestOptionGroups(messages), [messages]);
+  const currentOptionItems = useMemo(
+    () =>
+      currentOptionGroups.flatMap((group) =>
+        group.options.map((option) => ({
+          key: `${group.category}::${option}`,
+          category: group.category,
+          option,
+        }))
+      ),
+    [currentOptionGroups]
+  );
 
-  const handleSend = useCallback(async () => {
+  useEffect(() => {
+    setSelectedOptions((prev) => {
+      const next = prev.filter((optionKey) =>
+        currentOptionItems.some((item) => item.key === optionKey)
+      );
+      const isSame =
+        next.length === prev.length && next.every((value, index) => value === prev[index]);
+      return isSame ? prev : next;
+    });
+  }, [currentOptionItems]);
+
+  const handleSend = useCallback(async (overrideMessage?: string) => {
     const richContent = isRichText ? richTextRef.current?.getMarkdown() || "" : "";
-    const messageInput = isRichText ? richContent : input;
+    const messageInput =
+      typeof overrideMessage === "string"
+        ? overrideMessage
+        : (isRichText ? richContent : input);
     const trimmed = messageInput.trim();
     if (!trimmed || isLoading) return;
 
@@ -226,8 +472,119 @@ export default function PromptAssistant({
 
   const handleKeep = () => {
     if (currentDraft) {
-      onKeep(currentDraft);
+      const chosenItems = currentOptionItems.filter((item) =>
+        selectedOptions.includes(item.key)
+      );
+
+      const finalDraft =
+        chosenItems.length > 0
+          ? `${currentDraft}\n\nAdditional requirements:\n${mergeOptionGroups(
+              chosenItems.map((item) => ({
+                category: item.category,
+                options: [item.option],
+              }))
+            )
+              .map(
+                (group) =>
+                  `${group.category}:\n${group.options
+                    .map((option) => `- ${option}`)
+                    .join("\n")}`
+              )
+              .join("\n\n")}`
+          : currentDraft;
+
+      onKeep(finalDraft);
     }
+  };
+
+  const toggleOption = (optionKey: string) => {
+    setSelectedOptions((prev) =>
+      prev.includes(optionKey)
+        ? prev.filter((selected) => selected !== optionKey)
+        : [...prev, optionKey]
+    );
+  };
+
+  const submitSelectedOptions = (groups: OptionGroup[]) => {
+    const selectedItems = groups.flatMap((group) =>
+      group.options
+        .filter((option) => selectedOptions.includes(`${group.category}::${option}`))
+        .map((option) => ({ category: group.category, option }))
+    );
+
+    if (selectedItems.length === 0 || isLoading) return;
+
+    const groupedText = mergeOptionGroups(
+      selectedItems.map((item) => ({
+        category: item.category,
+        options: [item.option],
+      }))
+    )
+      .map((group) => `${group.category}: ${group.options.join(", ")}`)
+      .join("\n");
+
+    handleSend(`Here are my selected options:\n${groupedText}`);
+  };
+
+  const renderOptionGroupsForMessage = (message: PromptAssistantMessage) => {
+    if (message.role !== "assistant") return null;
+
+    const messageOptionGroups = extractLatestOptionGroups([message]);
+    if (messageOptionGroups.length === 0) return null;
+
+    return (
+      <div className="mt-3 space-y-3 rounded-lg border border-zinc-300/70 bg-white/60 p-2.5 dark:border-zinc-600 dark:bg-zinc-900/30">
+        {messageOptionGroups.map((group, groupIdx) => (
+          <div key={`${message.id}-${group.category}-${groupIdx}`}>
+            <p className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              {group.category}
+            </p>
+            <div className="space-y-1">
+              {group.options.map((option, optionIdx) => {
+                const optionKey = `${group.category}::${option}`;
+                const inputId = `prompt-inline-option-${message.id}-${groupIdx}-${optionIdx}`;
+                const isChecked = selectedOptions.includes(optionKey);
+                return (
+                  <label
+                    key={`${message.id}-${optionKey}`}
+                    htmlFor={inputId}
+                    className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                  >
+                    <input
+                      id={inputId}
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggleOption(optionKey)}
+                      className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-purple-600 focus:ring-purple-500 dark:border-zinc-600 dark:bg-zinc-800"
+                    />
+                    <span className="text-sm leading-snug text-zinc-700 dark:text-zinc-200">
+                      {option}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={() => submitSelectedOptions(messageOptionGroups)}
+            disabled={
+              isLoading ||
+              !messageOptionGroups.some((group) =>
+                group.options.some((option) =>
+                  selectedOptions.includes(`${group.category}::${option}`)
+                )
+              )
+            }
+            className="rounded-lg bg-purple-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-purple-600"
+          >
+            Submit selections
+          </button>
+        </div>
+      </div>
+    );
   };
 
   const handleCopyDraft = () => {
@@ -324,12 +681,19 @@ export default function PromptAssistant({
                       <div className="prose prose-sm dark:prose-invert max-w-none [&>p:first-child]:mt-0 [&>p:last-child]:mb-0">
                         {m.id === latestDraftMessageId ? (
                           // Latest draft message: strip the draft (shown in Current Draft panel)
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {m.content.replace(
-                              /=== DRAFT START ===[\s\S]*?=== DRAFT END ===/g,
-                              ""
-                            ).trim()}
-                          </ReactMarkdown>
+                          <>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {stripInlineQuestionOptions(
+                                stripOptionsBlocks(
+                                  m.content.replace(
+                                    /=== DRAFT START ===[\s\S]*?=== DRAFT END ===/g,
+                                    ""
+                                  )
+                                )
+                              )}
+                            </ReactMarkdown>
+                            {renderOptionGroupsForMessage(m)}
+                          </>
                         ) : draftVersionMap.has(m.id) ? (
                           // Older message with a draft: show draft inline
                           (() => {
@@ -345,9 +709,9 @@ export default function PromptAssistant({
                               <>
                                 {parts.map((part, idx) => (
                                   <span key={idx}>
-                                    {part.trim() && (
+                                    {stripOptionsBlocks(part).trim() && (
                                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                        {part.trim()}
+                                        {stripInlineQuestionOptions(stripOptionsBlocks(part))}
                                       </ReactMarkdown>
                                     )}
                                     {idx < drafts.length && (() => {
@@ -394,9 +758,10 @@ export default function PromptAssistant({
                         ) : (
                           // Regular assistant message (no draft)
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {m.content}
+                            {stripInlineQuestionOptions(stripOptionsBlocks(m.content))}
                           </ReactMarkdown>
                         )}
+                        {m.id !== latestDraftMessageId && renderOptionGroupsForMessage(m)}
                       </div>
                     ) : (
                       <p className="whitespace-pre-wrap">{m.content}</p>
