@@ -527,16 +527,7 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const isPromptAssistantOpenRef = useRef(false);
-  useEffect(() => {
-    isPromptAssistantOpenRef.current = isPromptAssistantOpen;
-  }, [isPromptAssistantOpen]);
-
-  useEffect(() => {
-    if (!isPromptAssistantOpenRef.current) {
-      scrollToBottom();
-    }
-  }, [messages]);
+  // No auto-scroll on every message update — scroll only when user sends.
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -615,6 +606,7 @@ export default function Chat() {
       }
       setSelectedImage(null);
       setIsLoading(true);
+      scrollToBottom();
 
       try {
         if (isImage || messageInput.toLowerCase().startsWith("/image ")) {
