@@ -527,8 +527,15 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  const isPromptAssistantOpenRef = useRef(false);
   useEffect(() => {
-    scrollToBottom();
+    isPromptAssistantOpenRef.current = isPromptAssistantOpen;
+  }, [isPromptAssistantOpen]);
+
+  useEffect(() => {
+    if (!isPromptAssistantOpenRef.current) {
+      scrollToBottom();
+    }
   }, [messages]);
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {

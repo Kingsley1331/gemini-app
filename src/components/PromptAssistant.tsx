@@ -308,6 +308,8 @@ export default function PromptAssistant({
   const [richTextContent, setRichTextContent] = useState("");
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const isStreamingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const richTextRef = useRef<RichTextEditorRef>(null);
   const wasOpenRef = useRef(false);
@@ -341,10 +343,9 @@ export default function PromptAssistant({
     wasOpenRef.current = isOpen;
   }, [isOpen]);
 
-  // Auto-scroll to bottom
-  useEffect(() => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, []);
 
   const currentDraft = extractDraft(messages);
   const latestDraftMessageId = findLatestDraftMessageId(messages);
@@ -396,6 +397,7 @@ export default function PromptAssistant({
       setRichTextContent("");
     }
     setIsLoading(true);
+    scrollToBottom();
 
     try {
       // Build messages for API (exclude the welcome message which isn't a real API message)
@@ -431,6 +433,7 @@ export default function PromptAssistant({
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
+      isStreamingRef.current = true;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -439,6 +442,12 @@ export default function PromptAssistant({
         const chunk = decoder.decode(value, { stream: true });
         assistantContent += chunk;
 
+        const container = messagesContainerRef.current;
+        const scrollTop = container?.scrollTop ?? 0;
+        const atBottom = container
+          ? container.scrollHeight - container.scrollTop - container.clientHeight < 40
+          : true;
+
         setMessages((prev) =>
           prev.map((msg) =>
             msg.id === assistantMessageId
@@ -446,7 +455,23 @@ export default function PromptAssistant({
               : msg
           )
         );
+
+        // Wait for React render + browser layout, then fix scroll position
+        await new Promise<void>((resolve) => {
+          setTimeout(() => {
+            if (container) {
+              if (atBottom) {
+                container.scrollTop = container.scrollHeight;
+              } else {
+                container.scrollTop = scrollTop;
+              }
+            }
+            resolve();
+          }, 0);
+        });
       }
+
+      isStreamingRef.current = false;
     } catch (error) {
       console.error("Prompt assistant error:", error);
       setMessages((prev) => [
@@ -459,6 +484,7 @@ export default function PromptAssistant({
         },
       ]);
     } finally {
+      isStreamingRef.current = false;
       setIsLoading(false);
     }
   }, [input, isLoading, messages, selectedModel, isRichText]);
@@ -528,6 +554,7 @@ export default function PromptAssistant({
 
   const renderOptionGroupsForMessage = (message: PromptAssistantMessage) => {
     if (message.role !== "assistant") return null;
+    if (message.id === "welcome") return null;
 
     const messageOptionGroups = extractLatestOptionGroups([message]);
     if (messageOptionGroups.length === 0) return null;
@@ -657,13 +684,18 @@ export default function PromptAssistant({
             </div>
 
             {/* Messages Area */}
-            <div className="flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
+            <div
+              ref={messagesContainerRef}
+              className="flex-1 space-y-4 overflow-y-auto p-3 sm:p-4"
+              style={{ overflowAnchor: "none" }}
+            >
               {messages.map((m) => (
                 <div
                   key={m.id}
                   className={`flex gap-3 ${
                     m.role === "user" ? "justify-end" : "justify-start"
                   }`}
+                  style={{ overflowAnchor: "none" }}
                 >
                   {m.role === "assistant" && (
                     <div className="w-7 h-7 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center shrink-0 mt-1">
@@ -814,7 +846,7 @@ export default function PromptAssistant({
                 </div>
               )}
 
-              <div ref={messagesEndRef} />
+              <div ref={messagesEndRef} style={{ overflowAnchor: "none" }} />
             </div>
 
             {/* Current Draft Section */}
