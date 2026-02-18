@@ -928,7 +928,9 @@ export default function PromptAssistant({
                   />
                 )}
                 <button
-                  onClick={handleSend}
+                  onClick={() => {
+                    void handleSend();
+                  }}
                   disabled={!(isRichText ? richTextContent.trim() : input.trim()) || isLoading}
                   className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-purple-600 text-white shadow-lg shadow-purple-500/20 transition-all hover:bg-purple-700 disabled:opacity-50 disabled:hover:bg-purple-600 sm:h-10 sm:w-10"
                   title="Send"
