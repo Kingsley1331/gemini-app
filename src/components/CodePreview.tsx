@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Image from "next/image";
 import {
   Play,
@@ -24,7 +24,28 @@ interface CodePreviewProps {
   code: string;
   language: string;
   title?: string;
+  assets?: Array<{
+    url: string;
+    mimeType: string;
+    data?: string;
+    assetKey?: string;
+  }>;
   onDebug?: (error: string, code: string, language: string) => void;
+}
+
+const EMPTY_PREVIEW_ASSETS: Array<{
+  url: string;
+  mimeType: string;
+  data?: string;
+  assetKey?: string;
+}> = [];
+
+function normalizePreviewError(message: string): string {
+  const invalidHookPattern =
+    /Cannot read properties of null \(reading 'useContext'\)|Invalid hook call/i;
+  if (!invalidHookPattern.test(message)) return message;
+
+  return `${message}\n\nHint: This preview failed due to an invalid React hook context. This usually happens when code imports React UI libraries that bundle/use a different React runtime, or when a hook is called outside a React function component/custom hook. Try using plain React + Tailwind in a single file and keep all hooks inside App/custom hooks.`;
 }
 
 function createPwaPreviewId() {
@@ -163,6 +184,7 @@ export default function CodePreview({
   code,
   language,
   title = "Preview",
+  assets = EMPTY_PREVIEW_ASSETS,
   onDebug,
 }: CodePreviewProps) {
   const [activeTab, setActiveTab] = useState<"preview" | "code">(
@@ -183,7 +205,78 @@ export default function CodePreview({
   const [generatedCandidateId, setGeneratedCandidateId] = useState<string | null>(null);
   const [generatedCandidateName, setGeneratedCandidateName] = useState<string | null>(null);
   const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
+  const [assetUrlMap, setAssetUrlMap] = useState<Record<string, string>>({});
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const latestAssetsRef = useRef(assets);
+  const assetSignature = useMemo(
+    () =>
+      assets
+        .map(
+          (asset, index) =>
+            `${asset.assetKey || `asset_${index + 1}`}|${asset.mimeType}|${asset.data?.length || 0}|${asset.url}`,
+        )
+        .join("||"),
+    [assets],
+  );
+
+  useEffect(() => {
+    latestAssetsRef.current = assets;
+  }, [assets]);
+
+  useEffect(() => {
+    const stableAssets = latestAssetsRef.current;
+    if (!stableAssets.length) {
+      setAssetUrlMap((prev) =>
+        Object.keys(prev).length === 0 ? prev : {},
+      );
+      return;
+    }
+
+    const createdObjectUrls: string[] = [];
+    const nextMap: Record<string, string> = {};
+
+    for (const [index, asset] of stableAssets.entries()) {
+      const key = asset.assetKey || `asset_${index + 1}`;
+      const placeholder = `__ASSET_${key}__`;
+      let resolvedUrl = asset.url;
+
+      if (asset.data) {
+        try {
+          const binaryString = window.atob(asset.data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          const blob = new Blob([bytes], {
+            type: asset.mimeType || "image/png",
+          });
+          resolvedUrl = URL.createObjectURL(blob);
+          createdObjectUrls.push(resolvedUrl);
+        } catch {
+          resolvedUrl = asset.url;
+        }
+      }
+
+      nextMap[placeholder] = resolvedUrl;
+    }
+
+    setAssetUrlMap((prev) => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(nextMap);
+      if (prevKeys.length === nextKeys.length) {
+        const unchanged = nextKeys.every((key) => prev[key] === nextMap[key]);
+        if (unchanged) {
+          return prev;
+        }
+      }
+      return nextMap;
+    });
+    return () => {
+      for (const objectUrl of createdObjectUrls) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [assetSignature]);
 
   // Remove legacy large icon data-url keys left by earlier builds.
   useEffect(() => {
@@ -333,6 +426,17 @@ export default function CodePreview({
         "        Suspense, Fragment, createElement, cloneElement,",
         "        Children, createRef, isValidElement",
         "      } = React;",
+        "",
+        "      // Guard canvas draws against not-yet-ready/broken images so preview code",
+        "      // does not crash when assets are still loading.",
+        "      const __nativeDrawImage = CanvasRenderingContext2D.prototype.drawImage;",
+        "      CanvasRenderingContext2D.prototype.drawImage = function(image, ...args) {",
+        "        if (image instanceof HTMLImageElement) {",
+        "          const imageBroken = !image.complete || image.naturalWidth === 0 || image.naturalHeight === 0;",
+        "          if (imageBroken) return;",
+        "        }",
+        "        return __nativeDrawImage.call(this, image, ...args);",
+        "      };",
         "",
         "      // Lucide icon factory — uses lucide.createElement() for reliable SVG generation",
         "      const __iconHtmlCache = {};",
@@ -577,19 +681,102 @@ export default function CodePreview({
 
   const updateIframe = useCallback(() => {
     if (!iframeRef.current) return;
+    const transparentFallbackDataUrl =
+      "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+    const inferAssetCategory = (assetKey: string): string => {
+      const key = assetKey.toLowerCase();
+      if (key.includes("background") || key.includes("scene")) {
+        return "background";
+      }
+      if (
+        key.includes("character") ||
+        key.includes("avatar") ||
+        key.includes("actor")
+      ) {
+        return "character";
+      }
+      if (
+        key.includes("target") ||
+        key.includes("secondary") ||
+        key.includes("opponent")
+      ) {
+        return "secondary";
+      }
+      if (
+        key.includes("structure") ||
+        key.includes("obstacle") ||
+        key.includes("block") ||
+        key.includes("terrain")
+      ) {
+        return "structure";
+      }
+      if (
+        key.includes("effect") ||
+        key.includes("effect") ||
+        key.includes("impact") ||
+        key.includes("explosion")
+      ) {
+        return "effect";
+      }
+      return "generic";
+    };
+
+    const indexedAssets = Object.entries(assetUrlMap).map(
+      ([placeholder, assetUrl]) => {
+        const key = placeholder
+          .replace(/^__ASSET_/, "")
+          .replace(/__$/, "")
+          .toLowerCase();
+        return {
+          placeholder,
+          assetUrl,
+          category: inferAssetCategory(key),
+          key,
+        };
+      },
+    );
+
+    const codeWithAssetUrls = code.replace(
+      /__ASSET_([a-zA-Z0-9_-]+)__/g,
+      (fullMatch, rawKey: string) => {
+        if (assetUrlMap[fullMatch]) {
+          return assetUrlMap[fullMatch];
+        }
+
+        const requestKey = rawKey.toLowerCase();
+        const requestCategory = inferAssetCategory(requestKey);
+
+        const categoryMatch = indexedAssets.find(
+          (entry) => entry.category === requestCategory,
+        );
+        if (categoryMatch) {
+          return categoryMatch.assetUrl;
+        }
+
+        const fuzzyMatch = indexedAssets.find(
+          (entry) =>
+            entry.key.includes(requestKey) || requestKey.includes(entry.key),
+        );
+        if (fuzzyMatch) {
+          return fuzzyMatch.assetUrl;
+        }
+
+        return transparentFallbackDataUrl;
+      },
+    );
 
     // Detect if "html"-tagged code is actually React/JSX
     const isReactCode =
-      /import\s.*from\s/.test(code) ||
-      /export\s+default\s+function/.test(code) ||
-      /useState|useEffect|useRef|useCallback/.test(code);
+      /import\s.*from\s/.test(codeWithAssetUrls) ||
+      /export\s+default\s+function/.test(codeWithAssetUrls) ||
+      /useState|useEffect|useRef|useCallback/.test(codeWithAssetUrls);
 
     const effectiveLanguage =
       language === "html" && isReactCode ? "tsx" : language;
 
     let content = "";
     if (effectiveLanguage === "html") {
-      content = code;
+      content = codeWithAssetUrls;
     } else if (
       effectiveLanguage === "jsx" ||
       effectiveLanguage === "tsx" ||
@@ -600,7 +787,7 @@ export default function CodePreview({
       // strip all other imports, and handle exports
 
       // Extract the default-exported function name before transforms
-      const defaultExportMatch = code.match(
+      const defaultExportMatch = codeWithAssetUrls.match(
         /export\s+default\s+function\s+(\w+)/,
       );
       const defaultExportName = defaultExportMatch
@@ -608,7 +795,7 @@ export default function CodePreview({
         : null;
 
       const cleanedCode =
-        code
+        codeWithAssetUrls
           // Remove type-only imports
           .replace(
             /import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
@@ -691,7 +878,9 @@ export default function CodePreview({
       };
 
       const finalCode = escapeLatex(cleanedCode);
-      const externalImportPreamble = buildExternalImportPreamble(code);
+      const externalImportPreamble = buildExternalImportPreamble(
+        codeWithAssetUrls,
+      );
 
       // Basic React/JS runner template
       content = `
@@ -739,6 +928,17 @@ export default function CodePreview({
                 Suspense, Fragment, createElement, cloneElement,
                 Children, createRef, isValidElement
               } = React;
+
+              // Guard canvas draws against not-yet-ready/broken images so preview code
+              // does not crash when assets are still loading.
+              const __nativeDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+              CanvasRenderingContext2D.prototype.drawImage = function(image, ...args) {
+                if (image instanceof HTMLImageElement) {
+                  const imageBroken = !image.complete || image.naturalWidth === 0 || image.naturalHeight === 0;
+                  if (imageBroken) return;
+                }
+                return __nativeDrawImage.call(this, image, ...args);
+              };
 
               // Lucide icon factory — uses lucide.createElement() to get SVG HTML,
               // then wraps it in a React component with dangerouslySetInnerHTML
@@ -881,7 +1081,7 @@ export default function CodePreview({
     // Use srcdoc to create a completely fresh document context each time,
     // avoiding stale Babel helper declarations on refresh
     iframeRef.current.srcdoc = content;
-  }, [code, language]);
+  }, [assetUrlMap, code, language]);
 
   const handleRefresh = useCallback(() => {
     setError(null);
@@ -891,7 +1091,11 @@ export default function CodePreview({
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === "preview-error") {
-        setError(event.data.message);
+        const rawMessage =
+          typeof event.data.message === "string"
+            ? event.data.message
+            : String(event.data.message);
+        setError(normalizePreviewError(rawMessage));
       }
     };
 

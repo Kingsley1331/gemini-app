@@ -24,7 +24,8 @@ export type Message = {
   attachments?: {
     url: string;
     mimeType: string;
-    data: string; // base64
+    data?: string; // base64 for user uploads
+    assetKey?: string;
   }[];
 };
 
@@ -37,6 +38,9 @@ interface MessageItemProps {
 }
 
 const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug }: MessageItemProps) => {
+  const assistantHasCodeBlock =
+    m.role === "assistant" && m.type === "text" && /```[\s\S]*?```/.test(m.content);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -84,11 +88,12 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
             </div>
           )}
         {m.type === "text" ? (
-          <div className="prose prose-sm max-w-none break-words dark:prose-invert">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-              components={{
+          <div className="space-y-3">
+            <div className="prose prose-sm max-w-none break-words dark:prose-invert">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={{
                 code({
                   inline,
                   className,
@@ -117,6 +122,7 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
                         code={code}
                         language={language}
                         title={`${language.toUpperCase()} Artifact`}
+                        assets={m.role === "assistant" ? m.attachments : undefined}
                         onDebug={onDebug}
                       />
                     );
@@ -172,10 +178,35 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
                 p: ({ children }) => (
                   <p className="mb-2 last:mb-0">{children}</p>
                 ),
-              }}
-            >
-              {m.content}
-            </ReactMarkdown>
+                }}
+              >
+                {m.content}
+              </ReactMarkdown>
+            </div>
+            {m.role === "assistant" &&
+              m.attachments &&
+              m.attachments.length > 0 &&
+              !assistantHasCodeBlock && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {m.attachments.map((attachment, idx) => (
+                    <div key={idx} className="relative group">
+                      <img
+                        src={attachment.url}
+                        alt={`Generated AI asset ${idx + 1}`}
+                        className="rounded-xl w-full h-auto shadow-md transition-transform group-hover:scale-[1.01]"
+                        loading="lazy"
+                      />
+                      <a
+                        href={attachment.url}
+                        download={`generated-asset-${idx + 1}.png`}
+                        className="absolute bottom-2 right-2 p-2 bg-black/50 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        Download
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              )}
           </div>
         ) : (
           <div className="space-y-3">

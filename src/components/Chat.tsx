@@ -48,6 +48,351 @@ function cn(...inputs: ClassValue[]) {
 }
 
 const SELECTED_MODEL_STORAGE_KEY = "selectedModel";
+const ASSET_STYLE_PRESET_STORAGE_KEY = "assetStylePreset";
+const MAX_AUTO_ASSETS = 8;
+const ASSET_PLACEHOLDER_REGEX = /__ASSET_([a-zA-Z0-9_-]+)__/g;
+type AssetStylePreset = "auto" | "cartoon" | "pixel-art" | "realistic";
+const ASSET_STYLE_PRESETS: Array<{ id: AssetStylePreset; label: string }> = [
+  { id: "auto", label: "Auto style" },
+  { id: "cartoon", label: "Cartoon" },
+  { id: "pixel-art", label: "Pixel Art" },
+  { id: "realistic", label: "Realistic" },
+];
+const VISUAL_INTENT_KEYWORDS = [
+  "gallery",
+  "beautiful photographs",
+  "beautiful photos",
+  "nature photos",
+  "nature photographs",
+  "hero image",
+  "illustration",
+  "artwork",
+  "concept art",
+  "background image",
+  "sprite",
+  "spritesheet",
+  "game asset",
+  "character design",
+  "texture",
+  "logo",
+  "banner",
+  "cover image",
+  "thumbnail",
+  "poster",
+  "mockup image",
+];
+
+function hasVisualIntent(input: string): boolean {
+  const normalized = input.toLowerCase();
+  return VISUAL_INTENT_KEYWORDS.some((keyword) => normalized.includes(keyword));
+}
+
+type VisualAttachment = {
+  url: string;
+  mimeType: string;
+  data: string;
+  assetKey?: string;
+};
+
+type PlannedAsset = {
+  name: string;
+  purpose: string;
+  prompt: string;
+};
+
+type GeneratedAsset = PlannedAsset & {
+  attachment: VisualAttachment;
+};
+
+function extractAssetKeysFromText(text: string): string[] {
+  const keys = new Set<string>();
+  let match: RegExpExecArray | null;
+  const regex = new RegExp(ASSET_PLACEHOLDER_REGEX.source, "g");
+  while ((match = regex.exec(text)) !== null) {
+    if (match[1]) keys.add(match[1]);
+  }
+  return Array.from(keys);
+}
+
+function collectAssetLibraryFromMessages(
+  messages: Message[],
+): Record<string, VisualAttachment> {
+  const collected: Record<string, VisualAttachment> = {};
+  for (const message of messages) {
+    for (const attachment of message.attachments || []) {
+      if (!attachment.assetKey || !attachment.data) continue;
+      collected[attachment.assetKey] = {
+        url: attachment.url,
+        mimeType: attachment.mimeType,
+        data: attachment.data,
+        assetKey: attachment.assetKey,
+      };
+    }
+  }
+  return collected;
+}
+
+function parseDataUrl(
+  dataUrl: string,
+): { mimeType: string; data: string } | undefined {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return undefined;
+  return {
+    mimeType: match[1] || "image/png",
+    data: match[2] || "",
+  };
+}
+
+function detectRequestedAssetCount(input: string): number | null {
+  const match = input
+    .toLowerCase()
+    .match(
+      /(\d+)\s+(?:image|images|sprite|sprites|asset|assets|photo|photos|photograph|photographs)\b/,
+    );
+  if (!match) return null;
+  const parsed = Number.parseInt(match[1] || "0", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.min(parsed, MAX_AUTO_ASSETS);
+}
+
+function defaultAssetCountForIntent(input: string): number {
+  const normalized = input.toLowerCase();
+  if (normalized.includes("game") || normalized.includes("clone")) {
+    return 5;
+  }
+  if (
+    normalized.includes("gallery") ||
+    normalized.includes("photograph") ||
+    normalized.includes("photo")
+  ) {
+    return 6;
+  }
+  if (
+    normalized.includes("web") ||
+    normalized.includes("website") ||
+    normalized.includes("app") ||
+    normalized.includes("landing page")
+  ) {
+    return 3;
+  }
+  return 2;
+}
+
+function resolveAssetStyleInstruction(
+  preset: AssetStylePreset,
+  input: string,
+): string {
+  if (preset === "cartoon") {
+    return "cartoon game-art style with clean outlines and vivid colors";
+  }
+  if (preset === "pixel-art") {
+    return "pixel-art style with crisp low-resolution edges and limited palette";
+  }
+  if (preset === "realistic") {
+    return "realistic style with natural lighting and detailed textures";
+  }
+
+  const normalized = input.toLowerCase();
+  if (
+    normalized.includes("game") ||
+    normalized.includes("clone")
+  ) {
+    return "cartoon game-art style with clean outlines and vivid colors";
+  }
+  if (
+    normalized.includes("gallery") ||
+    normalized.includes("photograph") ||
+    normalized.includes("photo")
+  ) {
+    return "realistic photography style with natural colors";
+  }
+  return "modern polished illustration style";
+}
+
+function buildVisualAssetPlan(
+  input: string,
+  stylePreset: AssetStylePreset,
+): PlannedAsset[] {
+  const normalized = input.toLowerCase();
+  const targetCount =
+    detectRequestedAssetCount(input) || defaultAssetCountForIntent(input);
+  const styleInstruction = resolveAssetStyleInstruction(stylePreset, input);
+  const planned: PlannedAsset[] = [];
+
+  const addAsset = (asset: PlannedAsset) => {
+    if (planned.length >= targetCount) return;
+    if (planned.some((existing) => existing.name === asset.name)) return;
+    planned.push(asset);
+  };
+
+  if (
+    normalized.includes("game") ||
+    normalized.includes("clone")
+  ) {
+    addAsset({
+      name: "scene_background",
+      purpose: "Parallax or static level background",
+      prompt: `Create a side-scrolling 2D game background for this request: "${input}".
+Style requirement: ${styleInstruction}
+No text, wide composition, cohesive style.`,
+    });
+    addAsset({
+      name: "character_primary",
+      purpose: "Primary controllable character sprite",
+      prompt: `Create ONE isolated 2D primary character sprite for this game request: "${input}".
+Style requirement: ${styleInstruction}
+Output rules:
+- PNG with REAL alpha transparency (no checkerboard pattern baked into pixels)
+- Single centered subject only (no scenery, no UI, no text)
+- Tight crop around subject with minimal empty padding
+- Consistent cartoon game style
+- 512x512 canvas`,
+    });
+    addAsset({
+      name: "character_secondary",
+      purpose: "Secondary character sprite",
+      prompt: `Create ONE isolated 2D secondary character sprite for this game request: "${input}".
+Style requirement: ${styleInstruction}
+Output rules:
+- PNG with REAL alpha transparency (no checkerboard pattern baked into pixels)
+- Single centered subject only (no scenery, no UI, no text)
+- Tight crop around subject with minimal empty padding
+- Style must match the primary character sprite
+- 512x512 canvas`,
+    });
+    addAsset({
+      name: "structure_element",
+      purpose: "Structure or obstacle sprite",
+      prompt: `Create ONE isolated structure/obstacle sprite for this game request: "${input}".
+Style requirement: ${styleInstruction}
+Output rules:
+- PNG with REAL alpha transparency (no checkerboard pattern baked into pixels)
+- Single centered object only (no full level layout, no repeated texture sheet)
+- Tight crop with clean silhouette
+- 512x512 canvas`,
+    });
+    addAsset({
+      name: "effect_element",
+      purpose: "Impact or explosion effect sprite",
+      prompt: `Create ONE isolated impact/debris effect sprite for this game request: "${input}".
+Style requirement: ${styleInstruction}
+Output rules:
+- PNG with REAL alpha transparency (no checkerboard pattern baked into pixels)
+- Effect only, no characters or scenery
+- Centered composition, clean edges
+- 512x512 canvas`,
+    });
+  } else if (
+    normalized.includes("gallery") ||
+    normalized.includes("photograph") ||
+    normalized.includes("photo")
+  ) {
+    for (let i = 0; i < targetCount; i += 1) {
+      addAsset({
+        name: `gallery_image_${i + 1}`,
+        purpose: `Gallery image ${i + 1}`,
+        prompt: `Generate one high-quality nature photograph for a web gallery.
+Style requirement: ${styleInstruction}
+User request context: "${input}". Variation ${i + 1} of ${targetCount}.`,
+      });
+    }
+  } else if (
+    normalized.includes("web") ||
+    normalized.includes("website") ||
+    normalized.includes("app") ||
+    normalized.includes("landing page")
+  ) {
+    addAsset({
+      name: "hero_image",
+      purpose: "Primary hero visual",
+      prompt: `Generate a polished hero image for this app/web request: "${input}".
+Style requirement: ${styleInstruction}
+Composition suitable for a prominent header section.`,
+    });
+    addAsset({
+      name: "supporting_visual",
+      purpose: "Supporting section visual",
+      prompt: `Generate a supporting image for this app/web request: "${input}".
+Style requirement: ${styleInstruction}
+Keep style consistent with the hero image.`,
+    });
+    addAsset({
+      name: "ui_texture",
+      purpose: "Decorative UI texture or pattern",
+      prompt: `Generate a subtle texture/pattern image for this app/web request: "${input}".
+Style requirement: ${styleInstruction}
+Minimal and non-distracting.`,
+    });
+  }
+
+  while (planned.length < targetCount && planned.length < MAX_AUTO_ASSETS) {
+    const i = planned.length + 1;
+    addAsset({
+      name: `extra_asset_${i}`,
+      purpose: `Additional supporting asset ${i}`,
+      prompt: `Generate an additional visual asset for this request: "${input}".
+Style requirement: ${styleInstruction}
+Asset ${i} of ${targetCount}.`,
+    });
+  }
+
+  return planned.slice(0, MAX_AUTO_ASSETS);
+}
+
+function buildAssetContextMessage(
+  userPrompt: string,
+  assets: GeneratedAsset[],
+  stylePreset: AssetStylePreset,
+): string {
+  const manifest = assets
+    .map(
+      (asset, index) =>
+        `${index + 1}. ${asset.name} - ${asset.purpose} (mime: ${asset.attachment.mimeType}, placeholder: __ASSET_${asset.name}__)`,
+    )
+    .join("\n");
+
+  return `Generated visual assets for the request: "${userPrompt}".
+
+These attachments are intended to be used directly in the generated app/game code as in-scene assets (sprites/backgrounds/UI images), not as separate outputs.
+
+Requirements:
+- Use these attached images directly in the implementation.
+- Define a clear in-code asset map/object with descriptive keys.
+- Build the app/game so the generated assets appear inside the experience.
+- Do not ask for separate image generation.
+- Do not use any external image URLs or invented CDN links.
+- Use these exact placeholders in code and nowhere else for asset URLs:
+${assets
+  .map((asset) => `  - __ASSET_${asset.name}__`)
+  .join("\n")}
+- For game sprites, normalize rendering size with explicit width/height values and object-fit style logic in code.
+- If a sprite includes excess transparent padding, compensate with tuned draw offsets and collision bounds.
+- Preferred asset style preset: ${stylePreset}.
+
+Asset manifest:
+${manifest}`;
+}
+
+function extractGeneratedImage(
+  payload: unknown,
+): VisualAttachment | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const response = payload as {
+    imageUrl?: string;
+    url?: string;
+    images?: string[];
+    mimeType?: string;
+  };
+  const url = response.imageUrl || response.url || response.images?.[0];
+  if (!url) return undefined;
+  const parsed = parseDataUrl(url);
+  if (!parsed) return undefined;
+  return {
+    url,
+    mimeType: response.mimeType || parsed.mimeType || "image/png",
+    data: parsed.data,
+  };
+}
 
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -66,6 +411,11 @@ export default function Chat() {
   const [isRichText, setIsRichText] = useState(false);
   const [richTextContent, setRichTextContent] = useState("");
   const [isPromptAssistantOpen, setIsPromptAssistantOpen] = useState(false);
+  const [assetStylePreset, setAssetStylePreset] =
+    useState<AssetStylePreset>("auto");
+  const [assetLibrary, setAssetLibrary] = useState<
+    Record<string, VisualAttachment>
+  >({});
   const richTextRef = useRef<RichTextEditorRef>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -184,6 +534,37 @@ export default function Chat() {
       console.warn("Failed to save selected model to localStorage:", error);
     }
   }, [selectedModel]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      const storedPreset = window.localStorage.getItem(
+        ASSET_STYLE_PRESET_STORAGE_KEY,
+      ) as AssetStylePreset | null;
+      if (
+        storedPreset &&
+        ASSET_STYLE_PRESETS.some((preset) => preset.id === storedPreset)
+      ) {
+        setAssetStylePreset(storedPreset);
+      }
+    } catch (error) {
+      console.warn("Failed to read asset style preset from localStorage:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      window.localStorage.setItem(
+        ASSET_STYLE_PRESET_STORAGE_KEY,
+        assetStylePreset,
+      );
+    } catch (error) {
+      console.warn("Failed to save asset style preset to localStorage:", error);
+    }
+  }, [assetStylePreset]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -609,8 +990,12 @@ export default function Chat() {
       scrollToBottom();
 
       try {
-        if (isImage || messageInput.toLowerCase().startsWith("/image ")) {
-          const prompt = messageInput.toLowerCase().startsWith("/image ")
+        const normalizedInput = messageInput.trim();
+        const isExplicitImageCommand =
+          isImage || normalizedInput.toLowerCase().startsWith("/image ");
+
+        if (isExplicitImageCommand) {
+          const prompt = normalizedInput.toLowerCase().startsWith("/image ")
             ? messageInput.slice(7)
             : messageInput;
 
@@ -633,15 +1018,127 @@ export default function Chat() {
           };
           setMessages((prev) => [...prev, assistantMessage]);
         } else {
+          const shouldGenerateEmbeddedImage = hasVisualIntent(normalizedInput);
+          const historicalAssetLibrary = collectAssetLibraryFromMessages(messages);
+          const effectiveAssetLibrary = {
+            ...historicalAssetLibrary,
+            ...assetLibrary,
+          };
+          const assetPlan = shouldGenerateEmbeddedImage
+            ? buildVisualAssetPlan(normalizedInput, assetStylePreset)
+            : [];
+          const generatedAssets: GeneratedAsset[] =
+            assetPlan.length > 0
+              ? (
+                  await Promise.allSettled(
+                    assetPlan.map(async (asset) => {
+                      const response = await fetch("/api/generate-image", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          prompt: `${asset.prompt}\n\nUser request context: ${normalizedInput}`,
+                          removeBackground:
+                            asset.name !== "scene_background" &&
+                            normalizedInput.toLowerCase().includes("game"),
+                        }),
+                      });
+                      const data = await response.json();
+                      if (!response.ok || data?.error) return undefined;
+                      const attachment = extractGeneratedImage(data);
+                      if (!attachment) return undefined;
+                      return {
+                        ...asset,
+                        attachment,
+                      } satisfies GeneratedAsset;
+                    }),
+                  )
+                )
+                  .filter(
+                    (
+                      result,
+                    ): result is PromiseFulfilledResult<GeneratedAsset | undefined> =>
+                      result.status === "fulfilled",
+                  )
+                  .map((result) => result.value)
+                  .filter((asset): asset is GeneratedAsset => Boolean(asset))
+              : [];
+
+          if (generatedAssets.length > 0) {
+            setAssetLibrary((prev) => {
+              const next = { ...prev };
+              for (const asset of generatedAssets) {
+                next[asset.name] = {
+                  ...asset.attachment,
+                  assetKey: asset.name,
+                };
+              }
+              return next;
+            });
+          }
+
+          const referencedKeys = extractAssetKeysFromText(normalizedInput);
+          const reusedAssets: GeneratedAsset[] =
+            generatedAssets.length === 0 && referencedKeys.length > 0
+              ? referencedKeys
+                  .flatMap((key) => {
+                    const found = effectiveAssetLibrary[key];
+                    if (!found?.data) return [];
+                    return [{
+                      name: key,
+                      purpose: `Reused generated asset ${key}`,
+                      prompt: "",
+                      attachment: { ...found, assetKey: key },
+                    } satisfies GeneratedAsset];
+                  })
+              : [];
+
+          const activeAssets =
+            generatedAssets.length > 0 ? generatedAssets : reusedAssets;
+
+          const requestMessages: Message[] = [...messages, userMessage];
+          if (activeAssets.length > 0) {
+            const syntheticAssetMessage: Message = {
+              id: `${userMessage.id}-assets`,
+              role: "user",
+              content: buildAssetContextMessage(
+                normalizedInput,
+                activeAssets,
+                assetStylePreset,
+              ),
+              type: "text",
+              attachments: activeAssets.map((asset) => ({
+                ...asset.attachment,
+                assetKey: asset.name,
+              })),
+            };
+            requestMessages.splice(requestMessages.length - 1, 0, syntheticAssetMessage);
+          }
+
           const response = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               model: selectedModel,
-              messages: [...messages, userMessage].map((m) => ({
+              messages: requestMessages.map((m) => ({
                 role: m.role,
                 content: m.content,
-                attachments: m.attachments,
+                attachments:
+                  m.role === "user"
+                    ? m.attachments
+                        ?.filter(
+                          (
+                            attachment,
+                          ): attachment is {
+                            url: string;
+                            mimeType: string;
+                            data: string;
+                          } => Boolean(attachment.data),
+                        )
+                        .map((attachment) => ({
+                          mimeType: attachment.mimeType,
+                          data: attachment.data,
+                        }))
+                    : undefined,
               })),
             }),
           });
@@ -678,6 +1175,38 @@ export default function Chat() {
               ),
             );
           }
+
+          const responseAssetKeys = extractAssetKeysFromText(assistantContent);
+          const responseAssets: GeneratedAsset[] =
+            activeAssets.length > 0
+              ? activeAssets
+              : responseAssetKeys
+                  .flatMap((key) => {
+                    const found = effectiveAssetLibrary[key];
+                    if (!found) return [];
+                    return [{
+                      name: key,
+                      purpose: `Referenced asset ${key}`,
+                      prompt: "",
+                      attachment: { ...found, assetKey: key },
+                    } satisfies GeneratedAsset];
+                  })
+
+          if (responseAssets.length > 0) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessageId
+                  ? {
+                      ...msg,
+                      attachments: responseAssets.map((asset) => ({
+                        ...asset.attachment,
+                        assetKey: asset.name,
+                      })),
+                    }
+                  : msg,
+              ),
+            );
+          }
         }
       } catch (error: unknown) {
         console.error(error);
@@ -696,7 +1225,15 @@ export default function Chat() {
         setIsLoading(false);
       }
     },
-    [selectedImage, isLoading, messages, selectedModel, isRichText],
+    [
+      selectedImage,
+      isLoading,
+      messages,
+      selectedModel,
+      isRichText,
+      assetStylePreset,
+      assetLibrary,
+    ],
   );
 
   const handleDebug = useCallback(
@@ -837,7 +1374,7 @@ export default function Chat() {
               </button>
               <button
                 onClick={() =>
-                  setInput("/image a futuristic neon city skyline")
+                  setInput("/image a futuristic neon city scene")
                 }
                 className="px-3 py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-xs hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
               >
@@ -1014,6 +1551,20 @@ export default function Chat() {
             </button>
           </div>
           <div className="flex min-w-0 items-end gap-2">
+            <select
+              value={assetStylePreset}
+              onChange={(e) =>
+                setAssetStylePreset(e.target.value as AssetStylePreset)
+              }
+              className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-700 outline-none transition-all focus:border-transparent focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 sm:h-12 sm:text-sm"
+              title="Generated asset style preset"
+            >
+              {ASSET_STYLE_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
             {isRichText ? (
               <RichTextEditor
                 ref={richTextRef}

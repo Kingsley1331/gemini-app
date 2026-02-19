@@ -560,6 +560,17 @@ function buildStandaloneHTML(
         Children, createRef, isValidElement
       } = React;
 
+      // Guard canvas draws against not-yet-ready/broken images so preview code
+      // does not crash when assets are still loading.
+      const __nativeDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+      CanvasRenderingContext2D.prototype.drawImage = function(image, ...args) {
+        if (image instanceof HTMLImageElement) {
+          const imageBroken = !image.complete || image.naturalWidth === 0 || image.naturalHeight === 0;
+          if (imageBroken) return;
+        }
+        return __nativeDrawImage.call(this, image, ...args);
+      };
+
       const __iconHtmlCache = {};
       function __createLucideIcon(kebabName, displayName) {
         const LucideIcon = function(props) {
@@ -712,6 +723,17 @@ function buildPreviewHTML(
         Suspense, Fragment, createElement, cloneElement,
         Children, createRef, isValidElement
       } = React;
+
+      // Guard canvas draws against not-yet-ready/broken images so preview code
+      // does not crash when assets are still loading.
+      const __nativeDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+      CanvasRenderingContext2D.prototype.drawImage = function(image, ...args) {
+        if (image instanceof HTMLImageElement) {
+          const imageBroken = !image.complete || image.naturalWidth === 0 || image.naturalHeight === 0;
+          if (imageBroken) return;
+        }
+        return __nativeDrawImage.call(this, image, ...args);
+      };
 
       const __iconHtmlCache = {};
       function __createLucideIcon(kebabName, displayName) {
