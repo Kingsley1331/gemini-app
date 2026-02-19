@@ -33,6 +33,13 @@ interface CodePreviewProps {
   onDebug?: (error: string, code: string, language: string) => void;
 }
 
+const SW_CACHE_NAME = "preview-pwa-v5";
+
+interface StoredPreviewAssetRecord {
+  assetKey: string;
+  mimeType: string;
+}
+
 const EMPTY_PREVIEW_ASSETS: Array<{
   url: string;
   mimeType: string;
@@ -65,6 +72,83 @@ function scheduleGeneratedIconCleanup(id: string, delayMs = 10 * 60 * 1000) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function buildPreviewAssetUrl(id: string, assetKey: string): string {
+  return `/preview/${encodeURIComponent(id)}/assets/${encodeURIComponent(assetKey)}`;
+}
+
+async function persistPwaPreviewAssets(
+  id: string,
+  assets: CodePreviewProps["assets"],
+) {
+  const normalized = (assets || []).map((asset, index) => ({
+    assetKey: asset.assetKey || `asset_${index + 1}`,
+    mimeType: asset.mimeType || "image/png",
+    data: asset.data || "",
+    url: asset.url || "",
+  }));
+  const lightweightRecords: StoredPreviewAssetRecord[] = normalized.map((asset) => ({
+    assetKey: asset.assetKey,
+    mimeType: asset.mimeType,
+  }));
+
+  // Persist metadata in localStorage (best-effort) so category/fuzzy matching
+  // still works even if binary payloads are not stored there.
+  try {
+    localStorage.setItem(
+      `pwa-preview-${id}-assets`,
+      JSON.stringify(lightweightRecords),
+    );
+  } catch {
+    // best-effort; SW cache below is the primary source for large assets
+  }
+
+  // Cache sprite/image bytes under stable same-origin URLs so installed PWAs
+  // can load assets without relying on localStorage size limits.
+  try {
+    const cache = await caches.open(SW_CACHE_NAME);
+    await Promise.allSettled(
+      normalized.map(async (asset) => {
+        const targetUrl = buildPreviewAssetUrl(id, asset.assetKey);
+        let response: Response | null = null;
+
+        if (asset.data) {
+          const binaryString = window.atob(asset.data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          response = new Response(bytes, {
+            headers: {
+              "Content-Type": asset.mimeType || "image/png",
+              "Cache-Control": "public, max-age=31536000",
+            },
+          });
+        } else if (asset.url) {
+          try {
+            const fetched = await fetch(asset.url, { mode: "cors" });
+            if (fetched.ok) {
+              response = fetched;
+            }
+          } catch {
+            try {
+              const fetched = await fetch(asset.url, { mode: "no-cors" });
+              response = fetched;
+            } catch {
+              response = null;
+            }
+          }
+        }
+
+        if (response) {
+          await cache.put(new Request(targetUrl), response);
+        }
+      }),
+    );
+  } catch {
+    // best-effort; localStorage metadata still allows legacy fallback paths
+  }
 }
 
 const EXTERNAL_IMPORT_BLOCKLIST = new Set([
@@ -543,12 +627,13 @@ export default function CodePreview({
     URL.revokeObjectURL(url);
   }, [code, language]);
 
-  const handleInstallPWA = useCallback(() => {
+  const handleInstallPWA = useCallback(async () => {
     if (preparedPwaId && preparedPwaName) {
       localStorage.setItem(`pwa-preview-${preparedPwaId}-code`, code);
       localStorage.setItem(`pwa-preview-${preparedPwaId}-language`, language);
       localStorage.setItem(`pwa-preview-${preparedPwaId}-name`, preparedPwaName);
       localStorage.setItem(`pwa-preview-${preparedPwaId}-has-generated-icon`, "1");
+      await persistPwaPreviewAssets(preparedPwaId, latestAssetsRef.current);
       window.open(`/preview/${preparedPwaId}`, "_blank");
       scheduleGeneratedIconCleanup(preparedPwaId);
       setPreparedPwaId(null);
@@ -576,6 +661,7 @@ export default function CodePreview({
     localStorage.setItem(`pwa-preview-${id}-code`, code);
     localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
     localStorage.setItem(`pwa-preview-${id}-name`, name);
+    await persistPwaPreviewAssets(id, latestAssetsRef.current);
 
     // Open the standalone preview page in a new tab with the unique ID
     window.open(`/preview/${id}`, "_blank");
@@ -591,6 +677,7 @@ export default function CodePreview({
     localStorage.setItem(`pwa-preview-${id}-code`, code);
     localStorage.setItem(`pwa-preview-${id}-language`, language);
     localStorage.setItem(`pwa-preview-${id}-name`, name);
+    await persistPwaPreviewAssets(id, latestAssetsRef.current);
 
     setIsGeneratingPwaIcon(true);
     setIconModalStatus("Generating icon...");

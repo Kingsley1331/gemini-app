@@ -21,10 +21,46 @@ function getProvider(modelId: string): Provider {
   return "gemini"; // fallback
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getUpstreamStatusCode(error: unknown): number | null {
+  if (!(error instanceof Error)) return null;
+  const match = error.message.match(/\[(\d{3})\s+[^\]]+\]/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isTransientUpstreamError(error: unknown): boolean {
+  const statusCode = getUpstreamStatusCode(error);
+  if (statusCode === 429 || statusCode === 500 || statusCode === 502 || statusCode === 503) {
+    return true;
+  }
+  if (!(error instanceof Error)) return false;
+  return /high demand|try again later|temporar|rate limit/i.test(error.message);
+}
+
+function getGeminiModelOrder(modelId: string): string[] {
+  if (modelId === "gemini-3-pro-preview") {
+    return ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.0-flash"];
+  }
+  if (modelId === "gemini-3-flash-preview") {
+    return ["gemini-3-flash-preview", "gemini-2.0-flash"];
+  }
+  return [modelId];
+}
+
 interface ChatMessage {
   role: string;
   content: string;
   attachments?: { mimeType: string; data: string }[];
+}
+
+interface StreamResult {
+  stream: ReadableStream<Uint8Array>;
+  modelUsed: string;
 }
 
 // Default system instruction for the main chat
@@ -119,7 +155,7 @@ async function streamGemini(
   modelId: string,
   messages: ChatMessage[],
   systemInstructionText: string,
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<StreamResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -129,50 +165,22 @@ async function streamGemini(
 
   const genAI = new GoogleGenerativeAI(apiKey);
 
-  const model = genAI.getGenerativeModel({
-    model: modelId,
-    safetySettings: [
-      {
-        category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-        threshold: HarmBlockThreshold.BLOCK_NONE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-        threshold: HarmBlockThreshold.BLOCK_NONE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-        threshold: HarmBlockThreshold.BLOCK_NONE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-        threshold: HarmBlockThreshold.BLOCK_NONE,
-      },
-    ],
-    systemInstruction: {
-      role: "system",
-      parts: [{ text: systemInstructionText }],
-    },
-  });
-
-  const chat = model.startChat({
-    history: messages.slice(0, -1).map((msg) => {
-      const parts: Part[] = [{ text: msg.content }];
-      if (msg.attachments && msg.attachments.length > 0) {
-        msg.attachments.forEach((attachment) => {
-          parts.push({
-            inlineData: {
-              mimeType: attachment.mimeType,
-              data: attachment.data,
-            },
-          });
+  const history = messages.slice(0, -1).map((msg) => {
+    const parts: Part[] = [{ text: msg.content }];
+    if (msg.attachments && msg.attachments.length > 0) {
+      msg.attachments.forEach((attachment) => {
+        parts.push({
+          inlineData: {
+            mimeType: attachment.mimeType,
+            data: attachment.data,
+          },
         });
-      }
-      return {
-        role: msg.role === "user" ? "user" : "model",
-        parts,
-      };
-    }),
+      });
+    }
+    return {
+      role: msg.role === "user" ? "user" : "model",
+      parts,
+    };
   });
 
   const lastMessage = messages[messages.length - 1];
@@ -189,10 +197,95 @@ async function streamGemini(
     });
   }
 
-  const result = await chat.sendMessageStream(lastMessageParts);
+  const modelOrder = getGeminiModelOrder(modelId);
+  let usedModelId = modelId;
+  type GeminiStreamResult = { stream: AsyncIterable<{ text: () => string }> };
+  let result: GeminiStreamResult | null = null;
+  let lastError: unknown = null;
+
+  for (const candidateModelId of modelOrder) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: candidateModelId,
+        safetySettings: [
+          {
+            category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold: HarmBlockThreshold.BLOCK_NONE,
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold: HarmBlockThreshold.BLOCK_NONE,
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold: HarmBlockThreshold.BLOCK_NONE,
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold: HarmBlockThreshold.BLOCK_NONE,
+          },
+        ],
+        systemInstruction: {
+          role: "system",
+          parts: [{ text: systemInstructionText }],
+        },
+      });
+
+      const chat = model.startChat({ history });
+      result = await chat.sendMessageStream(lastMessageParts);
+      usedModelId = candidateModelId;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (isTransientUpstreamError(error)) {
+        try {
+          await sleep(900);
+          const model = genAI.getGenerativeModel({
+            model: candidateModelId,
+            safetySettings: [
+              {
+                category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+                threshold: HarmBlockThreshold.BLOCK_NONE,
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                threshold: HarmBlockThreshold.BLOCK_NONE,
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                threshold: HarmBlockThreshold.BLOCK_NONE,
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                threshold: HarmBlockThreshold.BLOCK_NONE,
+              },
+            ],
+            systemInstruction: {
+              role: "system",
+              parts: [{ text: systemInstructionText }],
+            },
+          });
+          const chat = model.startChat({ history });
+          result = await chat.sendMessageStream(lastMessageParts);
+          usedModelId = candidateModelId;
+          break;
+        } catch (retryError) {
+          lastError = retryError;
+        }
+      }
+    }
+  }
+
+  if (!result) {
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Unable to start Gemini streaming response.");
+  }
 
   const encoder = new TextEncoder();
-  return new ReadableStream({
+  return {
+    modelUsed: usedModelId,
+    stream: new ReadableStream({
     async start(controller) {
       try {
         let hasText = false;
@@ -218,14 +311,15 @@ async function streamGemini(
         controller.close();
       }
     },
-  });
+    }),
+  };
 }
 
 async function streamOpenAI(
   modelId: string,
   messages: ChatMessage[],
   systemInstructionText: string,
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<StreamResult> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -273,7 +367,9 @@ async function streamOpenAI(
   });
 
   const encoder = new TextEncoder();
-  return new ReadableStream({
+  return {
+    modelUsed: modelId,
+    stream: new ReadableStream({
     async start(controller) {
       try {
         let hasText = false;
@@ -302,14 +398,15 @@ async function streamOpenAI(
         controller.close();
       }
     },
-  });
+    }),
+  };
 }
 
 async function streamAnthropic(
   modelId: string,
   messages: ChatMessage[],
   systemInstructionText: string,
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<StreamResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -351,7 +448,9 @@ async function streamAnthropic(
   }
 
   const encoder = new TextEncoder();
-  return new ReadableStream({
+  return {
+    modelUsed: modelId,
+    stream: new ReadableStream({
     async start(controller) {
       try {
         let hasText = false;
@@ -394,7 +493,8 @@ async function streamAnthropic(
         controller.close();
       }
     },
-  });
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -414,14 +514,14 @@ export async function POST(req: Request) {
     const systemInstructionText =
       customSystemInstruction || defaultSystemInstruction;
 
-    let stream: ReadableStream<Uint8Array>;
+    let streamResult: StreamResult;
 
     switch (provider) {
       case "openai":
-        stream = await streamOpenAI(modelId, messages, systemInstructionText);
+        streamResult = await streamOpenAI(modelId, messages, systemInstructionText);
         break;
       case "anthropic":
-        stream = await streamAnthropic(
+        streamResult = await streamAnthropic(
           modelId,
           messages,
           systemInstructionText,
@@ -429,21 +529,24 @@ export async function POST(req: Request) {
         break;
       case "gemini":
       default:
-        stream = await streamGemini(modelId, messages, systemInstructionText);
+        streamResult = await streamGemini(modelId, messages, systemInstructionText);
         break;
     }
 
-    return new Response(stream, {
+    return new Response(streamResult.stream, {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
         "Transfer-Encoding": "chunked",
+        "X-Model-Used": streamResult.modelUsed,
       },
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    const upstreamStatus = getUpstreamStatusCode(error);
+    const status = isTransientUpstreamError(error) ? 503 : upstreamStatus ?? 500;
     return NextResponse.json(
       { error: "Chat Error", details: message },
-      { status: 500 },
+      { status },
     );
   }
 }

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 
-const SW_CACHE_NAME = "preview-pwa-v3";
+const SW_CACHE_NAME = "preview-pwa-v5";
 
 // CDN scripts used by the preview — must be cached for offline support
 const CDN_URLS = [
@@ -19,6 +19,17 @@ interface PreviewData {
   language: string;
   name: string;
   hasGeneratedIconHint?: boolean;
+}
+
+interface StoredPreviewAsset {
+  assetKey: string;
+  mimeType: string;
+  data?: string;
+  url?: string;
+}
+
+function buildPreviewAssetUrl(id: string, assetKey: string): string {
+  return `/preview/${encodeURIComponent(id)}/assets/${encodeURIComponent(assetKey)}`;
 }
 
 const EXTERNAL_IMPORT_BLOCKLIST = new Set([
@@ -150,6 +161,88 @@ function readPreviewData(id: string): PreviewData | null {
   };
 }
 
+function inferAssetCategory(assetKey: string): string {
+  const key = assetKey.toLowerCase();
+  if (key.includes("background") || key.includes("scene")) return "background";
+  if (key.includes("character") || key.includes("avatar") || key.includes("actor")) {
+    return "character";
+  }
+  if (key.includes("target") || key.includes("secondary") || key.includes("opponent")) {
+    return "secondary";
+  }
+  if (
+    key.includes("structure") ||
+    key.includes("obstacle") ||
+    key.includes("block") ||
+    key.includes("terrain")
+  ) {
+    return "structure";
+  }
+  if (key.includes("effect") || key.includes("impact") || key.includes("explosion")) {
+    return "effect";
+  }
+  return "generic";
+}
+
+function readPreviewAssets(id: string): StoredPreviewAsset[] {
+  try {
+    const raw = localStorage.getItem(`pwa-preview-${id}-assets`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => item && typeof item.assetKey === "string");
+  } catch {
+    return [];
+  }
+}
+
+function resolveCodeAssetPlaceholders(id: string, code: string): string {
+  const transparentFallbackDataUrl =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+  const assets = readPreviewAssets(id);
+  // Always provide a direct stable URL mapping even when localStorage payloads
+  // are unavailable/truncated; the SW cache serves these asset URLs.
+  const directReplacedCode = code.replace(
+    /__ASSET_([a-zA-Z0-9_-]+)__/g,
+    (_fullMatch, rawKey: string) => buildPreviewAssetUrl(id, rawKey),
+  );
+  if (!assets.length) return directReplacedCode;
+
+  const assetUrlMap: Record<string, string> = {};
+  const indexedAssets = assets.map((asset) => {
+    const key = asset.assetKey.toLowerCase();
+    const placeholder = `__ASSET_${asset.assetKey}__`;
+    const cachedAssetUrl = buildPreviewAssetUrl(id, asset.assetKey);
+    const resolvedUrl = asset.data
+      ? `data:${asset.mimeType || "image/png"};base64,${asset.data}`
+      : cachedAssetUrl;
+    assetUrlMap[placeholder] = resolvedUrl;
+    return {
+      key,
+      category: inferAssetCategory(key),
+      resolvedUrl,
+    };
+  });
+
+  return code.replace(/__ASSET_([a-zA-Z0-9_-]+)__/g, (fullMatch, rawKey: string) => {
+    if (assetUrlMap[fullMatch]) return assetUrlMap[fullMatch];
+
+    const requestKey = rawKey.toLowerCase();
+    const requestCategory = inferAssetCategory(requestKey);
+
+    const categoryMatch = indexedAssets.find((entry) => entry.category === requestCategory);
+    if (categoryMatch) return categoryMatch.resolvedUrl;
+
+    const fuzzyMatch = indexedAssets.find(
+      (entry) => entry.key.includes(requestKey) || requestKey.includes(entry.key),
+    );
+    if (fuzzyMatch) return fuzzyMatch.resolvedUrl;
+
+    // Fallback to direct cached asset URL first, then transparent pixel.
+    return buildPreviewAssetUrl(id, rawKey) || transparentFallbackDataUrl;
+  });
+}
+
 export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -256,6 +349,8 @@ export default function PreviewClient() {
     if (!id || !previewData) return;
 
     const { code, language, name } = previewData;
+    const previewAssets = readPreviewAssets(id);
+    const codeWithAssets = resolveCodeAssetPlaceholders(id, code);
 
     // Set page title and PWA meta tags in <head>
     document.title = name;
@@ -323,14 +418,21 @@ export default function PreviewClient() {
         : Promise.resolve(null);
 
     // 2) Build the preview HTML for the iframe
-    const previewHTML = buildPreviewHTML(code, language, name);
+    const previewHTML = buildPreviewHTML(codeWithAssets, language, name);
     if (iframeRef.current) {
       iframeRef.current.srcdoc = previewHTML;
     }
 
     // 3) Build a fully self-contained standalone page and cache it
     //    This is what the SW will serve when the dev server is off
-    const standaloneHTML = buildStandaloneHTML(code, language, name, id, icon192Href, hasGeneratedIcon);
+    const standaloneHTML = buildStandaloneHTML(
+      codeWithAssets,
+      language,
+      name,
+      id,
+      icon192Href,
+      hasGeneratedIcon,
+    );
 
     swReady.then(async () => {
       await cacheForOffline(id, name, standaloneHTML, [
@@ -339,7 +441,7 @@ export default function PreviewClient() {
         hasGeneratedIcon
           ? `/api/preview/${id}/generate-icon?size=512${iconVersion ? `&v=${iconVersion}` : ""}`
           : "/icons/icon.svg",
-      ]);
+      ], previewAssets);
     });
   }, [hasGeneratedIcon, icon192Href, iconVersion, id, previewData]);
 
@@ -400,7 +502,8 @@ async function cacheForOffline(
   id: string,
   name: string,
   standaloneHTML: string,
-  extraUrls: string[]
+  extraUrls: string[],
+  previewAssets: StoredPreviewAsset[] = [],
 ) {
   try {
     const cache = await caches.open(SW_CACHE_NAME);
@@ -434,6 +537,46 @@ async function cacheForOffline(
           // best-effort
         }
       })
+    );
+
+    // 3) Cache generated/referenced preview assets under stable local URLs.
+    await Promise.allSettled(
+      previewAssets.map(async (asset) => {
+        const assetUrl = buildPreviewAssetUrl(id, asset.assetKey);
+        if (asset.data) {
+          const raw = atob(asset.data);
+          const bytes = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+          await cache.put(
+            new Request(assetUrl),
+            new Response(bytes, {
+              headers: {
+                "Content-Type": asset.mimeType || "image/png",
+                "Cache-Control": "public, max-age=31536000",
+              },
+            }),
+          );
+          return;
+        }
+
+        if (asset.url) {
+          try {
+            const resp = await fetch(asset.url, { mode: "cors" });
+            if (resp.ok) {
+              await cache.put(new Request(assetUrl), resp);
+              return;
+            }
+          } catch {
+            // fall through to no-cors mode
+          }
+          try {
+            const resp = await fetch(asset.url, { mode: "no-cors" });
+            await cache.put(new Request(assetUrl), resp);
+          } catch {
+            // best-effort
+          }
+        }
+      }),
     );
 
     // 4) Cache all CDN scripts for offline use.
@@ -562,6 +705,46 @@ function buildStandaloneHTML(
         Suspense, Fragment, createElement, cloneElement,
         Children, createRef, isValidElement
       } = React;
+
+      const __assetPlaceholderRegex = /__ASSET_([a-zA-Z0-9_-]+)__/;
+      function __extractPreviewIdFromPath(pathname) {
+        var path = String(pathname || '');
+        if (!path.startsWith('/preview/')) return '';
+        var remainder = path.slice('/preview/'.length);
+        var id = remainder.split('/')[0] || '';
+        return id ? decodeURIComponent(id) : '';
+      }
+      function __resolvePreviewAssetUrl(rawUrl) {
+        if (typeof rawUrl !== 'string' || !rawUrl.includes('__ASSET_')) return rawUrl;
+        var keyMatch = rawUrl.match(__assetPlaceholderRegex);
+        if (!keyMatch || !keyMatch[1]) return rawUrl;
+        var key = keyMatch[1];
+        var previewId = __extractPreviewIdFromPath(location.pathname);
+        if (!previewId) return rawUrl;
+        return '/preview/' + encodeURIComponent(previewId) + '/assets/' + encodeURIComponent(key);
+      }
+      const __nativeFetch = window.fetch.bind(window);
+      window.fetch = function(input, init) {
+        try {
+          if (typeof input === 'string') return __nativeFetch(__resolvePreviewAssetUrl(input), init);
+          if (input instanceof Request) {
+            var rewritten = __resolvePreviewAssetUrl(input.url);
+            if (rewritten !== input.url) return __nativeFetch(new Request(rewritten, input), init);
+          }
+        } catch {}
+        return __nativeFetch(input, init);
+      };
+      try {
+        const __imgSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+        if (__imgSrcDesc && __imgSrcDesc.set && __imgSrcDesc.get) {
+          Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            configurable: true,
+            enumerable: true,
+            get: function() { return __imgSrcDesc.get.call(this); },
+            set: function(value) { return __imgSrcDesc.set.call(this, __resolvePreviewAssetUrl(value)); },
+          });
+        }
+      } catch {}
 
       // Guard canvas draws against not-yet-ready/broken images so preview code
       // does not crash when assets are still loading.
@@ -726,6 +909,46 @@ function buildPreviewHTML(
         Suspense, Fragment, createElement, cloneElement,
         Children, createRef, isValidElement
       } = React;
+
+      const __assetPlaceholderRegex = /__ASSET_([a-zA-Z0-9_-]+)__/;
+      function __extractPreviewIdFromPath(pathname) {
+        var path = String(pathname || '');
+        if (!path.startsWith('/preview/')) return '';
+        var remainder = path.slice('/preview/'.length);
+        var id = remainder.split('/')[0] || '';
+        return id ? decodeURIComponent(id) : '';
+      }
+      function __resolvePreviewAssetUrl(rawUrl) {
+        if (typeof rawUrl !== 'string' || !rawUrl.includes('__ASSET_')) return rawUrl;
+        var keyMatch = rawUrl.match(__assetPlaceholderRegex);
+        if (!keyMatch || !keyMatch[1]) return rawUrl;
+        var key = keyMatch[1];
+        var previewId = __extractPreviewIdFromPath(location.pathname);
+        if (!previewId) return rawUrl;
+        return '/preview/' + encodeURIComponent(previewId) + '/assets/' + encodeURIComponent(key);
+      }
+      const __nativeFetch = window.fetch.bind(window);
+      window.fetch = function(input, init) {
+        try {
+          if (typeof input === 'string') return __nativeFetch(__resolvePreviewAssetUrl(input), init);
+          if (input instanceof Request) {
+            var rewritten = __resolvePreviewAssetUrl(input.url);
+            if (rewritten !== input.url) return __nativeFetch(new Request(rewritten, input), init);
+          }
+        } catch {}
+        return __nativeFetch(input, init);
+      };
+      try {
+        const __imgSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+        if (__imgSrcDesc && __imgSrcDesc.set && __imgSrcDesc.get) {
+          Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            configurable: true,
+            enumerable: true,
+            get: function() { return __imgSrcDesc.get.call(this); },
+            set: function(value) { return __imgSrcDesc.set.call(this, __resolvePreviewAssetUrl(value)); },
+          });
+        }
+      } catch {}
 
       // Guard canvas draws against not-yet-ready/broken images so preview code
       // does not crash when assets are still loading.

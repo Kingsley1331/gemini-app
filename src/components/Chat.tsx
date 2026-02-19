@@ -1145,6 +1145,14 @@ export default function Chat() {
 
           if (!response.ok) throw new Error("Failed to get response");
           if (!response.body) throw new Error("No response body");
+          const modelUsed = response.headers.get("x-model-used");
+          if (
+            modelUsed &&
+            models.some((model) => model.id === modelUsed) &&
+            modelUsed !== selectedModel
+          ) {
+            setSelectedModel(modelUsed);
+          }
 
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
@@ -1230,6 +1238,7 @@ export default function Chat() {
       isLoading,
       messages,
       selectedModel,
+      models,
       isRichText,
       assetStylePreset,
       assetLibrary,
