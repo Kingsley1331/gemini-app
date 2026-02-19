@@ -19,6 +19,7 @@ import {
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import JSZip from "jszip";
+import { savePreviewToIDB, requestPersistentStorage } from "@/lib/preview-idb";
 
 interface CodePreviewProps {
   code: string;
@@ -634,6 +635,11 @@ export default function CodePreview({
       localStorage.setItem(`pwa-preview-${preparedPwaId}-name`, preparedPwaName);
       localStorage.setItem(`pwa-preview-${preparedPwaId}-has-generated-icon`, "1");
       await persistPwaPreviewAssets(preparedPwaId, latestAssetsRef.current);
+      savePreviewToIDB({
+        id: preparedPwaId, standaloneHTML: "", code, language,
+        name: preparedPwaName, hasGeneratedIcon: true, timestamp: Date.now(),
+      }).catch(() => {});
+      requestPersistentStorage();
       window.open(`/preview/${preparedPwaId}`, "_blank");
       scheduleGeneratedIconCleanup(preparedPwaId);
       setPreparedPwaId(null);
@@ -645,11 +651,8 @@ export default function CodePreview({
     const name =
       window.prompt("Enter a name for your app:", "My App") || "My App";
 
-    // Generate a unique ID so each preview becomes its own installable PWA
     const id = createPwaPreviewId();
 
-    // Detect if "html"-tagged code is actually React/JSX so the preview page
-    // processes it correctly (same detection as updateIframe).
     const isReactCode =
       /import\s.*from\s/.test(code) ||
       /export\s+default\s+function/.test(code) ||
@@ -657,13 +660,19 @@ export default function CodePreview({
     const effectiveLanguage =
       language === "html" && isReactCode ? "tsx" : language;
 
-    // Store the code and metadata under the unique ID
     localStorage.setItem(`pwa-preview-${id}-code`, code);
     localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
     localStorage.setItem(`pwa-preview-${id}-name`, name);
     await persistPwaPreviewAssets(id, latestAssetsRef.current);
 
-    // Open the standalone preview page in a new tab with the unique ID
+    // standaloneHTML is left empty here — PreviewClient will build and persist
+    // the full standalone page when it opens and calls cacheForOffline.
+    savePreviewToIDB({
+      id, standaloneHTML: "", code, language: effectiveLanguage,
+      name, hasGeneratedIcon: false, timestamp: Date.now(),
+    }).catch(() => {});
+    requestPersistentStorage();
+
     window.open(`/preview/${id}`, "_blank");
   }, [code, language, preparedPwaId, preparedPwaName]);
 
@@ -678,6 +687,11 @@ export default function CodePreview({
     localStorage.setItem(`pwa-preview-${id}-language`, language);
     localStorage.setItem(`pwa-preview-${id}-name`, name);
     await persistPwaPreviewAssets(id, latestAssetsRef.current);
+    savePreviewToIDB({
+      id, standaloneHTML: "", code, language,
+      name, hasGeneratedIcon: false, timestamp: Date.now(),
+    }).catch(() => {});
+    requestPersistentStorage();
 
     setIsGeneratingPwaIcon(true);
     setIconModalStatus("Generating icon...");

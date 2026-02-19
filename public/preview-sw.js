@@ -1,6 +1,40 @@
 // Service Worker for Preview PWA — enables fully offline operation
 const CACHE_NAME = "preview-pwa-v5";
 
+// ---------------------------------------------------------------------------
+// IndexedDB helpers — the SW cannot access localStorage, so IndexedDB is the
+// durable fallback when the Cache API is evicted by the browser.
+// ---------------------------------------------------------------------------
+const IDB_NAME = "preview-pwa-db";
+const IDB_VERSION = 1;
+const IDB_STORE = "previews";
+
+function openIDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(IDB_NAME, IDB_VERSION);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function idbGet(id) {
+  return openIDB().then((db) =>
+    new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    }),
+  );
+}
+
 // Install — keep minimal to avoid hard-failing on missing generated icons
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -135,6 +169,27 @@ self.addEventListener("fetch", (event) => {
           (await cache.match(trailingSlash, { ignoreSearch: true }));
 
         if (cached) return cached;
+
+        // Cache miss — try IndexedDB as a durable fallback. The browser can
+        // evict Cache API entries under storage pressure, but IndexedDB
+        // (especially with persistent storage granted) is much more resilient.
+        try {
+          const idMatch = url.pathname.match(/^\/preview\/([^/]+)/);
+          const previewId = idMatch ? decodeURIComponent(idMatch[1]) : null;
+          if (previewId) {
+            const record = await idbGet(previewId);
+            if (record && record.standaloneHTML) {
+              const headers = { "Content-Type": "text/html; charset=utf-8" };
+              const resp = new Response(record.standaloneHTML, { headers });
+              // Self-heal: restore the Cache API entries so future loads are fast
+              cache.put(new Request(url.origin + trimmedPath), new Response(record.standaloneHTML, { headers }));
+              cache.put(new Request(url.origin + withSlashPath), new Response(record.standaloneHTML, { headers }));
+              return resp;
+            }
+          }
+        } catch {
+          // IDB unavailable — fall through to network
+        }
 
         try {
           return await fetch(event.request);

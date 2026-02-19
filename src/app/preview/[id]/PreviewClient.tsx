@@ -2,6 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
+import {
+  savePreviewToIDB,
+  getPreviewFromIDB,
+  requestPersistentStorage,
+} from "@/lib/preview-idb";
 
 const SW_CACHE_NAME = "preview-pwa-v5";
 
@@ -248,12 +253,42 @@ export default function PreviewClient() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iconVersion] = useState<number>(0);
 
-  // Since SSR is disabled, we can read localStorage directly during render
-  const previewData = id ? readPreviewData(id) : null;
+  // Try localStorage first (synchronous). If empty, we'll check IndexedDB.
+  const localData = id ? readPreviewData(id) : null;
+  const [previewData, setPreviewData] = useState<PreviewData | null>(localData);
+  const [idbChecked, setIdbChecked] = useState(!!localData);
 
-  // Initialise from localStorage hint synchronously so the very first render
-  // already includes &generated=1 in the manifest link.  This avoids a brief
-  // window where the browser could read the manifest without generated icons.
+  // When localStorage misses, try IndexedDB as a durable fallback.
+  // If found, restore localStorage so future loads are instant.
+  useEffect(() => {
+    if (previewData || !id || idbChecked) return;
+    let cancelled = false;
+    getPreviewFromIDB(id).then((record) => {
+      if (cancelled || !record) {
+        setIdbChecked(true);
+        return;
+      }
+      try {
+        localStorage.setItem(`pwa-preview-${id}-code`, record.code);
+        localStorage.setItem(`pwa-preview-${id}-language`, record.language);
+        localStorage.setItem(`pwa-preview-${id}-name`, record.name);
+        if (record.hasGeneratedIcon) {
+          localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+        }
+      } catch {
+        // localStorage quota exceeded — proceed with IDB data only
+      }
+      setPreviewData({
+        code: record.code,
+        language: record.language,
+        name: record.name,
+        hasGeneratedIconHint: record.hasGeneratedIcon,
+      });
+      setIdbChecked(true);
+    });
+    return () => { cancelled = true; };
+  }, [id, previewData, idbChecked]);
+
   const [hasGeneratedIcon, setHasGeneratedIcon] = useState(
     () => previewData?.hasGeneratedIconHint ?? false,
   );
@@ -441,7 +476,7 @@ export default function PreviewClient() {
         hasGeneratedIcon
           ? `/api/preview/${id}/generate-icon?size=512${iconVersion ? `&v=${iconVersion}` : ""}`
           : "/icons/icon.svg",
-      ], previewAssets);
+      ], previewAssets, code, language, hasGeneratedIcon);
     });
   }, [hasGeneratedIcon, icon192Href, iconVersion, id, previewData]);
 
@@ -460,19 +495,25 @@ export default function PreviewClient() {
         }}
       >
         <div style={{ textAlign: "center" }}>
-          <h1
-            style={{
-              fontSize: "1.5rem",
-              color: "#18181b",
-              marginBottom: "0.5rem",
-            }}
-          >
-            No Preview Available
-          </h1>
-          <p>
-            Use the &ldquo;Install as App&rdquo; button from a code preview to
-            open this page.
-          </p>
+          {!idbChecked ? (
+            <p>Loading preview&hellip;</p>
+          ) : (
+            <>
+              <h1
+                style={{
+                  fontSize: "1.5rem",
+                  color: "#18181b",
+                  marginBottom: "0.5rem",
+                }}
+              >
+                No Preview Available
+              </h1>
+              <p>
+                Use the &ldquo;Install as App&rdquo; button from a code preview
+                to open this page.
+              </p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -504,7 +545,32 @@ async function cacheForOffline(
   standaloneHTML: string,
   extraUrls: string[],
   previewAssets: StoredPreviewAsset[] = [],
+  previewCode?: string,
+  previewLanguage?: string,
+  hasGeneratedIcon?: boolean,
 ) {
+  // Request persistent storage so the browser won't evict our caches.
+  // Chrome auto-grants this for installed PWAs; other browsers may prompt.
+  requestPersistentStorage();
+
+  // Save to IndexedDB as the durable backup. Even if Cache API is evicted,
+  // the service worker can rebuild from IDB.
+  try {
+    const code = previewCode ?? localStorage.getItem(`pwa-preview-${id}-code`) ?? "";
+    const language = previewLanguage ?? localStorage.getItem(`pwa-preview-${id}-language`) ?? "jsx";
+    await savePreviewToIDB({
+      id,
+      standaloneHTML,
+      code,
+      language,
+      name,
+      hasGeneratedIcon: hasGeneratedIcon ?? localStorage.getItem(`pwa-preview-${id}-has-generated-icon`) === "1",
+      timestamp: Date.now(),
+    });
+  } catch {
+    // best-effort — Cache API below is the primary serving mechanism
+  }
+
   try {
     const cache = await caches.open(SW_CACHE_NAME);
 
