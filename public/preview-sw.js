@@ -1,5 +1,5 @@
 // Service Worker for Preview PWA — enables fully offline operation
-const CACHE_NAME = "preview-pwa-v2";
+const CACHE_NAME = "preview-pwa-v3";
 
 // Install — keep minimal to avoid hard-failing on missing generated icons
 self.addEventListener("install", (event) => {
@@ -27,40 +27,48 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
   // ── Navigation to /preview/* ──
-  // Network-first while online to avoid stale preview runtimes,
-  // then fall back to cache for offline support.
+  // Network-first while online; do NOT cache the server response — it is the
+  // React app shell which depends on localStorage. The standalone HTML
+  // (fully self-contained) is stored by cacheForOffline() in PreviewClient.
+  // Caching the Next.js response would overwrite the standalone and cause
+  // "No Preview Available" when opening the PWA offline or in standalone mode.
   if (
     event.request.mode === "navigate" &&
     url.pathname.startsWith("/preview/")
   ) {
     event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches
-              .open(CACHE_NAME)
-              .then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() =>
-          caches.match(event.request).then((cached) => {
-            if (cached) return cached;
-            return new Response(
-              "<html><body style='display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;color:#71717a'>" +
-                "<div style='text-align:center'><h1 style='color:#18181b'>Offline</h1><p>This preview is not available offline yet. Open it once while online to enable offline access.</p></div>" +
-                "</body></html>",
-              { headers: { "Content-Type": "text/html" } },
-            );
-          }),
-        )
-        .catch(() => {
-          return new Response("Offline", {
-            status: 503,
-            statusText: "Service Unavailable",
-          });
-        })
+      (async () => {
+        const cache = await caches.open(CACHE_NAME);
+
+        // Prefer the cached standalone preview page so installed PWAs don't
+        // depend on the live dev server/localStorage app shell.
+        const noQuery = new Request(url.origin + url.pathname);
+        const trimmedPath = url.pathname.endsWith("/")
+          ? url.pathname.slice(0, -1)
+          : url.pathname;
+        const withSlashPath = trimmedPath + "/";
+        const trailingSlash = new Request(url.origin + withSlashPath);
+        const withoutTrailingSlash = new Request(url.origin + trimmedPath);
+
+        const cached =
+          (await cache.match(event.request, { ignoreSearch: true })) ||
+          (await cache.match(noQuery, { ignoreSearch: true })) ||
+          (await cache.match(withoutTrailingSlash, { ignoreSearch: true })) ||
+          (await cache.match(trailingSlash, { ignoreSearch: true }));
+
+        if (cached) return cached;
+
+        try {
+          return await fetch(event.request);
+        } catch {
+          return new Response(
+            "<html><body style='display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;color:#71717a'>" +
+              "<div style='text-align:center'><h1 style='color:#18181b'>Offline</h1><p>This preview is not available offline yet. Open it once while online to enable offline access.</p></div>" +
+              "</body></html>",
+            { headers: { "Content-Type": "text/html" } },
+          );
+        }
+      })()
     );
     return;
   }

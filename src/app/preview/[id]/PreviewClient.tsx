@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 
-const SW_CACHE_NAME = "preview-pwa-v2";
+const SW_CACHE_NAME = "preview-pwa-v3";
 
 // CDN scripts used by the preview — must be cached for offline support
 const CDN_URLS = [
@@ -153,7 +153,7 @@ function readPreviewData(id: string): PreviewData | null {
 export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [iconVersion, setIconVersion] = useState<number>(0);
+  const [iconVersion] = useState<number>(0);
 
   // Since SSR is disabled, we can read localStorage directly during render
   const previewData = id ? readPreviewData(id) : null;
@@ -181,9 +181,6 @@ export default function PreviewClient() {
     // If localStorage already told us icons exist, trust it and only use the
     // HEAD request as an upgrade path (never downgrade back to false).
     const hintSaysYes = previewData?.hasGeneratedIconHint ?? false;
-    if (hintSaysYes) {
-      setHasGeneratedIcon(true);
-    }
 
     let cancelled = false;
     fetch(`/api/preview/${id}/generate-icon?size=192`, {
@@ -411,6 +408,12 @@ async function cacheForOffline(
     // 1) Cache the standalone HTML at the preview URL
     await cache.put(
       new Request(`/preview/${id}`),
+      new Response(standaloneHTML, {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      }),
+    );
+    await cache.put(
+      new Request(`/preview/${id}/`),
       new Response(standaloneHTML, {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       }),
