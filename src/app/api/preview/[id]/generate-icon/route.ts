@@ -68,6 +68,65 @@ function extractInlineData(response: {
   return null;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getUpstreamStatusCode(error: unknown): number | null {
+  if (!(error instanceof Error)) return null;
+  const match = error.message.match(/\[(\d{3})\s+[^\]]+\]/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isTransientModelError(error: unknown): boolean {
+  const statusCode = getUpstreamStatusCode(error);
+  if (statusCode === 429 || statusCode === 500 || statusCode === 502 || statusCode === 503) {
+    return true;
+  }
+  if (!(error instanceof Error)) return false;
+  return /high demand|try again later|temporar/i.test(error.message);
+}
+
+async function generateIconWithModel(
+  genAI: GoogleGenerativeAI,
+  modelName: string,
+  prompt: string
+): Promise<{ icon512Buffer: Buffer; icon192Buffer: Buffer }> {
+  const model = genAI.getGenerativeModel({ model: modelName });
+  const result = await model.generateContent({
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `${prompt}\n\nOutput requirements:\n- PNG only\n- Square 512x512\n- Keep composition centered and readable at small sizes`,
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      // @ts-expect-error - Official multimodal generation modality
+      responseModalities: ["IMAGE"],
+    },
+  });
+
+  const response = await result.response;
+  const inlineData = extractInlineData(response);
+  if (!inlineData) {
+    throw new Error(`No image data returned from model ${modelName}`);
+  }
+
+  const icon512Buffer = Buffer.from(inlineData.data, "base64");
+  const icon192Buffer = await sharp(icon512Buffer)
+    .resize(192, 192, { fit: "cover" })
+    .png()
+    .toBuffer();
+
+  return { icon512Buffer, icon192Buffer };
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -95,39 +154,45 @@ export async function POST(
         : `Create a clean, high-contrast, minimal mobile app icon for "${appName}". Centered symbol, bold shape, no text, no watermark, simple background, suitable for Android and iOS PWA install icon.`;
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const modelName = pro ? "gemini-3-pro-image-preview" : "gemini-2.5-flash-image";
-    const model = genAI.getGenerativeModel({ model: modelName });
+    const modelOrder = pro
+      ? ["gemini-3-pro-image-preview", "gemini-2.5-flash-image"]
+      : ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"];
+
+    let icon512Buffer: Buffer | null = null;
+    let icon192Buffer: Buffer | null = null;
+    let lastError: unknown = null;
 
     // Generate a single 512x512 icon and resize to 192x192 so both sizes
     // show the same image (two separate API calls would produce different icons).
-    const result = await model.generateContent({
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: `${basePrompt}\n\nOutput requirements:\n- PNG only\n- Square 512x512\n- Keep composition centered and readable at small sizes`,
-            },
-          ],
-        },
-      ],
-      generationConfig: {
-        // @ts-expect-error - Official multimodal generation modality
-        responseModalities: ["IMAGE"],
-      },
-    });
-
-    const response = await result.response;
-    const inlineData = extractInlineData(response);
-    if (!inlineData) {
-      throw new Error("No image data returned for icon generation");
+    for (const modelName of modelOrder) {
+      try {
+        const generated = await generateIconWithModel(genAI, modelName, basePrompt);
+        icon512Buffer = generated.icon512Buffer;
+        icon192Buffer = generated.icon192Buffer;
+        break;
+      } catch (error: unknown) {
+        lastError = error;
+        if (isTransientModelError(error)) {
+          try {
+            const generated = await generateIconWithModel(genAI, modelName, basePrompt);
+            icon512Buffer = generated.icon512Buffer;
+            icon192Buffer = generated.icon192Buffer;
+            break;
+          } catch (retryError: unknown) {
+            lastError = retryError;
+            if (isTransientModelError(retryError)) {
+              await sleep(1200);
+            }
+          }
+        }
+      }
     }
 
-    const icon512Buffer = Buffer.from(inlineData.data, "base64");
-    const icon192Buffer = await sharp(icon512Buffer)
-      .resize(192, 192, { fit: "cover" })
-      .png()
-      .toBuffer();
+    if (!icon512Buffer || !icon192Buffer) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error("No image data returned for icon generation");
+    }
 
     const timestamp = Date.now();
     const icon192DataUrl = `data:image/png;base64,${icon192Buffer.toString("base64")}`;
@@ -162,9 +227,11 @@ export async function POST(
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    const upstreamStatus = getUpstreamStatusCode(error);
+    const status = isTransientModelError(error) ? 503 : upstreamStatus ?? 500;
     return NextResponse.json(
       { error: "PWA Icon Generation Failed", details: message },
-      { status: 500 }
+      { status }
     );
   }
 }

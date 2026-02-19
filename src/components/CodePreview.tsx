@@ -63,6 +63,10 @@ function scheduleGeneratedIconCleanup(id: string, delayMs = 10 * 60 * 1000) {
   }, delayMs);
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 const EXTERNAL_IMPORT_BLOCKLIST = new Set([
   "fs",
   "path",
@@ -591,22 +595,51 @@ export default function CodePreview({
     setIsGeneratingPwaIcon(true);
     setIconModalStatus("Generating icon...");
     try {
-      const res = await fetch(`/api/preview/${id}/generate-icon`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          prompt:
-            iconModalPrompt.trim() ||
-            `Create a clean, high-contrast, minimal app icon for "${name}" that matches this ${language} preview app. Centered symbol, no text, no watermark, readable at small sizes.`,
-          pro: true,
-        }),
-      });
+      const retryDelaysMs = [900, 1700];
+      type GenerateIconResponse = {
+        details?: string;
+        error?: string;
+        icons?: { icon192?: string; icon512?: string };
+        iconDataUrls?: { icon192?: string; icon512?: string };
+      };
+      let data: GenerateIconResponse | null = null;
+      let success = false;
 
-      const data = await res.json();
-      if (!res.ok) {
+      for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+        const res = await fetch(`/api/preview/${id}/generate-icon`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            prompt:
+              iconModalPrompt.trim() ||
+              `Create a clean, high-contrast, minimal app icon for "${name}" that matches this ${language} preview app. Centered symbol, no text, no watermark, readable at small sizes.`,
+            pro: true,
+          }),
+        });
+
+        data = await res.json();
+        if (res.ok) {
+          success = true;
+          break;
+        }
+
+        const isRetryable = res.status === 503;
+        const canRetry = attempt < retryDelaysMs.length;
+        if (isRetryable && canRetry) {
+          const retryNumber = attempt + 1;
+          const retryTotal = retryDelaysMs.length;
+          setIconModalStatus(
+            `Model is busy, retrying icon generation (${retryNumber}/${retryTotal})...`
+          );
+          await sleep(retryDelaysMs[attempt] ?? 0);
+          continue;
+        }
+
         throw new Error(data?.details || data?.error || "Icon generation failed");
       }
+      if (!success) throw new Error("Icon generation failed");
+
       setGeneratedCandidateId(id);
       setGeneratedCandidateName(name);
       localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
