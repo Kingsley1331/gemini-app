@@ -406,7 +406,7 @@ export default function Chat() {
   const [isGeneratingSpeech, setIsGeneratingSpeech] = useState<string | null>(
     null,
   );
-  const [selectedModel, setSelectedModel] = useState("gemini-3-pro-preview");
+  const [selectedModel, setSelectedModel] = useState("gemini-3.1-pro-preview");
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isRichText, setIsRichText] = useState(false);
   const [richTextContent, setRichTextContent] = useState("");
@@ -429,6 +429,12 @@ export default function Chat() {
   const models = useMemo(
     () => [
       // Gemini
+      {
+        id: "gemini-3.1-pro-preview",
+        name: "Gemini 3.1 Pro",
+        description: "Latest, most capable Gemini model",
+        provider: "gemini",
+      },
       {
         id: "gemini-3-pro-preview",
         name: "Gemini 3 Pro",

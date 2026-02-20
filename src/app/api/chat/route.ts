@@ -43,6 +43,9 @@ function isTransientUpstreamError(error: unknown): boolean {
 }
 
 function getGeminiModelOrder(modelId: string): string[] {
+  if (modelId === "gemini-3.1-pro-preview") {
+    return ["gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-2.0-flash"];
+  }
   if (modelId === "gemini-3-pro-preview") {
     return ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.0-flash"];
   }
@@ -509,7 +512,7 @@ export async function POST(req: Request) {
       systemInstruction: customSystemInstruction,
     } = await req.json();
 
-    const modelId = userModel || "gemini-3-pro-preview";
+    const modelId = userModel || "gemini-3.1-pro-preview";
     const provider = getProvider(modelId);
     const systemInstructionText =
       customSystemInstruction || defaultSystemInstruction;
