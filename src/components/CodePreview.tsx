@@ -432,17 +432,21 @@ export default function CodePreview({
                 .map((n: string) => n.trim())
                 .filter(Boolean)
                 .filter((n: string) => !n.startsWith("type "));
-              icons.forEach((n: string) => {
-                const kebab = n
+              icons.forEach((rawName: string) => {
+                const parts = rawName.split(/\s+as\s+/);
+                const original = parts[0]?.trim();
+                const alias = parts[1]?.trim() || original;
+                if (!original || !alias) return;
+                const kebab = original
                   .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
                   .toLowerCase();
                 lucideIconDecls.push(
                   "const " +
-                    n +
+                    alias +
                     " = __createLucideIcon('" +
                     kebab +
                     "', '" +
-                    n +
+                    original +
                     "');",
                 );
               });
