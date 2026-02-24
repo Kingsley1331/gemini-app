@@ -35,9 +35,14 @@ interface MessageItemProps {
   isGeneratingSpeech: boolean;
   onSpeak: (text: string, id: string) => void;
   onDebug: (error: string, code: string, language: string) => void;
+  onSnapshot: (snapshot: {
+    url: string;
+    mimeType: string;
+    data: string;
+  }) => void;
 }
 
-const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug }: MessageItemProps) => {
+const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug, onSnapshot }: MessageItemProps) => {
   const assistantHasCodeBlock =
     m.role === "assistant" && m.type === "text" && /```[\s\S]*?```/.test(m.content);
 
@@ -124,6 +129,7 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug 
                         title={`${language.toUpperCase()} Artifact`}
                         assets={m.role === "assistant" ? m.attachments : undefined}
                         onDebug={onDebug}
+                        onSnapshot={onSnapshot}
                       />
                     );
                   }

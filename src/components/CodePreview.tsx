@@ -15,6 +15,8 @@ import {
   Smartphone,
   Sparkles,
   BadgeCheck,
+  Camera,
+  Loader2,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -32,6 +34,11 @@ interface CodePreviewProps {
     assetKey?: string;
   }>;
   onDebug?: (error: string, code: string, language: string) => void;
+  onSnapshot?: (snapshot: {
+    url: string;
+    mimeType: string;
+    data: string;
+  }) => void;
 }
 
 const SW_CACHE_NAME = "preview-pwa-v5";
@@ -275,6 +282,7 @@ export default function CodePreview({
   title = "Preview",
   assets = EMPTY_PREVIEW_ASSETS,
   onDebug,
+  onSnapshot,
 }: CodePreviewProps) {
   const [activeTab, setActiveTab] = useState<"preview" | "code">(
     language === "html" || language === "jsx" || language === "tsx"
@@ -294,6 +302,7 @@ export default function CodePreview({
   const [generatedCandidateId, setGeneratedCandidateId] = useState<string | null>(null);
   const [generatedCandidateName, setGeneratedCandidateName] = useState<string | null>(null);
   const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
+  const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
   const [assetUrlMap, setAssetUrlMap] = useState<Record<string, string>>({});
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const latestAssetsRef = useRef(assets);
@@ -816,6 +825,69 @@ export default function CodePreview({
     setGeneratedIconPreviewUrl(null);
     setShowIconModal(true);
   }, [preparedPwaName, title]);
+
+  const requestPreviewSnapshot = useCallback(async (): Promise<string> => {
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow || !iframe.contentDocument) {
+      throw new Error("Preview is not ready yet.");
+    }
+
+    const iframeWin = iframe.contentWindow as unknown as Record<string, unknown>;
+    const iframeDoc = iframe.contentDocument;
+
+    if (typeof iframeWin.html2canvas !== "function") {
+      await new Promise<void>((resolve, reject) => {
+        const script = iframeDoc.createElement("script");
+        script.src =
+          "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+        script.onload = () => resolve();
+        script.onerror = () =>
+          reject(new Error("Failed to load snapshot library."));
+        iframeDoc.head.appendChild(script);
+      });
+    }
+
+    const h2c = iframeWin.html2canvas as (
+      el: HTMLElement,
+      opts: Record<string, unknown>,
+    ) => Promise<HTMLCanvasElement>;
+
+    const canvas = await h2c(iframeDoc.body, {
+      useCORS: true,
+      allowTaint: false,
+      scale: 1,
+      logging: false,
+      width: iframe.clientWidth || undefined,
+      height: iframe.clientHeight || undefined,
+      windowWidth: iframe.clientWidth || undefined,
+      windowHeight: iframe.clientHeight || undefined,
+    });
+
+    return canvas.toDataURL("image/png");
+  }, []);
+
+  const handleSnapshot = useCallback(async () => {
+    if (!onSnapshot || isCapturingSnapshot) return;
+    setIsCapturingSnapshot(true);
+    try {
+      const dataUrl = await requestPreviewSnapshot();
+      const parsed = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!parsed?.[2]) {
+        throw new Error("Captured snapshot had an invalid format.");
+      }
+      onSnapshot({
+        url: dataUrl,
+        mimeType: parsed[1] || "image/png",
+        data: parsed[2],
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to capture preview snapshot.";
+      window.alert(message);
+    } finally {
+      setIsCapturingSnapshot(false);
+    }
+  }, [isCapturingSnapshot, onSnapshot, requestPreviewSnapshot]);
 
   const updateIframe = useCallback(() => {
     if (!iframeRef.current) return;
@@ -1343,6 +1415,24 @@ export default function CodePreview({
             title="Generate App Icon"
           >
             <Sparkles className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleSnapshot}
+            disabled={activeTab !== "preview" || !onSnapshot || isCapturingSnapshot}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            title={
+              activeTab === "preview"
+                ? isCapturingSnapshot
+                  ? "Capturing snapshot..."
+                  : "Capture preview snapshot"
+                : "Switch to Preview tab to capture"
+            }
+          >
+            {isCapturingSnapshot ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Camera className="w-4 h-4" />
+            )}
           </button>
           <button
             onClick={handleRefresh}

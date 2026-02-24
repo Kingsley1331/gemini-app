@@ -913,6 +913,13 @@ export default function Chat() {
     e.target.value = "";
   };
 
+  const handlePreviewSnapshot = useCallback(
+    (snapshot: { url: string; mimeType: string; data: string }) => {
+      setSelectedImage(snapshot);
+    },
+    [],
+  );
+
   const handleSubmit = useCallback(
     async (e?: React.FormEvent, isImage = false, overrideInput?: string) => {
       if (e) e.preventDefault();
@@ -1350,6 +1357,7 @@ export default function Chat() {
               isGeneratingSpeech={isGeneratingSpeech === m.id}
               onSpeak={speak}
               onDebug={handleDebug}
+              onSnapshot={handlePreviewSnapshot}
             />
           ))}
         </AnimatePresence>
