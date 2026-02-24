@@ -48,16 +48,8 @@ function cn(...inputs: ClassValue[]) {
 }
 
 const SELECTED_MODEL_STORAGE_KEY = "selectedModel";
-const ASSET_STYLE_PRESET_STORAGE_KEY = "assetStylePreset";
 const MAX_AUTO_ASSETS = 8;
 const ASSET_PLACEHOLDER_REGEX = /__ASSET_([a-zA-Z0-9_-]+)__/g;
-type AssetStylePreset = "auto" | "cartoon" | "pixel-art" | "realistic";
-const ASSET_STYLE_PRESETS: Array<{ id: AssetStylePreset; label: string }> = [
-  { id: "auto", label: "Auto style" },
-  { id: "cartoon", label: "Cartoon" },
-  { id: "pixel-art", label: "Pixel Art" },
-  { id: "realistic", label: "Realistic" },
-];
 const VISUAL_INTENT_KEYWORDS = [
   "gallery",
   "beautiful photographs",
@@ -179,19 +171,8 @@ function defaultAssetCountForIntent(input: string): number {
 }
 
 function resolveAssetStyleInstruction(
-  preset: AssetStylePreset,
   input: string,
 ): string {
-  if (preset === "cartoon") {
-    return "cartoon game-art style with clean outlines and vivid colors";
-  }
-  if (preset === "pixel-art") {
-    return "pixel-art style with crisp low-resolution edges and limited palette";
-  }
-  if (preset === "realistic") {
-    return "realistic style with natural lighting and detailed textures";
-  }
-
   const normalized = input.toLowerCase();
   if (
     normalized.includes("game") ||
@@ -211,12 +192,11 @@ function resolveAssetStyleInstruction(
 
 function buildVisualAssetPlan(
   input: string,
-  stylePreset: AssetStylePreset,
 ): PlannedAsset[] {
   const normalized = input.toLowerCase();
   const targetCount =
     detectRequestedAssetCount(input) || defaultAssetCountForIntent(input);
-  const styleInstruction = resolveAssetStyleInstruction(stylePreset, input);
+  const styleInstruction = resolveAssetStyleInstruction(input);
   const planned: PlannedAsset[] = [];
 
   const addAsset = (asset: PlannedAsset) => {
@@ -342,7 +322,6 @@ Asset ${i} of ${targetCount}.`,
 function buildAssetContextMessage(
   userPrompt: string,
   assets: GeneratedAsset[],
-  stylePreset: AssetStylePreset,
 ): string {
   const manifest = assets
     .map(
@@ -367,7 +346,6 @@ ${assets
   .join("\n")}
 - For game sprites, normalize rendering size with explicit width/height values and object-fit style logic in code.
 - If a sprite includes excess transparent padding, compensate with tuned draw offsets and collision bounds.
-- Preferred asset style preset: ${stylePreset}.
 
 Asset manifest:
 ${manifest}`;
@@ -411,8 +389,6 @@ export default function Chat() {
   const [isRichText, setIsRichText] = useState(false);
   const [richTextContent, setRichTextContent] = useState("");
   const [isPromptAssistantOpen, setIsPromptAssistantOpen] = useState(false);
-  const [assetStylePreset, setAssetStylePreset] =
-    useState<AssetStylePreset>("auto");
   const [assetLibrary, setAssetLibrary] = useState<
     Record<string, VisualAttachment>
   >({});
@@ -540,37 +516,6 @@ export default function Chat() {
       console.warn("Failed to save selected model to localStorage:", error);
     }
   }, [selectedModel]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    try {
-      const storedPreset = window.localStorage.getItem(
-        ASSET_STYLE_PRESET_STORAGE_KEY,
-      ) as AssetStylePreset | null;
-      if (
-        storedPreset &&
-        ASSET_STYLE_PRESETS.some((preset) => preset.id === storedPreset)
-      ) {
-        setAssetStylePreset(storedPreset);
-      }
-    } catch (error) {
-      console.warn("Failed to read asset style preset from localStorage:", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    try {
-      window.localStorage.setItem(
-        ASSET_STYLE_PRESET_STORAGE_KEY,
-        assetStylePreset,
-      );
-    } catch (error) {
-      console.warn("Failed to save asset style preset to localStorage:", error);
-    }
-  }, [assetStylePreset]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1031,7 +976,7 @@ export default function Chat() {
             ...assetLibrary,
           };
           const assetPlan = shouldGenerateEmbeddedImage
-            ? buildVisualAssetPlan(normalizedInput, assetStylePreset)
+            ? buildVisualAssetPlan(normalizedInput)
             : [];
           const generatedAssets: GeneratedAsset[] =
             assetPlan.length > 0
@@ -1109,7 +1054,6 @@ export default function Chat() {
               content: buildAssetContextMessage(
                 normalizedInput,
                 activeAssets,
-                assetStylePreset,
               ),
               type: "text",
               attachments: activeAssets.map((asset) => ({
@@ -1246,7 +1190,6 @@ export default function Chat() {
       selectedModel,
       models,
       isRichText,
-      assetStylePreset,
       assetLibrary,
     ],
   );
@@ -1566,20 +1509,6 @@ export default function Chat() {
             </button>
           </div>
           <div className="flex min-w-0 items-end gap-2">
-            <select
-              value={assetStylePreset}
-              onChange={(e) =>
-                setAssetStylePreset(e.target.value as AssetStylePreset)
-              }
-              className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-700 outline-none transition-all focus:border-transparent focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 sm:h-12 sm:text-sm"
-              title="Generated asset style preset"
-            >
-              {ASSET_STYLE_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
-                </option>
-              ))}
-            </select>
             {isRichText ? (
               <RichTextEditor
                 ref={richTextRef}
