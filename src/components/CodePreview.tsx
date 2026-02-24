@@ -832,38 +832,127 @@ export default function CodePreview({
       throw new Error("Preview is not ready yet.");
     }
 
-    const iframeWin = iframe.contentWindow as unknown as Record<string, unknown>;
-    const iframeDoc = iframe.contentDocument;
+    // Always get live references at capture time
+    const getIframeRefs = () => {
+      const win = iframe.contentWindow as unknown as Record<string, unknown>;
+      const doc = iframe.contentDocument;
+      return { win, doc };
+    };
 
-    if (typeof iframeWin.html2canvas !== "function") {
+    let { win: iframeWin, doc: iframeDoc } = getIframeRefs();
+
+    // Wait for iframe document to be fully loaded
+    if (iframeDoc && iframeDoc.readyState !== "complete") {
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          const { doc } = getIframeRefs();
+          if (doc?.readyState === "complete") {
+            resolve();
+          } else {
+            window.setTimeout(check, 50);
+          }
+        };
+        check();
+        window.setTimeout(resolve, 3000);
+      });
+      ({ win: iframeWin, doc: iframeDoc } = getIframeRefs());
+    }
+
+    if (!iframeDoc?.body) {
+      throw new Error("Preview document is not ready.");
+    }
+
+    // dom-to-image-more uses the browser's native SVG foreignObject
+    // renderer with properly inlined computed styles, so the output
+    // is pixel-perfect (flexbox, text baselines, etc. all match).
+    const dtiKey = "domtoimage";
+    if (
+      typeof iframeWin[dtiKey] !== "object" ||
+      iframeWin[dtiKey] === null
+    ) {
       await new Promise<void>((resolve, reject) => {
-        const script = iframeDoc.createElement("script");
+        const script = iframeDoc!.createElement("script");
         script.src =
-          "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+          "https://cdn.jsdelivr.net/npm/dom-to-image-more@3/dist/dom-to-image-more.min.js";
         script.onload = () => resolve();
         script.onerror = () =>
           reject(new Error("Failed to load snapshot library."));
-        iframeDoc.head.appendChild(script);
+        iframeDoc!.head.appendChild(script);
       });
+
+      ({ win: iframeWin, doc: iframeDoc } = getIframeRefs());
+
+      if (!iframeDoc?.body) {
+        throw new Error("Preview document became unavailable during capture.");
+      }
     }
 
-    const h2c = iframeWin.html2canvas as (
-      el: HTMLElement,
-      opts: Record<string, unknown>,
-    ) => Promise<HTMLCanvasElement>;
+    const domToImage = iframeWin[dtiKey] as {
+      toPng: (
+        node: Node,
+        options?: Record<string, unknown>,
+      ) => Promise<string>;
+    };
 
-    const canvas = await h2c(iframeDoc.body, {
-      useCORS: true,
-      allowTaint: false,
-      scale: 1,
-      logging: false,
-      width: iframe.clientWidth || undefined,
-      height: iframe.clientHeight || undefined,
-      windowWidth: iframe.clientWidth || undefined,
-      windowHeight: iframe.clientHeight || undefined,
+    if (typeof domToImage?.toPng !== "function") {
+      throw new Error("Snapshot library failed to initialize.");
+    }
+
+    const iframeWindow = iframe.contentWindow;
+
+    // Wait for web fonts so text metrics are correct.
+    if (iframeDoc.fonts?.status !== "loaded") {
+      await Promise.race([
+        iframeDoc.fonts?.ready ?? Promise.resolve(),
+        new Promise((resolve) => window.setTimeout(resolve, 2000)),
+      ]);
+    }
+
+    // Let the browser finish one more paint frame.
+    await new Promise<void>((resolve) => {
+      iframeWindow.requestAnimationFrame(() => {
+        iframeWindow.requestAnimationFrame(() => resolve());
+      });
     });
 
-    return canvas.toDataURL("image/png");
+    // Read the actual background color from the page so we don't
+    // introduce a white border on dark-themed previews.
+    const computedBg =
+      iframeWindow.getComputedStyle(iframeDoc.body).backgroundColor ||
+      iframeWindow.getComputedStyle(iframeDoc.documentElement).backgroundColor;
+    const bg =
+      computedBg && computedBg !== "rgba(0, 0, 0, 0)" && computedBg !== "transparent"
+        ? computedBg
+        : null;
+
+    // Temporarily suppress outlines, focus rings, carets, and border
+    // artifacts that foreignObject renders differently from the live
+    // preview.  Removed immediately after capture.
+    const fixup = iframeDoc.createElement("style");
+    fixup.setAttribute("data-snapshot-fixup", "1");
+    fixup.textContent = [
+      "*, *::before, *::after {",
+      "  outline: none !important;",
+      "  outline-offset: 0 !important;",
+      "  caret-color: transparent !important;",
+      "  text-decoration-color: currentColor !important;",
+      "}",
+      "input, textarea, [contenteditable] {",
+      "  border-color: transparent !important;",
+      "}",
+    ].join("\n");
+    iframeDoc.head.appendChild(fixup);
+
+    try {
+      return await domToImage.toPng(iframeDoc.body, {
+        width: iframe.clientWidth || undefined,
+        height: iframe.clientHeight || undefined,
+        bgcolor: bg,
+        cacheBust: true,
+      });
+    } finally {
+      fixup.remove();
+    }
   }, []);
 
   const handleSnapshot = useCallback(async () => {
@@ -875,11 +964,20 @@ export default function CodePreview({
       if (!parsed?.[2]) {
         throw new Error("Captured snapshot had an invalid format.");
       }
-      onSnapshot({
-        url: dataUrl,
-        mimeType: parsed[1] || "image/png",
-        data: parsed[2],
-      });
+      const mimeType = parsed[1] || "image/png";
+      const base64 = parsed[2];
+
+      // Convert to a fresh Blob URL so each snapshot is a unique URL
+      // and the browser / React always treats it as a new image.
+      const binaryStr = atob(base64);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: mimeType });
+      const blobUrl = URL.createObjectURL(blob);
+
+      onSnapshot({ url: blobUrl, mimeType, data: base64 });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to capture preview snapshot.";
