@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import {
   savePreviewToIDB,
   getPreviewFromIDB,
   requestPersistentStorage,
 } from "@/lib/preview-idb";
+import { saveApp } from "@/lib/saved-apps-idb";
 
-const SW_CACHE_NAME = "preview-pwa-v5";
+const SW_CACHE_NAME = "preview-pwa-v6";
 
 // CDN scripts used by the preview — must be cached for offline support
 const CDN_URLS = [
@@ -31,6 +32,18 @@ interface StoredPreviewAsset {
   mimeType: string;
   data?: string;
   url?: string;
+}
+
+interface SharedPreviewResponse {
+  id: string;
+  code: string;
+  language: string;
+  name: string;
+  hasGeneratedIcon: boolean;
+  assets?: Array<{
+    assetKey: string;
+    mimeType: string;
+  }>;
 }
 
 function buildPreviewAssetUrl(id: string, assetKey: string): string {
@@ -248,26 +261,140 @@ function resolveCodeAssetPlaceholders(id: string, code: string): string {
   });
 }
 
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iconVersion] = useState<number>(0);
+
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [saveName, setSaveName] = useState("My App");
+  const [saveIconPrompt, setSaveIconPrompt] = useState("");
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isGeneratingIcon, setIsGeneratingIcon] = useState(false);
+  const [generatedIconUrl, setGeneratedIconUrl] = useState<string | null>(null);
+  const [generatedIconBase64, setGeneratedIconBase64] = useState<string | null>(null);
+
+  const openSaveModal = useCallback(() => {
+    setSaveName(previewDataRef.current?.name || "My App");
+    setSaveIconPrompt("");
+    setSaveStatus(null);
+    setGeneratedIconUrl(null);
+    setGeneratedIconBase64(null);
+    setShowSaveModal(true);
+  }, []);
+
+  const closeSaveModal = useCallback(() => {
+    setShowSaveModal(false);
+  }, []);
+
+  const handleGenerateIcon = useCallback(async () => {
+    if (!id || isGeneratingIcon) return;
+    const name = saveName.trim() || "My App";
+    setIsGeneratingIcon(true);
+    setSaveStatus("Generating icon...");
+
+    try {
+      const retryDelaysMs = [900, 1700];
+      type IconResponse = {
+        error?: string;
+        iconDataUrls?: { icon192?: string; icon512?: string };
+      };
+      let data: IconResponse | null = null;
+      let success = false;
+
+      for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+        const resp = await fetch(`/api/preview/${id}/generate-icon`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            prompt:
+              saveIconPrompt.trim() ||
+              `Create a clean, high-contrast, minimal app icon for "${name}". Centered symbol, no text, no watermark, readable at small sizes.`,
+            pro: true,
+          }),
+        });
+        data = (await resp.json()) as IconResponse;
+        if (resp.ok && !data?.error) { success = true; break; }
+        const isRetryable = resp.status === 503 || resp.status === 429;
+        const canRetry = attempt < retryDelaysMs.length;
+        if (isRetryable && canRetry) {
+          setSaveStatus(`Model is busy, retrying (${attempt + 1}/${retryDelaysMs.length})...`);
+          await sleep(retryDelaysMs[attempt] ?? 0);
+          continue;
+        }
+        throw new Error(data?.error || `Icon generation failed (${resp.status})`);
+      }
+
+      if (!success || !data) throw new Error("Icon generation failed after retries.");
+
+      const icon192DataUrl = data.iconDataUrls?.icon192;
+      if (icon192DataUrl) {
+        const b64 = icon192DataUrl.replace(/^data:image\/png;base64,/, "");
+        setGeneratedIconBase64(b64);
+        setGeneratedIconUrl(icon192DataUrl);
+      } else {
+        const cacheBust = Date.now();
+        setGeneratedIconUrl(`/api/preview/${id}/generate-icon?size=192&v=${cacheBust}`);
+      }
+      setSaveStatus("Icon ready! Click Save to finish.");
+    } catch (err) {
+      setSaveStatus(err instanceof Error ? err.message : "Unable to generate icon.");
+    } finally {
+      setIsGeneratingIcon(false);
+    }
+  }, [id, isGeneratingIcon, saveIconPrompt, saveName]);
+
+  const handleSave = useCallback(async () => {
+    if (!id || isSaving) return;
+    setIsSaving(true);
+    setSaveStatus("Saving...");
+    try {
+      await saveApp({
+        id,
+        name: saveName.trim() || "My App",
+        iconBase64: generatedIconBase64 ?? undefined,
+        hasIcon: !!generatedIconBase64,
+        timestamp: Date.now(),
+      });
+      setShowSaveModal(false);
+      router.push("/apps");
+    } catch {
+      setSaveStatus("Failed to save. Please try again.");
+      setIsSaving(false);
+    }
+  }, [id, isSaving, saveName, generatedIconBase64, router]);
+
+  const previewDataRef = useRef<PreviewData | null>(null);
 
   // Try localStorage first (synchronous). If empty, we'll check IndexedDB.
   const localData = id ? readPreviewData(id) : null;
   const [previewData, setPreviewData] = useState<PreviewData | null>(localData);
+  previewDataRef.current = previewData;
   const [idbChecked, setIdbChecked] = useState(!!localData);
+  const [remoteUnavailable, setRemoteUnavailable] = useState(false);
 
   // When localStorage misses, try IndexedDB as a durable fallback.
   // If found, restore localStorage so future loads are instant.
   useEffect(() => {
     if (previewData || !id || idbChecked) return;
     let cancelled = false;
-    getPreviewFromIDB(id).then((record) => {
-      if (cancelled || !record) {
-        setIdbChecked(true);
-        return;
-      }
+
+    const hydrateFromRecord = (
+      record: {
+        code: string;
+        language: string;
+        name: string;
+        hasGeneratedIcon: boolean;
+      },
+      options?: { assets?: StoredPreviewAsset[]; persistIDB?: boolean }
+    ) => {
       try {
         localStorage.setItem(`pwa-preview-${id}-code`, record.code);
         localStorage.setItem(`pwa-preview-${id}-language`, record.language);
@@ -275,17 +402,77 @@ export default function PreviewClient() {
         if (record.hasGeneratedIcon) {
           localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
         }
+        if (options?.assets) {
+          localStorage.setItem(`pwa-preview-${id}-assets`, JSON.stringify(options.assets));
+        }
       } catch {
-        // localStorage quota exceeded — proceed with IDB data only
+        // localStorage quota exceeded — proceed with in-memory/IDB data only
       }
+
+      if (options?.persistIDB) {
+        savePreviewToIDB({
+          id,
+          standaloneHTML: "",
+          code: record.code,
+          language: record.language,
+          name: record.name,
+          hasGeneratedIcon: record.hasGeneratedIcon,
+          timestamp: Date.now(),
+        }).catch(() => {});
+      }
+
       setPreviewData({
         code: record.code,
         language: record.language,
         name: record.name,
         hasGeneratedIconHint: record.hasGeneratedIcon,
       });
+      setRemoteUnavailable(false);
       setIdbChecked(true);
-    });
+    };
+
+    (async () => {
+      const record = await getPreviewFromIDB(id);
+      if (cancelled) return;
+      if (record) {
+        hydrateFromRecord({
+          code: record.code,
+          language: record.language,
+          name: record.name,
+          hasGeneratedIcon: record.hasGeneratedIcon,
+        });
+        return;
+      }
+
+      try {
+        const remoteResp = await fetch(`/api/apps/${id}`, { cache: "no-store" });
+        if (!remoteResp.ok) {
+          setRemoteUnavailable(remoteResp.status === 404);
+          setIdbChecked(true);
+          return;
+        }
+        const shared = (await remoteResp.json()) as SharedPreviewResponse;
+        hydrateFromRecord(
+          {
+            code: shared.code,
+            language: shared.language,
+            name: shared.name,
+            hasGeneratedIcon: Boolean(shared.hasGeneratedIcon),
+          },
+          {
+            assets: (shared.assets ?? []).map((asset) => ({
+              assetKey: asset.assetKey,
+              mimeType: asset.mimeType || "application/octet-stream",
+            })),
+            persistIDB: true,
+          }
+        );
+      } catch {
+        setRemoteUnavailable(false);
+        setIdbChecked(true);
+      }
+    })();
+
     return () => { cancelled = true; };
   }, [id, previewData, idbChecked]);
 
@@ -402,9 +589,9 @@ export default function PreviewClient() {
       el.content = content;
     };
 
-    setMeta("theme-color", "#18181b");
+    setMeta("theme-color", "#ffffff");
     setMeta("apple-mobile-web-app-capable", "yes");
-    setMeta("apple-mobile-web-app-status-bar-style", "black-translucent");
+    setMeta("apple-mobile-web-app-status-bar-style", "default");
     setMeta("apple-mobile-web-app-title", name);
 
     // Manifest link
@@ -509,8 +696,9 @@ export default function PreviewClient() {
                 No Preview Available
               </h1>
               <p>
-                Use the &ldquo;Install as App&rdquo; button from a code preview
-                to open this page.
+                {remoteUnavailable
+                  ? "This shared app link is unavailable or unpublished."
+                  : "Use the \u201cInstall as App\u201d button from a code preview to open this page."}
               </p>
             </>
           )}
@@ -520,19 +708,194 @@ export default function PreviewClient() {
   }
 
   return (
-    <iframe
-      ref={iframeRef}
-      style={{
-        position: "fixed",
-        inset: 0,
-        width: "100%",
-        height: "100%",
-        border: "none",
-        backgroundColor: "white",
-      }}
-      sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
-      title="Preview App"
-    />
+    <>
+      <iframe
+        ref={iframeRef}
+        style={{
+          position: "fixed",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          border: "none",
+          backgroundColor: "white",
+        }}
+        sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
+        title="Preview App"
+      />
+
+      {/* Floating save button */}
+      <button
+        onClick={openSaveModal}
+        style={{
+          position: "fixed",
+          bottom: 24,
+          right: 24,
+          width: 48,
+          height: 48,
+          borderRadius: "50%",
+          border: "none",
+          background: "#18181b",
+          color: "white",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+          zIndex: 40,
+        }}
+        title="Save App"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+          <polyline points="17 21 17 13 7 13 7 21" />
+          <polyline points="7 3 7 8 15 8" />
+        </svg>
+      </button>
+
+      {/* Save modal */}
+      {showSaveModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 50,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.5)",
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 480,
+              borderRadius: 12,
+              background: "white",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+              padding: 24,
+              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: 600, color: "#18181b" }}>Save App</h3>
+              <button
+                onClick={closeSaveModal}
+                style={{ border: "none", background: "none", cursor: "pointer", color: "#71717a", fontSize: 18, padding: 4 }}
+              >
+                &#x2715;
+              </button>
+            </div>
+
+            <label style={{ display: "block", fontSize: 13, fontWeight: 500, color: "#3f3f46", marginBottom: 4 }}>
+              App Name
+            </label>
+            <input
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              style={{
+                width: "100%",
+                marginBottom: 12,
+                borderRadius: 8,
+                border: "1px solid #d4d4d8",
+                padding: "8px 12px",
+                fontSize: 14,
+                color: "#18181b",
+                boxSizing: "border-box",
+                outline: "none",
+              }}
+              placeholder="My App"
+            />
+
+            <label style={{ display: "block", fontSize: 13, fontWeight: 500, color: "#3f3f46", marginBottom: 4 }}>
+              Icon Prompt (optional)
+            </label>
+            <textarea
+              value={saveIconPrompt}
+              onChange={(e) => setSaveIconPrompt(e.target.value)}
+              style={{
+                width: "100%",
+                marginBottom: 12,
+                minHeight: 72,
+                borderRadius: 8,
+                border: "1px solid #d4d4d8",
+                padding: "8px 12px",
+                fontSize: 14,
+                color: "#18181b",
+                resize: "vertical",
+                boxSizing: "border-box",
+                outline: "none",
+              }}
+              placeholder="Leave blank to auto-generate based on the app name."
+            />
+
+            {saveStatus && (
+              <p style={{ fontSize: 13, color: "#52525b", marginBottom: 12 }}>{saveStatus}</p>
+            )}
+
+            {generatedIconUrl && (
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={generatedIconUrl}
+                  alt="Generated icon"
+                  style={{ width: 96, height: 96, borderRadius: 16, border: "1px solid #e4e4e7", objectFit: "cover" }}
+                />
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                onClick={closeSaveModal}
+                style={{
+                  padding: "8px 16px",
+                  fontSize: 13,
+                  borderRadius: 8,
+                  border: "1px solid #d4d4d8",
+                  background: "white",
+                  color: "#3f3f46",
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleGenerateIcon}
+                disabled={isGeneratingIcon}
+                style={{
+                  padding: "8px 16px",
+                  fontSize: 13,
+                  borderRadius: 8,
+                  border: "1px solid #d4d4d8",
+                  background: "#f4f4f5",
+                  color: "#18181b",
+                  cursor: isGeneratingIcon ? "not-allowed" : "pointer",
+                  opacity: isGeneratingIcon ? 0.6 : 1,
+                }}
+              >
+                {isGeneratingIcon ? "Generating..." : generatedIconUrl ? "Regenerate Icon" : "Generate Icon"}
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={isSaving}
+                style={{
+                  padding: "8px 16px",
+                  fontSize: 13,
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#18181b",
+                  color: "white",
+                  cursor: isSaving ? "not-allowed" : "pointer",
+                  opacity: isSaving ? 0.6 : 1,
+                }}
+              >
+                {isSaving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -641,6 +1004,18 @@ async function cacheForOffline(
           } catch {
             // best-effort
           }
+          return;
+        }
+
+        // Remote shared links may only have asset metadata; fetch from
+        // stable same-origin preview asset URLs and cache for offline use.
+        try {
+          const resp = await fetch(assetUrl, { cache: "no-store" });
+          if (resp.ok) {
+            await cache.put(new Request(assetUrl), resp);
+          }
+        } catch {
+          // best-effort
         }
       }),
     );
@@ -706,7 +1081,7 @@ function buildStandaloneHTML(
       }
     <\/script>`;
     const manifestLink = `<link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}${useGeneratedIcons ? "&generated=1" : ""}">`;
-    const metaTheme = `<meta name="theme-color" content="#18181b">`;
+    const metaTheme = `<meta name="theme-color" content="#ffffff">`;
 
     if (code.includes("</head>")) {
       return code.replace(
@@ -722,7 +1097,7 @@ function buildStandaloneHTML(
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#18181b" />
+    <meta name="theme-color" content="#ffffff" />
     <title>${appName}</title>
     <link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}${useGeneratedIcons ? "&generated=1" : ""}">
     <link rel="apple-touch-icon" href="${iconHref}">

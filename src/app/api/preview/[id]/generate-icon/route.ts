@@ -15,6 +15,9 @@ import {
   getGeneratedIconBlobUrl,
   storeGeneratedIconsInBlob,
 } from "@/lib/generated-icon-blob";
+import { hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { getSharedAppDoc, getSharedIconBytes } from "@/lib/shared-apps-store";
+import { isShareableInstallsEnabled } from "@/lib/shared-apps";
 
 export const runtime = "nodejs";
 
@@ -270,6 +273,22 @@ export async function GET(
       }
     }
 
+    if (isShareableInstallsEnabled() && hasFirebaseAdminConfig()) {
+      const sharedDoc = await getSharedAppDoc(id);
+      if (sharedDoc) {
+        const sharedIcon = await getSharedIconBytes(sharedDoc, size);
+        if (sharedIcon) {
+          return new NextResponse(Buffer.from(sharedIcon), {
+            status: 200,
+            headers: {
+              "Content-Type": "image/png",
+              "Cache-Control": "public, max-age=300",
+            },
+          });
+        }
+      }
+    }
+
     return NextResponse.json({ error: "Generated icon not found" }, { status: 404 });
   }
 
@@ -293,7 +312,15 @@ export async function HEAD(
   const memoryExists = size ? Boolean(getGeneratedIcon(id, size)) : false;
   const tmpExists = size ? Boolean(await readTmpGeneratedIcon(id, size)) : false;
   const blobExists = size ? Boolean(await getGeneratedIconBlobUrl(id, size)) : false;
-  const exists = memoryExists || tmpExists || blobExists;
+  let sharedExists = false;
+  if (!memoryExists && !tmpExists && !blobExists && size && isShareableInstallsEnabled() && hasFirebaseAdminConfig()) {
+    const sharedDoc = await getSharedAppDoc(id);
+    if (sharedDoc) {
+      const sharedIcon = await getSharedIconBytes(sharedDoc, size);
+      sharedExists = Boolean(sharedIcon);
+    }
+  }
+  const exists = memoryExists || tmpExists || blobExists || sharedExists;
 
   return new NextResponse(null, {
     status: exists ? 200 : 404,

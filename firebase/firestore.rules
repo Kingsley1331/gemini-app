@@ -1,0 +1,11 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /apps/{appId} {
+      // Public read for explicitly published apps only.
+      allow read: if resource.data.isPublic == true;
+      // Writes are server-only through Firebase Admin SDK.
+      allow write: if false;
+    }
+  }
+}

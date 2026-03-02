@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 import PromptAssistant from "./PromptAssistant";
+import AppNav from "./AppNav";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -1247,70 +1248,73 @@ export default function Chat() {
           </div>
         </div>
 
-        <div className="relative w-full sm:w-auto" ref={modelDropdownRef}>
-          <button
-            onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-            className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 sm:w-auto sm:justify-start sm:py-1.5"
-          >
-            <span className="truncate">
-              {models.find((m) => m.id === selectedModel)?.name}
-            </span>
-            <ChevronDown
-              className={`w-4 h-4 transition-transform ${isModelDropdownOpen ? "rotate-180" : ""}`}
-            />
-          </button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:items-end">
+          <AppNav current="chat" />
+          <div className="relative w-full sm:w-auto" ref={modelDropdownRef}>
+            <button
+              onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+              className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 sm:w-auto sm:justify-start sm:py-1.5"
+            >
+              <span className="truncate">
+                {models.find((m) => m.id === selectedModel)?.name}
+              </span>
+              <ChevronDown
+                className={`w-4 h-4 transition-transform ${isModelDropdownOpen ? "rotate-180" : ""}`}
+              />
+            </button>
 
-          <AnimatePresence>
-            {isModelDropdownOpen && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-800 sm:left-auto sm:right-0 sm:w-72"
-              >
-                {Object.entries(groupedModels).map(
-                  ([provider, providerModels], groupIndex) => (
-                    <div key={provider}>
-                      {groupIndex > 0 && (
-                        <div className="border-t border-zinc-200 dark:border-zinc-700" />
-                      )}
-                      <div className="px-4 py-2 text-xs font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider bg-zinc-50/50 dark:bg-zinc-900/50">
-                        {providerLabels[provider] || provider}
-                      </div>
-                      {providerModels.map((model) => (
-                        <button
-                          key={model.id}
-                          onClick={() => {
-                            setSelectedModel(model.id);
-                            setIsModelDropdownOpen(false);
-                          }}
-                          className={cn(
-                            "w-full text-left px-4 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors flex flex-col gap-0.5",
-                            selectedModel === model.id &&
-                              "bg-blue-50 dark:bg-blue-900/20",
-                          )}
-                        >
-                          <span
+            <AnimatePresence>
+              {isModelDropdownOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-800 sm:left-auto sm:right-0 sm:w-72"
+                >
+                  {Object.entries(groupedModels).map(
+                    ([provider, providerModels], groupIndex) => (
+                      <div key={provider}>
+                        {groupIndex > 0 && (
+                          <div className="border-t border-zinc-200 dark:border-zinc-700" />
+                        )}
+                        <div className="bg-zinc-50/50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 dark:bg-zinc-900/50 dark:text-zinc-500">
+                          {providerLabels[provider] || provider}
+                        </div>
+                        {providerModels.map((model) => (
+                          <button
+                            key={model.id}
+                            onClick={() => {
+                              setSelectedModel(model.id);
+                              setIsModelDropdownOpen(false);
+                            }}
                             className={cn(
-                              "text-sm font-medium",
-                              selectedModel === model.id
-                                ? "text-blue-600 dark:text-blue-400"
-                                : "text-zinc-900 dark:text-zinc-100",
+                              "flex w-full flex-col gap-0.5 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-700/50",
+                              selectedModel === model.id &&
+                                "bg-blue-50 dark:bg-blue-900/20",
                             )}
                           >
-                            {model.name}
-                          </span>
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                            {model.description}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  ),
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
+                            <span
+                              className={cn(
+                                "text-sm font-medium",
+                                selectedModel === model.id
+                                  ? "text-blue-600 dark:text-blue-400"
+                                  : "text-zinc-900 dark:text-zinc-100",
+                              )}
+                            >
+                              {model.name}
+                            </span>
+                            <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                              {model.description}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ),
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
 

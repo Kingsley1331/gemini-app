@@ -17,6 +17,7 @@ import {
   BadgeCheck,
   Camera,
   Loader2,
+  Share2,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -304,8 +305,14 @@ export default function CodePreview({
   const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
   const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
   const [assetUrlMap, setAssetUrlMap] = useState<Record<string, string>>({});
+  const [isPublishingShare, setIsPublishingShare] = useState(false);
+  const [shareStatus, setShareStatus] = useState<string | null>(null);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const latestAssetsRef = useRef(assets);
+  const shareInstallsEnabled =
+    process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "1" ||
+    process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "true";
   const assetSignature = useMemo(
     () =>
       assets
@@ -790,6 +797,87 @@ export default function CodePreview({
     isGeneratingPwaIcon,
     language,
   ]);
+
+  const handlePublishShare = useCallback(async () => {
+    if (isPublishingShare) return;
+    setIsPublishingShare(true);
+    setShareStatus("Publishing...");
+    setShareUrl(null);
+
+    try {
+      let id = preparedPwaId;
+      let name = preparedPwaName;
+      let hasGeneratedIcon = Boolean(preparedPwaId && preparedPwaName);
+      let effectiveLanguage = language;
+
+      if (!id || !name) {
+        name = window.prompt("Enter a name for your shared app:", "My App") || "My App";
+        id = createPwaPreviewId();
+        hasGeneratedIcon = false;
+        const isReactCode =
+          /import\s.*from\s/.test(code) ||
+          /export\s+default\s+function/.test(code) ||
+          /useState|useEffect|useRef|useCallback/.test(code);
+        effectiveLanguage = language === "html" && isReactCode ? "tsx" : language;
+      }
+
+      localStorage.setItem(`pwa-preview-${id}-code`, code);
+      localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
+      localStorage.setItem(`pwa-preview-${id}-name`, name);
+      if (hasGeneratedIcon) {
+        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+      }
+
+      await persistPwaPreviewAssets(id, latestAssetsRef.current);
+      savePreviewToIDB({
+        id,
+        standaloneHTML: "",
+        code,
+        language: effectiveLanguage,
+        name,
+        hasGeneratedIcon,
+        timestamp: Date.now(),
+      }).catch(() => {});
+      requestPersistentStorage();
+
+      const publishResp = await fetch("/api/apps/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id,
+          name,
+          code,
+          language: effectiveLanguage,
+          hasGeneratedIcon,
+          assets: (latestAssetsRef.current || []).map((asset, index) => ({
+            assetKey: asset.assetKey || `asset_${index + 1}`,
+            mimeType: asset.mimeType || "application/octet-stream",
+            data: asset.data,
+            url: asset.url,
+          })),
+        }),
+      });
+      const data = await publishResp.json();
+      if (!publishResp.ok || !data?.shareUrl) {
+        throw new Error(data?.details || data?.error || "Publish failed.");
+      }
+
+      const sharedLink = data.shareUrl as string;
+      setShareUrl(sharedLink);
+      setShareStatus("Shared link ready.");
+      try {
+        await navigator.clipboard.writeText(sharedLink);
+        setShareStatus("Shared link copied to clipboard.");
+      } catch {
+        // clipboard write is best-effort
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unable to publish shared app.";
+      setShareStatus(message);
+    } finally {
+      setIsPublishingShare(false);
+    }
+  }, [code, isPublishingShare, language, preparedPwaId, preparedPwaName]);
 
   const handleKeepGeneratedIcon = useCallback(() => {
     if (!generatedCandidateId || !generatedCandidateName || !generatedIconPreviewUrl) {
@@ -1506,6 +1594,20 @@ export default function CodePreview({
           >
             <Smartphone className="w-4 h-4" />
           </button>
+          {shareInstallsEnabled ? (
+            <button
+              onClick={handlePublishShare}
+              disabled={isPublishingShare}
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+              title="Publish shareable install link"
+            >
+              {isPublishingShare ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Share2 className="w-4 h-4" />
+              )}
+            </button>
+          ) : null}
           <button
             onClick={openIconModal}
             disabled={isGeneratingPwaIcon}
@@ -1552,6 +1654,24 @@ export default function CodePreview({
           </button>
         </div>
       </div>
+      {shareInstallsEnabled && (shareStatus || shareUrl) ? (
+        <div className="px-4 py-2 text-[11px] text-zinc-600 dark:text-zinc-300 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/60">
+          {shareStatus ? <p>{shareStatus}</p> : null}
+          {shareUrl ? (
+            <p className="mt-1 truncate">
+              <span className="font-medium">Link:</span>{" "}
+              <a
+                href={shareUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:no-underline"
+              >
+                {shareUrl}
+              </a>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="relative flex-1 min-h-[320px] bg-zinc-50 dark:bg-zinc-900/20 sm:min-h-[500px]">
         {activeTab === "preview" ? (

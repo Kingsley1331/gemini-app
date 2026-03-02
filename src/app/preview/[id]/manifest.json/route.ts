@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGeneratedIcon } from "@/lib/generated-icon-store";
 import { getGeneratedIconBlobUrl } from "@/lib/generated-icon-blob";
+import { hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { getSharedAppDoc } from "@/lib/shared-apps-store";
+import { isShareableInstallsEnabled } from "@/lib/shared-apps";
 
 export async function GET(
   request: NextRequest,
@@ -15,7 +18,12 @@ export async function GET(
   const clientHint = searchParams.get("generated") === "1";
   const memoryHit = Boolean(getGeneratedIcon(id, 192));
   const blobHit = !memoryHit ? Boolean(await getGeneratedIconBlobUrl(id, 192)) : false;
-  const hasGeneratedIcons = clientHint || memoryHit || blobHit;
+  let sharedHit = false;
+  if (!memoryHit && !blobHit && isShareableInstallsEnabled() && hasFirebaseAdminConfig()) {
+    const sharedDoc = await getSharedAppDoc(id);
+    sharedHit = Boolean(sharedDoc?.hasGeneratedIcon);
+  }
+  const hasGeneratedIcons = clientHint || memoryHit || blobHit || sharedHit;
 
   const icons = hasGeneratedIcons
     ? [

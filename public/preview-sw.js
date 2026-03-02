@@ -1,5 +1,5 @@
 // Service Worker for Preview PWA — enables fully offline operation
-const CACHE_NAME = "preview-pwa-v5";
+const CACHE_NAME = "preview-pwa-v6";
 
 // ---------------------------------------------------------------------------
 // IndexedDB helpers — the SW cannot access localStorage, so IndexedDB is the
@@ -152,8 +152,14 @@ self.addEventListener("fetch", (event) => {
       (async () => {
         const cache = await caches.open(CACHE_NAME);
 
-        // Prefer the cached standalone preview page so installed PWAs don't
-        // depend on the live dev server/localStorage app shell.
+        // Network-first so the live React preview shell can render UI overlays
+        // (e.g. Save button). Do not cache this response.
+        try {
+          return await fetch(event.request);
+        } catch {
+          // Offline or network failure — fall back to cached standalone HTML.
+        }
+
         const noQuery = new Request(url.origin + url.pathname);
         const trimmedPath = url.pathname.endsWith("/")
           ? url.pathname.slice(0, -1)
@@ -191,16 +197,12 @@ self.addEventListener("fetch", (event) => {
           // IDB unavailable — fall through to network
         }
 
-        try {
-          return await fetch(event.request);
-        } catch {
-          return new Response(
-            "<html><body style='display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;color:#71717a'>" +
-              "<div style='text-align:center'><h1 style='color:#18181b'>Offline</h1><p>This preview is not available offline yet. Open it once while online to enable offline access.</p></div>" +
-              "</body></html>",
-            { headers: { "Content-Type": "text/html" } },
-          );
-        }
+        return new Response(
+          "<html><body style='display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;color:#71717a'>" +
+            "<div style='text-align:center'><h1 style='color:#18181b'>Offline</h1><p>This preview is not available offline yet. Open it once while online to enable offline access.</p></div>" +
+            "</body></html>",
+          { headers: { "Content-Type": "text/html" } },
+        );
       })()
     );
     return;
