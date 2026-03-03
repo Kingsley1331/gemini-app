@@ -12,9 +12,7 @@ import {
   Check,
   Bug,
   Download,
-  Smartphone,
-  Sparkles,
-  BadgeCheck,
+  Save,
   Camera,
   Loader2,
   Share2,
@@ -23,6 +21,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import JSZip from "jszip";
 import { savePreviewToIDB, requestPersistentStorage } from "@/lib/preview-idb";
+import { saveApp } from "@/lib/saved-apps-idb";
 
 interface CodePreviewProps {
   code: string;
@@ -66,17 +65,6 @@ function normalizePreviewError(message: string): string {
 
 function createPwaPreviewId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-}
-
-function scheduleGeneratedIconCleanup(id: string, delayMs = 10 * 60 * 1000) {
-  window.setTimeout(() => {
-    fetch(`/api/preview/${id}/generate-icon`, {
-      method: "DELETE",
-      keepalive: true,
-    }).catch(() => {
-      // cleanup is best-effort
-    });
-  }, delayMs);
 }
 
 function sleep(ms: number) {
@@ -294,14 +282,13 @@ export default function CodePreview({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isGeneratingPwaIcon, setIsGeneratingPwaIcon] = useState(false);
-  const [showIconModal, setShowIconModal] = useState(false);
-  const [iconModalName, setIconModalName] = useState("My App");
-  const [iconModalPrompt, setIconModalPrompt] = useState("");
-  const [iconModalStatus, setIconModalStatus] = useState<string | null>(null);
-  const [preparedPwaId, setPreparedPwaId] = useState<string | null>(null);
-  const [preparedPwaName, setPreparedPwaName] = useState<string | null>(null);
-  const [generatedCandidateId, setGeneratedCandidateId] = useState<string | null>(null);
-  const [generatedCandidateName, setGeneratedCandidateName] = useState<string | null>(null);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [saveName, setSaveName] = useState("My App");
+  const [saveIconPrompt, setSaveIconPrompt] = useState("");
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [isSavingApp, setIsSavingApp] = useState(false);
+  const [savePreviewId, setSavePreviewId] = useState<string | null>(null);
+  const [generatedIconBase64, setGeneratedIconBase64] = useState<string | null>(null);
   const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
   const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
   const [assetUrlMap, setAssetUrlMap] = useState<Record<string, string>>({});
@@ -648,117 +635,38 @@ export default function CodePreview({
     URL.revokeObjectURL(url);
   }, [code, language]);
 
-  const handleInstallPWA = useCallback(async () => {
-    const autoPublishIfEnabled = async (
-      id: string,
-      name: string,
-      effectiveLanguage: string,
-      hasGeneratedIcon: boolean
-    ) => {
-      try {
-        const publishResp = await fetch("/api/apps/publish", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id,
-            name,
-            code,
-            language: effectiveLanguage,
-            hasGeneratedIcon,
-            assets: (latestAssetsRef.current || []).map((asset, index) => ({
-              assetKey: asset.assetKey || `asset_${index + 1}`,
-              mimeType: asset.mimeType || "application/octet-stream",
-              data: asset.data,
-              url: asset.url,
-            })),
-          }),
-        });
-        const data = await publishResp.json().catch(() => ({}));
-        if (!publishResp.ok || !data?.shareUrl) {
-          if (publishResp.status === 503) {
-            throw new Error(
-              "Share publishing is disabled on the server. Set ENABLE_SHAREABLE_INSTALLS=1 in deployment env vars and redeploy."
-            );
-          }
-          throw new Error(data?.details || data?.error || "Publish failed.");
-        }
-        setShareUrl(data.shareUrl as string);
-        setShareStatus("Shared link ready.");
-      } catch (error: unknown) {
-        const message =
-          error instanceof Error ? error.message : "Unable to auto-publish shared app.";
-        setShareStatus(message);
-      }
-    };
-
-    if (preparedPwaId && preparedPwaName) {
-      localStorage.setItem(`pwa-preview-${preparedPwaId}-code`, code);
-      localStorage.setItem(`pwa-preview-${preparedPwaId}-language`, language);
-      localStorage.setItem(`pwa-preview-${preparedPwaId}-name`, preparedPwaName);
-      localStorage.setItem(`pwa-preview-${preparedPwaId}-has-generated-icon`, "1");
-      await persistPwaPreviewAssets(preparedPwaId, latestAssetsRef.current);
-      savePreviewToIDB({
-        id: preparedPwaId, standaloneHTML: "", code, language,
-        name: preparedPwaName, hasGeneratedIcon: true, timestamp: Date.now(),
-      }).catch(() => {});
-      requestPersistentStorage();
-      await autoPublishIfEnabled(preparedPwaId, preparedPwaName, language, true);
-      window.open(`/preview/${preparedPwaId}`, "_blank");
-      scheduleGeneratedIconCleanup(preparedPwaId);
-      setPreparedPwaId(null);
-      setPreparedPwaName(null);
-      setGeneratedIconPreviewUrl(null);
-      return;
-    }
-
-    const name =
-      window.prompt("Enter a name for your app:", "My App") || "My App";
-
-    const id = createPwaPreviewId();
-
+  const resolveEffectiveLanguage = useCallback(() => {
     const isReactCode =
       /import\s.*from\s/.test(code) ||
       /export\s+default\s+function/.test(code) ||
       /useState|useEffect|useRef|useCallback/.test(code);
-    const effectiveLanguage =
-      language === "html" && isReactCode ? "tsx" : language;
+    return language === "html" && isReactCode ? "tsx" : language;
+  }, [code, language]);
 
-    localStorage.setItem(`pwa-preview-${id}-code`, code);
-    localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
-    localStorage.setItem(`pwa-preview-${id}-name`, name);
-    await persistPwaPreviewAssets(id, latestAssetsRef.current);
+  const openSaveModal = useCallback(() => {
+    setSaveName(title && title !== "Preview" ? title : "My App");
+    setSaveIconPrompt("");
+    setSaveStatus(null);
+    setSavePreviewId(null);
+    setGeneratedIconBase64(null);
+    setGeneratedIconPreviewUrl(null);
+    setShowSaveModal(true);
+  }, [title]);
 
-    // standaloneHTML is left empty here — PreviewClient will build and persist
-    // the full standalone page when it opens and calls cacheForOffline.
-    savePreviewToIDB({
-      id, standaloneHTML: "", code, language: effectiveLanguage,
-      name, hasGeneratedIcon: false, timestamp: Date.now(),
-    }).catch(() => {});
-    requestPersistentStorage();
-    await autoPublishIfEnabled(id, name, effectiveLanguage, false);
+  const closeSaveModal = useCallback(() => {
+    setShowSaveModal(false);
+  }, []);
 
-    window.open(`/preview/${id}`, "_blank");
-  }, [code, language, preparedPwaId, preparedPwaName]);
-
-  const handleInstallPWAWithIcon = useCallback(async () => {
+  const handleGenerateSaveIcon = useCallback(async () => {
     if (isGeneratingPwaIcon) return;
-
-    const name = iconModalName.trim() || "My App";
-    // Always use a fresh ID for a new generation — never reuse preparedPwaId,
-    // which already has a kept icon the user chose to keep.
-    const id = generatedCandidateId || createPwaPreviewId();
-    localStorage.setItem(`pwa-preview-${id}-code`, code);
-    localStorage.setItem(`pwa-preview-${id}-language`, language);
-    localStorage.setItem(`pwa-preview-${id}-name`, name);
-    await persistPwaPreviewAssets(id, latestAssetsRef.current);
-    savePreviewToIDB({
-      id, standaloneHTML: "", code, language,
-      name, hasGeneratedIcon: false, timestamp: Date.now(),
-    }).catch(() => {});
-    requestPersistentStorage();
+    const name = saveName.trim() || "My App";
+    const id = savePreviewId || createPwaPreviewId();
+    if (!savePreviewId) {
+      setSavePreviewId(id);
+    }
 
     setIsGeneratingPwaIcon(true);
-    setIconModalStatus("Generating icon...");
+    setSaveStatus("Generating icon...");
     try {
       const retryDelaysMs = [900, 1700];
       type GenerateIconResponse = {
@@ -777,7 +685,7 @@ export default function CodePreview({
           body: JSON.stringify({
             name,
             prompt:
-              iconModalPrompt.trim() ||
+              saveIconPrompt.trim() ||
               `Create a clean, high-contrast, minimal app icon for "${name}" that matches this ${language} preview app. Centered symbol, no text, no watermark, readable at small sizes.`,
             pro: true,
           }),
@@ -794,7 +702,7 @@ export default function CodePreview({
         if (isRetryable && canRetry) {
           const retryNumber = attempt + 1;
           const retryTotal = retryDelaysMs.length;
-          setIconModalStatus(
+          setSaveStatus(
             `Model is busy, retrying icon generation (${retryNumber}/${retryTotal})...`
           );
           await sleep(retryDelaysMs[attempt] ?? 0);
@@ -805,41 +713,84 @@ export default function CodePreview({
       }
       if (!success) throw new Error("Icon generation failed");
 
-      setGeneratedCandidateId(id);
-      setGeneratedCandidateName(name);
+      const icon192b64 = data?.iconDataUrls?.icon192?.replace(/^data:[^,]+,/, "") || null;
+      const icon512b64 = data?.iconDataUrls?.icon512?.replace(/^data:[^,]+,/, "") || null;
+      if (icon192b64) {
+        localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
+        setGeneratedIconBase64(icon192b64);
+      }
+      if (icon512b64) {
+        localStorage.setItem(`pwa-preview-${id}-icon512-b64`, icon512b64);
+      }
       localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
 
-      // Persist icon base64 data so PreviewClient can cache them in the SW
-      // cache — ensures the icons are available for PWA install even when the
-      // server API route can't serve them (e.g. serverless cold start).
-      const icon192b64 = data?.iconDataUrls?.icon192?.replace(/^data:[^,]+,/, "");
-      const icon512b64 = data?.iconDataUrls?.icon512?.replace(/^data:[^,]+,/, "");
-      if (icon192b64) localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
-      if (icon512b64) localStorage.setItem(`pwa-preview-${id}-icon512-b64`, icon512b64);
-
-      // Always append a unique timestamp to bust the browser/Next.js image cache
-      // so the thumbnail updates after regeneration on the same ID.
       const cacheBust = Date.now();
       const baseIconUrl = data?.icons?.icon192 || `/api/preview/${id}/generate-icon?size=192`;
       const separator = baseIconUrl.includes("?") ? "&" : "?";
       setGeneratedIconPreviewUrl(`${baseIconUrl}${separator}v=${cacheBust}`);
-      setIconModalStatus("Preview ready. Keep it or regenerate.");
+      setSaveStatus("Icon ready! Click Save to finish.");
     } catch (err) {
       const message =
         err instanceof Error
           ? err.message
           : "Unable to generate icon right now.";
-      setIconModalStatus(message);
+      setSaveStatus(message);
     } finally {
       setIsGeneratingPwaIcon(false);
     }
+  }, [isGeneratingPwaIcon, language, saveName, saveIconPrompt, savePreviewId]);
+
+  const handleSaveApp = useCallback(async () => {
+    if (isSavingApp) return;
+    const id = savePreviewId || createPwaPreviewId();
+    const name = saveName.trim() || "My App";
+    const effectiveLanguage = resolveEffectiveLanguage();
+
+    setIsSavingApp(true);
+    setSaveStatus("Saving...");
+    try {
+      localStorage.setItem(`pwa-preview-${id}-code`, code);
+      localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
+      localStorage.setItem(`pwa-preview-${id}-name`, name);
+      if (generatedIconBase64) {
+        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+      } else {
+        localStorage.removeItem(`pwa-preview-${id}-has-generated-icon`);
+      }
+
+      await persistPwaPreviewAssets(id, latestAssetsRef.current);
+      savePreviewToIDB({
+        id,
+        standaloneHTML: "",
+        code,
+        language: effectiveLanguage,
+        name,
+        hasGeneratedIcon: Boolean(generatedIconBase64),
+        timestamp: Date.now(),
+      }).catch(() => {});
+      requestPersistentStorage();
+
+      await saveApp({
+        id,
+        name,
+        iconBase64: generatedIconBase64 ?? undefined,
+        hasIcon: Boolean(generatedIconBase64),
+        timestamp: Date.now(),
+      });
+      setSaveStatus("Saved to My Apps.");
+      setShowSaveModal(false);
+    } catch {
+      setSaveStatus("Failed to save. Please try again.");
+    } finally {
+      setIsSavingApp(false);
+    }
   }, [
     code,
-    generatedCandidateId,
-    iconModalName,
-    iconModalPrompt,
-    isGeneratingPwaIcon,
-    language,
+    generatedIconBase64,
+    isSavingApp,
+    resolveEffectiveLanguage,
+    saveName,
+    savePreviewId,
   ]);
 
   const handlePublishShare = useCallback(async () => {
@@ -849,21 +800,10 @@ export default function CodePreview({
     setShareUrl(null);
 
     try {
-      let id = preparedPwaId;
-      let name = preparedPwaName;
-      let hasGeneratedIcon = Boolean(preparedPwaId && preparedPwaName);
-      let effectiveLanguage = language;
-
-      if (!id || !name) {
-        name = window.prompt("Enter a name for your shared app:", "My App") || "My App";
-        id = createPwaPreviewId();
-        hasGeneratedIcon = false;
-        const isReactCode =
-          /import\s.*from\s/.test(code) ||
-          /export\s+default\s+function/.test(code) ||
-          /useState|useEffect|useRef|useCallback/.test(code);
-        effectiveLanguage = language === "html" && isReactCode ? "tsx" : language;
-      }
+      const name = window.prompt("Enter a name for your shared app:", "My App") || "My App";
+      const id = createPwaPreviewId();
+      const hasGeneratedIcon = false;
+      const effectiveLanguage = resolveEffectiveLanguage();
 
       localStorage.setItem(`pwa-preview-${id}-code`, code);
       localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
@@ -921,42 +861,7 @@ export default function CodePreview({
     } finally {
       setIsPublishingShare(false);
     }
-  }, [code, isPublishingShare, language, preparedPwaId, preparedPwaName]);
-
-  const handleKeepGeneratedIcon = useCallback(() => {
-    if (!generatedCandidateId || !generatedCandidateName || !generatedIconPreviewUrl) {
-      setIconModalStatus("Generate an icon first.");
-      return;
-    }
-    setPreparedPwaId(generatedCandidateId);
-    setPreparedPwaName(generatedCandidateName);
-    setIconModalStatus("Icon kept. Use Install as App to open the matching preview.");
-    setShowIconModal(false);
-  }, [
-    generatedCandidateId,
-    generatedCandidateName,
-    generatedIconPreviewUrl,
-  ]);
-
-  const closeIconModal = useCallback(() => {
-    if (generatedCandidateId && generatedCandidateId !== preparedPwaId) {
-      scheduleGeneratedIconCleanup(generatedCandidateId, 2000);
-    }
-    setShowIconModal(false);
-  }, [generatedCandidateId, preparedPwaId]);
-
-  const openIconModal = useCallback(() => {
-    const defaultName =
-      preparedPwaName ||
-      (title && title !== "Preview" ? title : "My App");
-    setIconModalName(defaultName);
-    setIconModalPrompt("");
-    setIconModalStatus(null);
-    setGeneratedCandidateId(null);
-    setGeneratedCandidateName(null);
-    setGeneratedIconPreviewUrl(null);
-    setShowIconModal(true);
-  }, [preparedPwaName, title]);
+  }, [code, isPublishingShare, resolveEffectiveLanguage]);
 
   const requestPreviewSnapshot = useCallback(async (): Promise<string> => {
     const iframe = iframeRef.current;
@@ -1601,18 +1506,6 @@ export default function CodePreview({
         </div>
 
         <div className="flex flex-wrap items-center gap-1 sm:gap-2">
-          {preparedPwaId && preparedPwaName ? (
-            <button
-              onClick={openIconModal}
-              className="flex items-center gap-1 px-2 py-1 rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:opacity-90 transition-opacity"
-              title={`Icon ready for ${preparedPwaName}. Click to review or regenerate.`}
-            >
-              <BadgeCheck className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-semibold uppercase tracking-wide">
-                Icon Ready
-              </span>
-            </button>
-          ) : null}
           <button
             onClick={copyToClipboard}
             className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
@@ -1632,18 +1525,18 @@ export default function CodePreview({
             <Download className="w-4 h-4" />
           </button>
           <button
-            onClick={handleInstallPWA}
+            onClick={openSaveModal}
             className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-            title="Install as App"
+            title="Save App"
           >
-            <Smartphone className="w-4 h-4" />
+            <Save className="w-4 h-4" />
           </button>
           {shareInstallsEnabled ? (
             <button
               onClick={handlePublishShare}
               disabled={isPublishingShare}
               className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-              title="Publish shareable install link"
+              title="Publish shareable app link"
             >
               {isPublishingShare ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -1652,14 +1545,6 @@ export default function CodePreview({
               )}
             </button>
           ) : null}
-          <button
-            onClick={openIconModal}
-            disabled={isGeneratingPwaIcon}
-            className="p-1.5 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors disabled:opacity-50"
-            title="Generate App Icon"
-          >
-            <Sparkles className="w-4 h-4" />
-          </button>
           <button
             onClick={handleSnapshot}
             disabled={activeTab !== "preview" || !onSnapshot || isCapturingSnapshot}
@@ -1759,15 +1644,15 @@ export default function CodePreview({
         )}
       </div>
 
-      {showIconModal ? (
+      {showSaveModal ? (
         <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <div className="w-full max-w-xl rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-2xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                Generate PWA Icon
+                Save App
               </h3>
               <button
-                onClick={closeIconModal}
+                onClick={closeSaveModal}
                 className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
               >
                 Close
@@ -1778,8 +1663,8 @@ export default function CodePreview({
               App Name
             </label>
             <input
-              value={iconModalName}
-              onChange={(e) => setIconModalName(e.target.value)}
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
               className="w-full mb-3 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100"
               placeholder="My App"
             />
@@ -1788,14 +1673,14 @@ export default function CodePreview({
               Icon Prompt (optional)
             </label>
             <textarea
-              value={iconModalPrompt}
-              onChange={(e) => setIconModalPrompt(e.target.value)}
+              value={saveIconPrompt}
+              onChange={(e) => setSaveIconPrompt(e.target.value)}
               className="w-full mb-3 min-h-[90px] rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100"
               placeholder="Leave blank to auto-generate a prompt that matches this preview app."
             />
 
-            {iconModalStatus ? (
-              <p className="mb-3 text-xs text-zinc-600 dark:text-zinc-300">{iconModalStatus}</p>
+            {saveStatus ? (
+              <p className="mb-3 text-xs text-zinc-600 dark:text-zinc-300">{saveStatus}</p>
             ) : null}
 
             {generatedIconPreviewUrl ? (
@@ -1818,15 +1703,15 @@ export default function CodePreview({
 
             <div className="flex items-center justify-end gap-2">
               <button
-                onClick={closeIconModal}
+                onClick={closeSaveModal}
                 className="px-3 py-1.5 text-xs rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300"
               >
                 Cancel
               </button>
               <button
-                onClick={handleInstallPWAWithIcon}
+                onClick={handleGenerateSaveIcon}
                 disabled={isGeneratingPwaIcon}
-                className="px-3 py-1.5 text-xs rounded-md bg-zinc-900 text-white disabled:opacity-50"
+                className="px-3 py-1.5 text-xs rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 disabled:opacity-50"
               >
                 {isGeneratingPwaIcon
                   ? "Generating..."
@@ -1835,11 +1720,11 @@ export default function CodePreview({
                     : "Generate Icon"}
               </button>
               <button
-                onClick={handleKeepGeneratedIcon}
-                disabled={!generatedIconPreviewUrl || isGeneratingPwaIcon}
+                onClick={handleSaveApp}
+                disabled={isSavingApp}
                 className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 text-white disabled:opacity-50"
               >
-                Keep Icon
+                {isSavingApp ? "Saving..." : "Save"}
               </button>
             </div>
           </div>
