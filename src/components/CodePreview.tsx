@@ -655,7 +655,6 @@ export default function CodePreview({
       effectiveLanguage: string,
       hasGeneratedIcon: boolean
     ) => {
-      if (!shareInstallsEnabled) return;
       try {
         const publishResp = await fetch("/api/apps/publish", {
           method: "POST",
@@ -676,6 +675,11 @@ export default function CodePreview({
         });
         const data = await publishResp.json().catch(() => ({}));
         if (!publishResp.ok || !data?.shareUrl) {
+          if (publishResp.status === 503) {
+            throw new Error(
+              "Share publishing is disabled on the server. Set ENABLE_SHAREABLE_INSTALLS=1 in deployment env vars and redeploy."
+            );
+          }
           throw new Error(data?.details || data?.error || "Publish failed.");
         }
         setShareUrl(data.shareUrl as string);
@@ -734,7 +738,7 @@ export default function CodePreview({
     await autoPublishIfEnabled(id, name, effectiveLanguage, false);
 
     window.open(`/preview/${id}`, "_blank");
-  }, [code, language, preparedPwaId, preparedPwaName, shareInstallsEnabled]);
+  }, [code, language, preparedPwaId, preparedPwaName]);
 
   const handleInstallPWAWithIcon = useCallback(async () => {
     if (isGeneratingPwaIcon) return;
@@ -1694,7 +1698,7 @@ export default function CodePreview({
           </button>
         </div>
       </div>
-      {shareInstallsEnabled && (shareStatus || shareUrl) ? (
+      {shareStatus || shareUrl ? (
         <div className="px-4 py-2 text-[11px] text-zinc-600 dark:text-zinc-300 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/60">
           {shareStatus ? <p>{shareStatus}</p> : null}
           {shareUrl ? (
