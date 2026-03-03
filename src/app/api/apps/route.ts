@@ -25,13 +25,9 @@ function toSummary(raw: unknown): RemoteAppSummary | null {
     id,
     name: typeof doc.name === "string" && doc.name.trim() ? doc.name.trim() : "Untitled App",
     hasIcon,
-    ...(hasIcon
-      ? {
-          iconUrl: `/api/preview/${encodeURIComponent(id)}/generate-icon?size=192${
-            updatedAt ? `&v=${updatedAt}` : ""
-          }`,
-        }
-      : {}),
+    iconUrl: `/api/preview/${encodeURIComponent(id)}/generate-icon?size=192${
+      updatedAt ? `&v=${updatedAt}` : ""
+    }`,
     updatedAt,
   };
 }
