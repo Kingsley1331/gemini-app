@@ -181,6 +181,8 @@ export async function buildSharedAppDoc(
   const now = Date.now();
   const existing = await getFirebaseDb().doc(getSharedAppDocPath(input.id)).get();
   const prev = existing.exists ? (existing.data() as SharedAppDoc | undefined) : undefined;
+  const icon192Path = opts?.icon192Path ?? prev?.icon192Path;
+  const icon512Path = opts?.icon512Path ?? prev?.icon512Path;
   return {
     id: input.id,
     name: input.name,
@@ -189,8 +191,8 @@ export async function buildSharedAppDoc(
     hasGeneratedIcon: input.hasGeneratedIcon,
     isPublic: true,
     assets: opts?.assets ?? prev?.assets ?? [],
-    icon192Path: opts?.icon192Path ?? prev?.icon192Path,
-    icon512Path: opts?.icon512Path ?? prev?.icon512Path,
+    ...(icon192Path ? { icon192Path } : {}),
+    ...(icon512Path ? { icon512Path } : {}),
     createdAt: prev?.createdAt ?? now,
     updatedAt: now,
   };
