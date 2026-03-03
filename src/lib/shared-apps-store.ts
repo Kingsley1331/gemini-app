@@ -105,7 +105,9 @@ export async function getSharedAppDoc(id: string): Promise<SharedAppDoc | null> 
   const snap = await getFirebaseDb().doc(getSharedAppDocPath(id)).get();
   if (!snap.exists) return null;
   const data = snap.data() as SharedAppDoc | undefined;
-  if (!data || !data.isPublic) return null;
+  // Backward compatibility: older shared docs may not have isPublic set.
+  // Only treat docs as private when explicitly marked false.
+  if (!data || data.isPublic === false) return null;
   return data;
 }
 
