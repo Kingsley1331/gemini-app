@@ -98,17 +98,31 @@ export async function uploadSharedIcon(
 }
 
 export async function upsertSharedApp(doc: SharedAppDoc): Promise<void> {
-  await getFirebaseDb().doc(getSharedAppDocPath(doc.id)).set(doc, { merge: true });
+  const ref = getFirebaseDb().doc(getSharedAppDocPath(doc.id));
+  await ref.set(doc, { merge: true });
+  const verify = await ref.get();
+  if (!verify.exists) {
+    throw new Error(`Shared app write verification failed for id "${doc.id}".`);
+  }
 }
 
 export async function getSharedAppDoc(id: string): Promise<SharedAppDoc | null> {
-  const snap = await getFirebaseDb().doc(getSharedAppDocPath(id)).get();
-  if (!snap.exists) return null;
-  const data = snap.data() as SharedAppDoc | undefined;
-  // Backward compatibility: older shared docs may not have isPublic set.
-  // Only treat docs as private when explicitly marked false.
-  if (!data || data.isPublic === false) return null;
-  return data;
+  const db = getFirebaseDb();
+  const candidatePaths = Array.from(
+    new Set([getSharedAppDocPath(id), `shared-apps/${id}`, `sharedApps/${id}`])
+  );
+
+  for (const path of candidatePaths) {
+    const snap = await db.doc(path).get();
+    if (!snap.exists) continue;
+    const data = snap.data() as SharedAppDoc | undefined;
+    // Backward compatibility: older shared docs may not have isPublic set.
+    // Only treat docs as private when explicitly marked false.
+    if (!data || data.isPublic === false) continue;
+    return data;
+  }
+
+  return null;
 }
 
 export function toSharedAppReadPayload(doc: SharedAppDoc): SharedAppReadPayload {
