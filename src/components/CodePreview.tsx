@@ -649,6 +649,44 @@ export default function CodePreview({
   }, [code, language]);
 
   const handleInstallPWA = useCallback(async () => {
+    const autoPublishIfEnabled = async (
+      id: string,
+      name: string,
+      effectiveLanguage: string,
+      hasGeneratedIcon: boolean
+    ) => {
+      if (!shareInstallsEnabled) return;
+      try {
+        const publishResp = await fetch("/api/apps/publish", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id,
+            name,
+            code,
+            language: effectiveLanguage,
+            hasGeneratedIcon,
+            assets: (latestAssetsRef.current || []).map((asset, index) => ({
+              assetKey: asset.assetKey || `asset_${index + 1}`,
+              mimeType: asset.mimeType || "application/octet-stream",
+              data: asset.data,
+              url: asset.url,
+            })),
+          }),
+        });
+        const data = await publishResp.json().catch(() => ({}));
+        if (!publishResp.ok || !data?.shareUrl) {
+          throw new Error(data?.details || data?.error || "Publish failed.");
+        }
+        setShareUrl(data.shareUrl as string);
+        setShareStatus("Shared link ready.");
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error ? error.message : "Unable to auto-publish shared app.";
+        setShareStatus(message);
+      }
+    };
+
     if (preparedPwaId && preparedPwaName) {
       localStorage.setItem(`pwa-preview-${preparedPwaId}-code`, code);
       localStorage.setItem(`pwa-preview-${preparedPwaId}-language`, language);
@@ -660,6 +698,7 @@ export default function CodePreview({
         name: preparedPwaName, hasGeneratedIcon: true, timestamp: Date.now(),
       }).catch(() => {});
       requestPersistentStorage();
+      await autoPublishIfEnabled(preparedPwaId, preparedPwaName, language, true);
       window.open(`/preview/${preparedPwaId}`, "_blank");
       scheduleGeneratedIconCleanup(preparedPwaId);
       setPreparedPwaId(null);
@@ -692,9 +731,10 @@ export default function CodePreview({
       name, hasGeneratedIcon: false, timestamp: Date.now(),
     }).catch(() => {});
     requestPersistentStorage();
+    await autoPublishIfEnabled(id, name, effectiveLanguage, false);
 
     window.open(`/preview/${id}`, "_blank");
-  }, [code, language, preparedPwaId, preparedPwaName]);
+  }, [code, language, preparedPwaId, preparedPwaName, shareInstallsEnabled]);
 
   const handleInstallPWAWithIcon = useCallback(async () => {
     if (isGeneratingPwaIcon) return;
