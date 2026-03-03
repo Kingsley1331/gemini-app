@@ -8,7 +8,8 @@ import AppNav from "@/components/AppNav";
 type RemoteApp = {
   id: string;
   name: string;
-  hasGeneratedIcon: boolean;
+  hasIcon: boolean;
+  iconUrl?: string;
   updatedAt: number;
 };
 
@@ -26,6 +27,7 @@ export default function AppsPage() {
   const [remoteApps, setRemoteApps] = useState<RemoteApp[]>([]);
   const [loadedLocal, setLoadedLocal] = useState(false);
   const [loadedRemote, setLoadedRemote] = useState(false);
+  const [brokenRemoteIcons, setBrokenRemoteIcons] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     getAllSavedApps()
@@ -149,12 +151,15 @@ export default function AppsPage() {
                       alt={app.name}
                       className="w-full h-full object-cover"
                     />
-                  ) : app.remote?.hasGeneratedIcon ? (
+                  ) : app.remote?.hasIcon && app.remote.iconUrl && !brokenRemoteIcons[app.id] ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={`/api/preview/${encodeURIComponent(app.id)}/generate-icon?size=192`}
+                      src={app.remote.iconUrl}
                       alt={app.name}
                       className="w-full h-full object-cover"
+                      onError={() =>
+                        setBrokenRemoteIcons((prev) => ({ ...prev, [app.id]: true }))
+                      }
                     />
                   ) : (
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400">

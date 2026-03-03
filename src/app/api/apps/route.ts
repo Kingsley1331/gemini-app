@@ -7,7 +7,8 @@ export const runtime = "nodejs";
 type RemoteAppSummary = {
   id: string;
   name: string;
-  hasGeneratedIcon: boolean;
+  hasIcon: boolean;
+  iconUrl?: string;
   updatedAt: number;
 };
 
@@ -17,12 +18,21 @@ function toSummary(raw: unknown): RemoteAppSummary | null {
   const id = typeof doc.id === "string" ? doc.id.trim() : "";
   if (!id) return null;
   if (doc.isPublic === false) return null;
+  const updatedAt =
+    typeof doc.updatedAt === "number" && Number.isFinite(doc.updatedAt) ? doc.updatedAt : 0;
+  const hasIcon = Boolean(doc.hasGeneratedIcon) || typeof doc.icon192Path === "string";
   return {
     id,
     name: typeof doc.name === "string" && doc.name.trim() ? doc.name.trim() : "Untitled App",
-    hasGeneratedIcon: Boolean(doc.hasGeneratedIcon),
-    updatedAt:
-      typeof doc.updatedAt === "number" && Number.isFinite(doc.updatedAt) ? doc.updatedAt : 0,
+    hasIcon,
+    ...(hasIcon
+      ? {
+          iconUrl: `/api/preview/${encodeURIComponent(id)}/generate-icon?size=192${
+            updatedAt ? `&v=${updatedAt}` : ""
+          }`,
+        }
+      : {}),
+    updatedAt,
   };
 }
 
