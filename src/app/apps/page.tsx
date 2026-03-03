@@ -1,27 +1,92 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAllSavedApps, deleteSavedApp, type SavedApp } from "@/lib/saved-apps-idb";
 import AppNav from "@/components/AppNav";
 
+type RemoteApp = {
+  id: string;
+  name: string;
+  hasGeneratedIcon: boolean;
+  updatedAt: number;
+};
+
+type MergedApp = {
+  id: string;
+  name: string;
+  timestamp: number;
+  local?: SavedApp;
+  remote?: RemoteApp;
+};
+
 export default function AppsPage() {
   const router = useRouter();
-  const [apps, setApps] = useState<SavedApp[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [localApps, setLocalApps] = useState<SavedApp[]>([]);
+  const [remoteApps, setRemoteApps] = useState<RemoteApp[]>([]);
+  const [loadedLocal, setLoadedLocal] = useState(false);
+  const [loadedRemote, setLoadedRemote] = useState(false);
 
   useEffect(() => {
-    getAllSavedApps().then((result) => {
-      setApps(result);
-      setLoaded(true);
-    });
+    getAllSavedApps()
+      .then((result) => {
+        setLocalApps(result);
+      })
+      .finally(() => setLoadedLocal(true));
+
+    fetch("/api/apps", { cache: "no-store" })
+      .then(async (resp) => {
+        if (!resp.ok) return;
+        const data = (await resp.json()) as { apps?: RemoteApp[] };
+        setRemoteApps(Array.isArray(data.apps) ? data.apps : []);
+      })
+      .catch(() => {
+        setRemoteApps([]);
+      })
+      .finally(() => setLoadedRemote(true));
   }, []);
+
+  const apps = useMemo<MergedApp[]>(() => {
+    const merged = new Map<string, MergedApp>();
+
+    for (const remote of remoteApps) {
+      merged.set(remote.id, {
+        id: remote.id,
+        name: remote.name,
+        timestamp: remote.updatedAt || 0,
+        remote,
+      });
+    }
+
+    for (const local of localApps) {
+      const existing = merged.get(local.id);
+      if (existing) {
+        merged.set(local.id, {
+          ...existing,
+          name: local.name || existing.name,
+          timestamp: Math.max(existing.timestamp, local.timestamp || 0),
+          local,
+        });
+      } else {
+        merged.set(local.id, {
+          id: local.id,
+          name: local.name,
+          timestamp: local.timestamp || 0,
+          local,
+        });
+      }
+    }
+
+    return Array.from(merged.values()).sort((a, b) => b.timestamp - a.timestamp);
+  }, [localApps, remoteApps]);
 
   const handleDelete = async (e: React.MouseEvent, appId: string) => {
     e.stopPropagation();
     await deleteSavedApp(appId);
-    setApps((prev) => prev.filter((a) => a.id !== appId));
+    setLocalApps((prev) => prev.filter((a) => a.id !== appId));
   };
+
+  const loaded = loadedLocal && loadedRemote;
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -48,10 +113,10 @@ export default function AppsPage() {
               </svg>
             </div>
             <h2 className="text-lg font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-              No saved apps yet
+              No apps yet
             </h2>
             <p className="text-sm text-zinc-400">
-              Open a preview and tap the save button to add apps here.
+              Save or publish an app to see it here.
             </p>
           </div>
         ) : (
@@ -62,24 +127,32 @@ export default function AppsPage() {
                 onClick={() => router.push(`/preview/${app.id}`)}
                 className="group relative flex flex-col items-center gap-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 cursor-pointer hover:border-zinc-400 dark:hover:border-zinc-600 hover:shadow-md transition-all"
               >
-                {/* Delete button */}
-                <button
-                  onClick={(e) => handleDelete(e, app.id)}
-                  className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 opacity-0 group-hover:opacity-100 transition-all"
-                  title="Remove"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
+                {app.local ? (
+                  <button
+                    onClick={(e) => handleDelete(e, app.id)}
+                    className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 opacity-0 group-hover:opacity-100 transition-all"
+                    title="Remove local copy"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                ) : null}
 
                 {/* Icon */}
                 <div className="w-16 h-16 rounded-2xl bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center overflow-hidden shrink-0">
-                  {app.hasIcon && app.iconBase64 ? (
+                  {app.local?.hasIcon && app.local.iconBase64 ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={`data:image/png;base64,${app.iconBase64}`}
+                      src={`data:image/png;base64,${app.local.iconBase64}`}
+                      alt={app.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : app.remote?.hasGeneratedIcon ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`/api/preview/${encodeURIComponent(app.id)}/generate-icon?size=192`}
                       alt={app.name}
                       className="w-full h-full object-cover"
                     />
@@ -95,6 +168,9 @@ export default function AppsPage() {
                 {/* Name */}
                 <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 text-center truncate w-full">
                   {app.name}
+                </span>
+                <span className="text-[10px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                  {app.local && app.remote ? "Local + Remote" : app.local ? "Local" : "Remote"}
                 </span>
               </div>
             ))}
