@@ -20,14 +20,20 @@ function toSummary(raw: unknown): RemoteAppSummary | null {
   if (doc.isPublic === false) return null;
   const updatedAt =
     typeof doc.updatedAt === "number" && Number.isFinite(doc.updatedAt) ? doc.updatedAt : 0;
-  const hasIcon = Boolean(doc.hasGeneratedIcon) || typeof doc.icon192Path === "string";
+  const hasIcon =
+    typeof doc.icon192Path === "string" ||
+    typeof doc.icon512Path === "string";
   return {
     id,
     name: typeof doc.name === "string" && doc.name.trim() ? doc.name.trim() : "Untitled App",
     hasIcon,
-    iconUrl: `/api/preview/${encodeURIComponent(id)}/generate-icon?size=192${
-      updatedAt ? `&v=${updatedAt}` : ""
-    }`,
+    ...(hasIcon
+      ? {
+          iconUrl: `/api/preview/${encodeURIComponent(id)}/generate-icon?size=192${
+            updatedAt ? `&v=${updatedAt}` : ""
+          }`,
+        }
+      : {}),
     updatedAt,
   };
 }

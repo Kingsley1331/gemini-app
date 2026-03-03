@@ -777,7 +777,35 @@ export default function CodePreview({
         hasIcon: Boolean(generatedIconBase64),
         timestamp: Date.now(),
       });
-      setSaveStatus("Saved to My Apps.");
+
+      const publishResp = await fetch("/api/apps/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id,
+          name,
+          code,
+          language: effectiveLanguage,
+          hasGeneratedIcon: Boolean(generatedIconBase64),
+          assets: (latestAssetsRef.current || []).map((asset, index) => ({
+            assetKey: asset.assetKey || `asset_${index + 1}`,
+            mimeType: asset.mimeType || "application/octet-stream",
+            data: asset.data,
+            url: asset.url,
+          })),
+        }),
+      });
+      const publishData = await publishResp.json().catch(() => ({}));
+      if (!publishResp.ok || !publishData?.shareUrl) {
+        const details =
+          publishData?.details || publishData?.error || "Cloud save failed.";
+        setSaveStatus(`Saved locally. Firebase sync failed: ${details}`);
+      } else {
+        const sharedLink = publishData.shareUrl as string;
+        setShareUrl(sharedLink);
+        setShareStatus("Saved locally and synced to Firebase.");
+        setSaveStatus("Saved to My Apps and Firebase.");
+      }
       setShowSaveModal(false);
     } catch {
       setSaveStatus("Failed to save. Please try again.");

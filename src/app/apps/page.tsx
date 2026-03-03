@@ -151,7 +151,7 @@ export default function AppsPage() {
                       alt={app.name}
                       className="w-full h-full object-cover"
                     />
-                  ) : app.remote?.iconUrl && !brokenRemoteIcons[app.id] ? (
+                  ) : app.remote?.hasIcon && app.remote.iconUrl && !brokenRemoteIcons[app.id] ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={app.remote.iconUrl}

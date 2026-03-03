@@ -276,7 +276,21 @@ export async function GET(
     if (isShareableInstallsEnabled() && hasFirebaseAdminConfig()) {
       const sharedDoc = await getSharedAppDoc(id);
       if (sharedDoc) {
-        const sharedIcon = await getSharedIconBytes(sharedDoc, size);
+        let sharedIcon = await getSharedIconBytes(sharedDoc, size);
+        if (!sharedIcon) {
+          const alternateSize: 192 | 512 = size === 192 ? 512 : 192;
+          const alternate = await getSharedIconBytes(sharedDoc, alternateSize);
+          if (alternate) {
+            try {
+              sharedIcon = await sharp(Buffer.from(alternate))
+                .resize(size, size, { fit: "cover" })
+                .png()
+                .toBuffer();
+            } catch {
+              sharedIcon = null;
+            }
+          }
+        }
         if (sharedIcon) {
           return new NextResponse(Buffer.from(sharedIcon), {
             status: 200,
