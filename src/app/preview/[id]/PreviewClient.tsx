@@ -45,6 +45,11 @@ interface SharedPreviewResponse {
   }>;
 }
 
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+}
+
 function buildPreviewAssetUrl(id: string, assetKey: string): string {
   return `/preview/${encodeURIComponent(id)}/assets/${encodeURIComponent(assetKey)}`;
 }
@@ -264,6 +269,10 @@ export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iconVersion] = useState<number>(0);
+  const [deferredInstallPrompt, setDeferredInstallPrompt] =
+    useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [isInstalling, setIsInstalling] = useState(false);
 
   // Try localStorage first (synchronous). If empty, we'll check IndexedDB.
   const localData = id ? readPreviewData(id) : null;
@@ -558,6 +567,48 @@ export default function PreviewClient() {
     });
   }, [hasGeneratedIcon, icon192Href, iconVersion, id, previewData]);
 
+  useEffect(() => {
+    const displayModeStandalone = window.matchMedia("(display-mode: standalone)").matches;
+    const iosStandalone = "standalone" in navigator && (navigator as Navigator & { standalone?: boolean }).standalone;
+    if (displayModeStandalone || iosStandalone) {
+      setIsInstalled(true);
+    }
+
+    const onBeforeInstallPrompt = (event: Event) => {
+      const promptEvent = event as BeforeInstallPromptEvent;
+      promptEvent.preventDefault();
+      setDeferredInstallPrompt(promptEvent);
+    };
+
+    const onAppInstalled = () => {
+      setIsInstalled(true);
+      setDeferredInstallPrompt(null);
+    };
+
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onAppInstalled);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredInstallPrompt || isInstalling) return;
+    setIsInstalling(true);
+    try {
+      await deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      if (choice.outcome === "accepted") {
+        setIsInstalled(true);
+      }
+      setDeferredInstallPrompt(null);
+    } finally {
+      setIsInstalling(false);
+    }
+  };
+
   if (!previewData) {
     return (
       <div
@@ -600,6 +651,35 @@ export default function PreviewClient() {
 
   return (
     <>
+      {!isInstalled && (
+        <button
+          type="button"
+          onClick={handleInstallClick}
+          disabled={!deferredInstallPrompt || isInstalling}
+          style={{
+            position: "fixed",
+            top: "1rem",
+            right: "1rem",
+            zIndex: 1000,
+            backgroundColor: deferredInstallPrompt ? "#18181b" : "#a1a1aa",
+            color: "white",
+            border: "none",
+            borderRadius: "9999px",
+            padding: "0.65rem 1rem",
+            fontSize: "0.875rem",
+            fontWeight: 600,
+            cursor: deferredInstallPrompt ? "pointer" : "not-allowed",
+            boxShadow: "0 6px 20px rgba(0,0,0,0.2)",
+          }}
+          aria-label="Install this app"
+        >
+          {isInstalling
+            ? "Opening install..."
+            : deferredInstallPrompt
+              ? "Install App"
+              : "Install unavailable"}
+        </button>
+      )}
       <iframe
         ref={iframeRef}
         style={{
