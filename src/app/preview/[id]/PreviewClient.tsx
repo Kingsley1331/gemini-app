@@ -411,7 +411,7 @@ export default function PreviewClient() {
   const icon192Href = useMemo(() => {
     const base = hasGeneratedIcon
       ? `/api/preview/${id}/generate-icon?size=192`
-      : "/icons/icon.svg";
+      : "/icons/icon-192.png";
     // Use & (not ?) when the base already contains a query string
     if (!iconVersion) return base;
     const separator = base.includes("?") ? "&" : "?";
@@ -590,7 +590,7 @@ export default function PreviewClient() {
         icon192Href,
         hasGeneratedIcon
           ? `/api/preview/${id}/generate-icon?size=512${iconVersion ? `&v=${iconVersion}` : ""}`
-          : "/icons/icon.svg",
+          : "/icons/icon-512.png",
       ], previewAssets, code, language, hasGeneratedIcon);
     });
   }, [hasGeneratedIcon, icon192Href, iconVersion, id, previewData]);
