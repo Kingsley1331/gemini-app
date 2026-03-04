@@ -705,7 +705,11 @@ export default function PreviewClient() {
           }}
           aria-label="Install this app"
         >
-          {isInstalling ? "Opening install..." : "Install App"}
+          {isInstalling
+            ? "Opening install..."
+            : deferredInstallPrompt
+              ? "Install App"
+              : "How to install"}
         </button>
       )}
       {showInstallHelp && !isInstalled && (
