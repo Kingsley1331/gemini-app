@@ -50,6 +50,32 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 }
 
+function getInstallHelpMessage(): string {
+  const ua = navigator.userAgent || "";
+  const isAndroid = /Android/i.test(ua);
+  const isSamsungInternet = /SamsungBrowser/i.test(ua);
+  const isEdge = /EdgA|EdgiOS|Edg\//i.test(ua);
+  const isFirefox = /Firefox|FxiOS/i.test(ua);
+  const isChrome = /Chrome|CriOS/i.test(ua) && !isEdge && !isSamsungInternet;
+
+  if (isSamsungInternet) {
+    return "Open the menu (three lines) and tap Add page to > Home screen.";
+  }
+  if (isEdge) {
+    return "Open the menu (three dots) and tap Apps, then Install this site.";
+  }
+  if (isFirefox) {
+    return "Open the browser menu and tap Install, or use Add to Home screen.";
+  }
+  if (isChrome && isAndroid) {
+    return "Open the menu (three dots) and tap Install app or Add to Home screen.";
+  }
+  if (isAndroid) {
+    return "Open your browser menu and tap Add to Home screen or Install app.";
+  }
+  return "Open your browser menu and choose Install app or Add to Home screen.";
+}
+
 function buildPreviewAssetUrl(id: string, assetKey: string): string {
   return `/preview/${encodeURIComponent(id)}/assets/${encodeURIComponent(assetKey)}`;
 }
@@ -273,6 +299,8 @@ export default function PreviewClient() {
     useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
+  const [showInstallHelp, setShowInstallHelp] = useState(false);
+  const installHelpMessage = useMemo(() => getInstallHelpMessage(), []);
 
   // Try localStorage first (synchronous). If empty, we'll check IndexedDB.
   const localData = id ? readPreviewData(id) : null;
@@ -595,7 +623,11 @@ export default function PreviewClient() {
   }, []);
 
   const handleInstallClick = async () => {
-    if (!deferredInstallPrompt || isInstalling) return;
+    if (!deferredInstallPrompt) {
+      setShowInstallHelp(true);
+      return;
+    }
+    if (isInstalling) return;
     setIsInstalling(true);
     try {
       await deferredInstallPrompt.prompt();
@@ -655,30 +687,97 @@ export default function PreviewClient() {
         <button
           type="button"
           onClick={handleInstallClick}
-          disabled={!deferredInstallPrompt || isInstalling}
+          disabled={isInstalling}
           style={{
             position: "fixed",
             top: "1rem",
             right: "1rem",
             zIndex: 1000,
-            backgroundColor: deferredInstallPrompt ? "#18181b" : "#a1a1aa",
+            backgroundColor: "#18181b",
             color: "white",
             border: "none",
             borderRadius: "9999px",
             padding: "0.65rem 1rem",
             fontSize: "0.875rem",
             fontWeight: 600,
-            cursor: deferredInstallPrompt ? "pointer" : "not-allowed",
+            cursor: isInstalling ? "wait" : "pointer",
             boxShadow: "0 6px 20px rgba(0,0,0,0.2)",
           }}
           aria-label="Install this app"
         >
-          {isInstalling
-            ? "Opening install..."
-            : deferredInstallPrompt
-              ? "Install App"
-              : "Install unavailable"}
+          {isInstalling ? "Opening install..." : "Install App"}
         </button>
+      )}
+      {showInstallHelp && !isInstalled && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Install app instructions"
+          onClick={() => setShowInstallHelp(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1100,
+            backgroundColor: "rgba(0, 0, 0, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "1rem",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: "22rem",
+              backgroundColor: "white",
+              borderRadius: "0.75rem",
+              boxShadow: "0 18px 40px rgba(0, 0, 0, 0.22)",
+              padding: "1rem",
+              fontFamily:
+                '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+              color: "#18181b",
+            }}
+          >
+            <h2
+              style={{
+                margin: 0,
+                fontSize: "1rem",
+                fontWeight: 700,
+              }}
+            >
+              Install this app
+            </h2>
+            <p
+              style={{
+                margin: "0.65rem 0 0",
+                fontSize: "0.9rem",
+                lineHeight: 1.45,
+                color: "#3f3f46",
+              }}
+            >
+              Install prompt is not available right now. {installHelpMessage}
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowInstallHelp(false)}
+              style={{
+                marginTop: "0.9rem",
+                width: "100%",
+                border: "none",
+                borderRadius: "0.6rem",
+                backgroundColor: "#18181b",
+                color: "white",
+                fontWeight: 600,
+                fontSize: "0.9rem",
+                padding: "0.6rem 0.8rem",
+                cursor: "pointer",
+              }}
+            >
+              Got it
+            </button>
+          </div>
+        </div>
       )}
       <iframe
         ref={iframeRef}
