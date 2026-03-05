@@ -24,6 +24,7 @@ interface PreviewData {
   language: string;
   name: string;
   hasGeneratedIconHint?: boolean;
+  remoteUpdatedAtHint?: number;
 }
 
 interface StoredPreviewAsset {
@@ -201,12 +202,16 @@ function buildExternalImportPreamble(sourceCode: string): string {
 function readPreviewData(id: string): PreviewData | null {
   const code = localStorage.getItem(`pwa-preview-${id}-code`);
   if (!code) return null;
+  const remoteUpdatedAtRaw = localStorage.getItem(`pwa-preview-${id}-remote-updated-at`);
+  const remoteUpdatedAt = remoteUpdatedAtRaw ? Number(remoteUpdatedAtRaw) : 0;
   return {
     code,
     language: localStorage.getItem(`pwa-preview-${id}-language`) || "jsx",
     name: localStorage.getItem(`pwa-preview-${id}-name`) || "My App",
     hasGeneratedIconHint:
       localStorage.getItem(`pwa-preview-${id}-has-generated-icon`) === "1",
+    remoteUpdatedAtHint:
+      Number.isFinite(remoteUpdatedAt) && remoteUpdatedAt > 0 ? remoteUpdatedAt : undefined,
   };
 }
 
@@ -243,6 +248,13 @@ function readPreviewAssets(id: string): StoredPreviewAsset[] {
   } catch {
     return [];
   }
+}
+
+function buildAssetsSignature(assets: StoredPreviewAsset[]): string {
+  return assets
+    .map((asset) => `${asset.assetKey}:${asset.mimeType || "application/octet-stream"}`)
+    .sort()
+    .join("|");
 }
 
 function resolveCodeAssetPlaceholders(id: string, code: string): string {
@@ -318,7 +330,7 @@ export default function PreviewClient() {
       name: string;
       hasGeneratedIcon: boolean;
     },
-    options?: { assets?: StoredPreviewAsset[]; persistIDB?: boolean }
+    options?: { assets?: StoredPreviewAsset[]; persistIDB?: boolean; remoteUpdatedAt?: number }
   ) => {
     if (!id) return;
     try {
@@ -330,6 +342,16 @@ export default function PreviewClient() {
       }
       if (options?.assets) {
         localStorage.setItem(`pwa-preview-${id}-assets`, JSON.stringify(options.assets));
+      }
+      if (
+        typeof options?.remoteUpdatedAt === "number" &&
+        Number.isFinite(options.remoteUpdatedAt) &&
+        options.remoteUpdatedAt > 0
+      ) {
+        localStorage.setItem(
+          `pwa-preview-${id}-remote-updated-at`,
+          String(options.remoteUpdatedAt),
+        );
       }
     } catch {
       // localStorage quota exceeded — proceed with in-memory/IDB data only
@@ -352,6 +374,12 @@ export default function PreviewClient() {
       language: record.language,
       name: record.name,
       hasGeneratedIconHint: record.hasGeneratedIcon,
+      remoteUpdatedAtHint:
+        typeof options?.remoteUpdatedAt === "number" &&
+        Number.isFinite(options.remoteUpdatedAt) &&
+        options.remoteUpdatedAt > 0
+          ? options.remoteUpdatedAt
+          : undefined,
     });
     setRemoteUnavailable(false);
     setIdbChecked(true);
@@ -397,6 +425,7 @@ export default function PreviewClient() {
               mimeType: asset.mimeType || "application/octet-stream",
             })),
             persistIDB: true,
+            remoteUpdatedAt: shared.updatedAt,
           }
         );
       } catch {
@@ -426,12 +455,30 @@ export default function PreviewClient() {
         const nextName = shared.name || "My App";
         const nextHasIcon = Boolean(shared.hasGeneratedIcon);
         const currentHasIcon = Boolean(previewData.hasGeneratedIconHint);
+        const currentUpdatedAt =
+          typeof previewData.remoteUpdatedAtHint === "number" &&
+          Number.isFinite(previewData.remoteUpdatedAtHint)
+            ? previewData.remoteUpdatedAtHint
+            : 0;
+        const nextUpdatedAt =
+          typeof shared.updatedAt === "number" && Number.isFinite(shared.updatedAt)
+            ? shared.updatedAt
+            : 0;
+        const localAssetsSignature = buildAssetsSignature(readPreviewAssets(id));
+        const remoteAssetsSignature = buildAssetsSignature(
+          (shared.assets ?? []).map((asset) => ({
+            assetKey: asset.assetKey,
+            mimeType: asset.mimeType || "application/octet-stream",
+          })),
+        );
 
         const isChanged =
+          nextUpdatedAt > currentUpdatedAt ||
           nextCode !== previewData.code ||
           nextLanguage !== previewData.language ||
           nextName !== previewData.name ||
-          nextHasIcon !== currentHasIcon;
+          nextHasIcon !== currentHasIcon ||
+          remoteAssetsSignature !== localAssetsSignature;
         if (!isChanged) return;
 
         hydrateFromRecord(
@@ -447,6 +494,7 @@ export default function PreviewClient() {
               mimeType: asset.mimeType || "application/octet-stream",
             })),
             persistIDB: true,
+            remoteUpdatedAt: shared.updatedAt,
           }
         );
       } catch {
