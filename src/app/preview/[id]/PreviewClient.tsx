@@ -299,6 +299,8 @@ export default function PreviewClient() {
     useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
+  const [isRefreshingInstallCache, setIsRefreshingInstallCache] = useState(false);
+  const [refreshInstallStatus, setRefreshInstallStatus] = useState<string | null>(null);
   const [showInstallHelp, setShowInstallHelp] = useState(false);
   const installHelpMessage = useMemo(() => getInstallHelpMessage(), []);
 
@@ -641,6 +643,62 @@ export default function PreviewClient() {
     }
   };
 
+  const handleRefreshInstalledApp = async () => {
+    if (!id || !previewData || isRefreshingInstallCache) return;
+    setIsRefreshingInstallCache(true);
+    setRefreshInstallStatus("Refreshing installed app cache...");
+    try {
+      const previewAssets = readPreviewAssets(id);
+      const codeWithAssets = resolveCodeAssetPlaceholders(id, previewData.code);
+      const manifestUrl = `/preview/${id}/manifest.json?name=${encodeURIComponent(previewData.name)}${
+        hasGeneratedIcon ? "&generated=1" : ""
+      }${
+        iconVersion ? `&v=${iconVersion}` : ""
+      }`;
+      const standaloneHTML = buildStandaloneHTML(
+        codeWithAssets,
+        previewData.language,
+        previewData.name,
+        id,
+        icon192Href,
+        hasGeneratedIcon,
+      );
+
+      if ("serviceWorker" in navigator) {
+        const registration = await navigator.serviceWorker.register("/preview-sw.js", {
+          scope: "/preview",
+        });
+        await registration.update().catch(() => {});
+      }
+
+      await cacheForOffline(
+        id,
+        previewData.name,
+        standaloneHTML,
+        [
+          manifestUrl,
+          icon192Href,
+          hasGeneratedIcon
+            ? `/api/preview/${id}/generate-icon?size=512${iconVersion ? `&v=${iconVersion}` : ""}`
+            : "/icons/icon-512.png",
+        ],
+        previewAssets,
+        previewData.code,
+        previewData.language,
+        hasGeneratedIcon,
+      );
+      setRefreshInstallStatus(
+        "Installed app refreshed. Close and reopen the installed app to load updates.",
+      );
+    } catch {
+      setRefreshInstallStatus(
+        "Unable to refresh installed app right now. Try again while online.",
+      );
+    } finally {
+      setIsRefreshingInstallCache(false);
+    }
+  };
+
   if (!previewData) {
     return (
       <div
@@ -712,6 +770,51 @@ export default function PreviewClient() {
               : "How to install"}
         </button>
       )}
+      <button
+        type="button"
+        onClick={handleRefreshInstalledApp}
+        disabled={isRefreshingInstallCache}
+        style={{
+          position: "fixed",
+          top: !isInstalled ? "4.25rem" : "1rem",
+          right: "1rem",
+          zIndex: 1000,
+          backgroundColor: "#2563eb",
+          color: "white",
+          border: "none",
+          borderRadius: "9999px",
+          padding: "0.6rem 1rem",
+          fontSize: "0.82rem",
+          fontWeight: 600,
+          cursor: isRefreshingInstallCache ? "wait" : "pointer",
+          boxShadow: "0 6px 20px rgba(0,0,0,0.2)",
+          opacity: isRefreshingInstallCache ? 0.75 : 1,
+        }}
+        aria-label="Refresh installed app"
+      >
+        {isRefreshingInstallCache ? "Refreshing..." : "Refresh Installed App"}
+      </button>
+      {refreshInstallStatus ? (
+        <div
+          style={{
+            position: "fixed",
+            top: !isInstalled ? "7.65rem" : "4.35rem",
+            right: "1rem",
+            zIndex: 1000,
+            maxWidth: "24rem",
+            borderRadius: "0.75rem",
+            backgroundColor: "rgba(24, 24, 27, 0.92)",
+            color: "white",
+            padding: "0.65rem 0.8rem",
+            fontSize: "0.78rem",
+            lineHeight: 1.35,
+            boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
+          }}
+          role="status"
+        >
+          {refreshInstallStatus}
+        </div>
+      ) : null}
       {showInstallHelp && !isInstalled && (
         <div
           role="dialog"
