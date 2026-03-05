@@ -64,29 +64,29 @@ interface ChatMessage {
 function normalizeIncomingMessages(input: unknown): ChatMessage[] {
   if (!Array.isArray(input)) return [];
 
-  const normalized = input
-    .map((item) => {
-      if (!item || typeof item !== "object") return null;
-      const msg = item as ChatMessage;
-      const role = msg.role === "user" ? "user" : "assistant";
-      const content = typeof msg.content === "string" ? msg.content : "";
-      const attachments = Array.isArray(msg.attachments)
-        ? msg.attachments.filter(
-            (attachment) =>
-              attachment &&
-              typeof attachment.mimeType === "string" &&
-              typeof attachment.data === "string" &&
-              attachment.mimeType.length > 0 &&
-              attachment.data.length > 0,
-          )
-        : undefined;
-      return {
-        role,
-        content,
-        attachments: attachments && attachments.length > 0 ? attachments : undefined,
-      } satisfies ChatMessage;
-    })
-    .filter((msg): msg is ChatMessage => Boolean(msg));
+  const normalized: ChatMessage[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object") continue;
+    const msg = item as ChatMessage;
+    const role = msg.role === "user" ? "user" : "assistant";
+    const content = typeof msg.content === "string" ? msg.content : "";
+    const attachments = Array.isArray(msg.attachments)
+      ? msg.attachments.filter(
+          (attachment) =>
+            attachment &&
+            typeof attachment.mimeType === "string" &&
+            typeof attachment.data === "string" &&
+            attachment.mimeType.length > 0 &&
+            attachment.data.length > 0,
+        )
+      : undefined;
+
+    normalized.push({
+      role,
+      content,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
+    });
+  }
 
   // Gemini requires history to start with user content.
   while (normalized.length > 0 && normalized[0]?.role !== "user") {
