@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   savePreviewToIDB,
@@ -39,6 +39,7 @@ interface SharedPreviewResponse {
   language: string;
   name: string;
   hasGeneratedIcon: boolean;
+  updatedAt?: number;
   assets?: Array<{
     assetKey: string;
     mimeType: string;
@@ -310,56 +311,57 @@ export default function PreviewClient() {
   const [idbChecked, setIdbChecked] = useState(!!localData);
   const [remoteUnavailable, setRemoteUnavailable] = useState(false);
 
+  const hydrateFromRecord = useCallback((
+    record: {
+      code: string;
+      language: string;
+      name: string;
+      hasGeneratedIcon: boolean;
+    },
+    options?: { assets?: StoredPreviewAsset[]; persistIDB?: boolean }
+  ) => {
+    if (!id) return;
+    try {
+      localStorage.setItem(`pwa-preview-${id}-code`, record.code);
+      localStorage.setItem(`pwa-preview-${id}-language`, record.language);
+      localStorage.setItem(`pwa-preview-${id}-name`, record.name);
+      if (record.hasGeneratedIcon) {
+        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+      }
+      if (options?.assets) {
+        localStorage.setItem(`pwa-preview-${id}-assets`, JSON.stringify(options.assets));
+      }
+    } catch {
+      // localStorage quota exceeded — proceed with in-memory/IDB data only
+    }
+
+    if (options?.persistIDB) {
+      savePreviewToIDB({
+        id,
+        standaloneHTML: "",
+        code: record.code,
+        language: record.language,
+        name: record.name,
+        hasGeneratedIcon: record.hasGeneratedIcon,
+        timestamp: Date.now(),
+      }).catch(() => {});
+    }
+
+    setPreviewData({
+      code: record.code,
+      language: record.language,
+      name: record.name,
+      hasGeneratedIconHint: record.hasGeneratedIcon,
+    });
+    setRemoteUnavailable(false);
+    setIdbChecked(true);
+  }, [id]);
+
   // When localStorage misses, try IndexedDB as a durable fallback.
   // If found, restore localStorage so future loads are instant.
   useEffect(() => {
     if (previewData || !id || idbChecked) return;
     let cancelled = false;
-
-    const hydrateFromRecord = (
-      record: {
-        code: string;
-        language: string;
-        name: string;
-        hasGeneratedIcon: boolean;
-      },
-      options?: { assets?: StoredPreviewAsset[]; persistIDB?: boolean }
-    ) => {
-      try {
-        localStorage.setItem(`pwa-preview-${id}-code`, record.code);
-        localStorage.setItem(`pwa-preview-${id}-language`, record.language);
-        localStorage.setItem(`pwa-preview-${id}-name`, record.name);
-        if (record.hasGeneratedIcon) {
-          localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-        }
-        if (options?.assets) {
-          localStorage.setItem(`pwa-preview-${id}-assets`, JSON.stringify(options.assets));
-        }
-      } catch {
-        // localStorage quota exceeded — proceed with in-memory/IDB data only
-      }
-
-      if (options?.persistIDB) {
-        savePreviewToIDB({
-          id,
-          standaloneHTML: "",
-          code: record.code,
-          language: record.language,
-          name: record.name,
-          hasGeneratedIcon: record.hasGeneratedIcon,
-          timestamp: Date.now(),
-        }).catch(() => {});
-      }
-
-      setPreviewData({
-        code: record.code,
-        language: record.language,
-        name: record.name,
-        hasGeneratedIconHint: record.hasGeneratedIcon,
-      });
-      setRemoteUnavailable(false);
-      setIdbChecked(true);
-    };
 
     (async () => {
       const record = await getPreviewFromIDB(id);
@@ -404,7 +406,58 @@ export default function PreviewClient() {
     })();
 
     return () => { cancelled = true; };
-  }, [id, previewData, idbChecked]);
+  }, [hydrateFromRecord, id, previewData, idbChecked]);
+
+  // Revalidate against remote when online, even if local data already exists.
+  // This keeps installed PWAs updated across devices/profiles.
+  useEffect(() => {
+    if (!id || !previewData) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const remoteResp = await fetch(`/api/apps/${id}`, { cache: "no-store" });
+        if (!remoteResp.ok || cancelled) return;
+        const shared = (await remoteResp.json()) as SharedPreviewResponse;
+        if (cancelled) return;
+
+        const nextCode = shared.code || "";
+        const nextLanguage = shared.language || "jsx";
+        const nextName = shared.name || "My App";
+        const nextHasIcon = Boolean(shared.hasGeneratedIcon);
+        const currentHasIcon = Boolean(previewData.hasGeneratedIconHint);
+
+        const isChanged =
+          nextCode !== previewData.code ||
+          nextLanguage !== previewData.language ||
+          nextName !== previewData.name ||
+          nextHasIcon !== currentHasIcon;
+        if (!isChanged) return;
+
+        hydrateFromRecord(
+          {
+            code: nextCode,
+            language: nextLanguage,
+            name: nextName,
+            hasGeneratedIcon: nextHasIcon,
+          },
+          {
+            assets: (shared.assets ?? []).map((asset) => ({
+              assetKey: asset.assetKey,
+              mimeType: asset.mimeType || "application/octet-stream",
+            })),
+            persistIDB: true,
+          }
+        );
+      } catch {
+        // keep local version when remote revalidation fails
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrateFromRecord, id, previewData]);
 
   const [hasGeneratedIcon, setHasGeneratedIcon] = useState(
     () => previewData?.hasGeneratedIconHint ?? false,
