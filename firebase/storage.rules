@@ -1,0 +1,9 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Asset and icon reads/writes are mediated by server APIs (Admin SDK).
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

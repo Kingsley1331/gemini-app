@@ -15,6 +15,9 @@ import {
   getGeneratedIconBlobUrl,
   storeGeneratedIconsInBlob,
 } from "@/lib/generated-icon-blob";
+import { hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { getSharedAppDoc, getSharedIconBytes } from "@/lib/shared-apps-store";
+import { isShareableInstallsEnabled } from "@/lib/shared-apps";
 
 export const runtime = "nodejs";
 
@@ -127,61 +130,123 @@ async function generateIconWithModel(
   return { icon512Buffer, icon192Buffer };
 }
 
+async function loadStoredIconBuffer(
+  id: string,
+  size: 192 | 512
+): Promise<Buffer | null> {
+  const memoryIcon = getGeneratedIcon(id, size);
+  const tmpIcon = memoryIcon ? null : await readTmpGeneratedIcon(id, size);
+  const iconBuffer = memoryIcon ?? tmpIcon;
+  if (iconBuffer) return iconBuffer;
+
+  const blobUrl = await getGeneratedIconBlobUrl(id, size);
+  if (blobUrl) {
+    const blobResp = await fetch(blobUrl);
+    if (blobResp.ok) {
+      const arrayBuffer = await blobResp.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+  }
+
+  if (isShareableInstallsEnabled() && hasFirebaseAdminConfig()) {
+    const sharedDoc = await getSharedAppDoc(id);
+    if (sharedDoc) {
+      let sharedIcon = await getSharedIconBytes(sharedDoc, size);
+      if (!sharedIcon) {
+        const alternateSize: 192 | 512 = size === 192 ? 512 : 192;
+        const alternate = await getSharedIconBytes(sharedDoc, alternateSize);
+        if (alternate) {
+          try {
+            sharedIcon = await sharp(Buffer.from(alternate))
+              .resize(size, size, { fit: "cover" })
+              .png()
+              .toBuffer();
+          } catch {
+            sharedIcon = null;
+          }
+        }
+      }
+      if (sharedIcon) {
+        return Buffer.from(sharedIcon);
+      }
+    }
+  }
+
+  return null;
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        {
-          error: "Configuration Error",
-          details:
-            "GEMINI_API_KEY is not defined in environment variables. Check your .env.local file and restart your server.",
-        },
-        { status: 500 }
-      );
-    }
-
     const { id } = await params;
-    const { prompt, pro = true, name } = await req.json();
+    const { copyFromId, prompt, pro = true, name } = await req.json();
 
     const appName = typeof name === "string" && name.trim() ? name.trim() : "My App";
-    const basePrompt =
-      typeof prompt === "string" && prompt.trim()
-        ? prompt.trim()
-        : `Create a clean, high-contrast, minimal mobile app icon for "${appName}". Centered symbol, bold shape, no text, no watermark, simple background, suitable for Android and iOS PWA install icon.`;
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const modelOrder = pro
-      ? ["gemini-3-pro-image-preview", "gemini-2.5-flash-image"]
-      : ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"];
-
     let icon512Buffer: Buffer | null = null;
     let icon192Buffer: Buffer | null = null;
     let lastError: unknown = null;
 
-    // Generate a single 512x512 icon and resize to 192x192 so both sizes
-    // show the same image (two separate API calls would produce different icons).
-    for (const modelName of modelOrder) {
-      try {
-        const generated = await generateIconWithModel(genAI, modelName, basePrompt);
-        icon512Buffer = generated.icon512Buffer;
-        icon192Buffer = generated.icon192Buffer;
-        break;
-      } catch (error: unknown) {
-        lastError = error;
-        if (isTransientModelError(error)) {
-          try {
-            const generated = await generateIconWithModel(genAI, modelName, basePrompt);
-            icon512Buffer = generated.icon512Buffer;
-            icon192Buffer = generated.icon192Buffer;
-            break;
-          } catch (retryError: unknown) {
-            lastError = retryError;
-            if (isTransientModelError(retryError)) {
-              await sleep(1200);
+    if (typeof copyFromId === "string" && copyFromId.trim()) {
+      const sourceId = copyFromId.trim();
+      [icon192Buffer, icon512Buffer] = await Promise.all([
+        loadStoredIconBuffer(sourceId, 192),
+        loadStoredIconBuffer(sourceId, 512),
+      ]);
+      if (!icon192Buffer || !icon512Buffer) {
+        return NextResponse.json(
+          {
+            error: "PWA Icon Copy Failed",
+            details: "Source icon could not be found.",
+          },
+          { status: 404 }
+        );
+      }
+    } else {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return NextResponse.json(
+          {
+            error: "Configuration Error",
+            details:
+              "GEMINI_API_KEY is not defined in environment variables. Check your .env.local file and restart your server.",
+          },
+          { status: 500 }
+        );
+      }
+
+      const basePrompt =
+        typeof prompt === "string" && prompt.trim()
+          ? prompt.trim()
+          : `Create a clean, high-contrast, minimal mobile app icon for "${appName}". Centered symbol, bold shape, no text, no watermark, simple background, suitable for Android and iOS PWA install icon.`;
+
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const modelOrder = pro
+        ? ["gemini-3-pro-image-preview", "gemini-2.5-flash-image"]
+        : ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"];
+
+      // Generate a single 512x512 icon and resize to 192x192 so both sizes
+      // show the same image (two separate API calls would produce different icons).
+      for (const modelName of modelOrder) {
+        try {
+          const generated = await generateIconWithModel(genAI, modelName, basePrompt);
+          icon512Buffer = generated.icon512Buffer;
+          icon192Buffer = generated.icon192Buffer;
+          break;
+        } catch (error: unknown) {
+          lastError = error;
+          if (isTransientModelError(error)) {
+            try {
+              const generated = await generateIconWithModel(genAI, modelName, basePrompt);
+              icon512Buffer = generated.icon512Buffer;
+              icon192Buffer = generated.icon192Buffer;
+              break;
+            } catch (retryError: unknown) {
+              lastError = retryError;
+              if (isTransientModelError(retryError)) {
+                await sleep(1200);
+              }
             }
           }
         }
@@ -251,25 +316,8 @@ export async function GET(
     );
   }
 
-  const memoryIcon = getGeneratedIcon(id, size);
-  const tmpIcon = memoryIcon ? null : await readTmpGeneratedIcon(id, size);
-  const iconBuffer = memoryIcon ?? tmpIcon;
+  const iconBuffer = await loadStoredIconBuffer(id, size);
   if (!iconBuffer) {
-    const blobUrl = await getGeneratedIconBlobUrl(id, size);
-    if (blobUrl) {
-      const blobResp = await fetch(blobUrl);
-      if (blobResp.ok) {
-        const arrayBuffer = await blobResp.arrayBuffer();
-        return new NextResponse(new Uint8Array(arrayBuffer), {
-          status: 200,
-          headers: {
-            "Content-Type": "image/png",
-            "Cache-Control": "public, max-age=300",
-          },
-        });
-      }
-    }
-
     return NextResponse.json({ error: "Generated icon not found" }, { status: 404 });
   }
 
@@ -293,7 +341,15 @@ export async function HEAD(
   const memoryExists = size ? Boolean(getGeneratedIcon(id, size)) : false;
   const tmpExists = size ? Boolean(await readTmpGeneratedIcon(id, size)) : false;
   const blobExists = size ? Boolean(await getGeneratedIconBlobUrl(id, size)) : false;
-  const exists = memoryExists || tmpExists || blobExists;
+  let sharedExists = false;
+  if (!memoryExists && !tmpExists && !blobExists && size && isShareableInstallsEnabled() && hasFirebaseAdminConfig()) {
+    const sharedDoc = await getSharedAppDoc(id);
+    if (sharedDoc) {
+      const sharedIcon = await getSharedIconBytes(sharedDoc, size);
+      sharedExists = Boolean(sharedIcon);
+    }
+  }
+  const exists = memoryExists || tmpExists || blobExists || sharedExists;
 
   return new NextResponse(null, {
     status: exists ? 200 : 404,

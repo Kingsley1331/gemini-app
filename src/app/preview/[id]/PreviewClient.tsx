@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   savePreviewToIDB,
@@ -8,7 +8,7 @@ import {
   requestPersistentStorage,
 } from "@/lib/preview-idb";
 
-const SW_CACHE_NAME = "preview-pwa-v5";
+const SW_CACHE_NAME = "preview-pwa-v6";
 
 // CDN scripts used by the preview — must be cached for offline support
 const CDN_URLS = [
@@ -24,6 +24,8 @@ interface PreviewData {
   language: string;
   name: string;
   hasGeneratedIconHint?: boolean;
+  localIconVersionHint?: number;
+  remoteUpdatedAtHint?: number;
 }
 
 interface StoredPreviewAsset {
@@ -31,6 +33,50 @@ interface StoredPreviewAsset {
   mimeType: string;
   data?: string;
   url?: string;
+}
+
+interface SharedPreviewResponse {
+  id: string;
+  code: string;
+  language: string;
+  name: string;
+  hasGeneratedIcon: boolean;
+  updatedAt?: number;
+  assets?: Array<{
+    assetKey: string;
+    mimeType: string;
+  }>;
+}
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+}
+
+function getInstallHelpMessage(): string {
+  const ua = navigator.userAgent || "";
+  const isAndroid = /Android/i.test(ua);
+  const isSamsungInternet = /SamsungBrowser/i.test(ua);
+  const isEdge = /EdgA|EdgiOS|Edg\//i.test(ua);
+  const isFirefox = /Firefox|FxiOS/i.test(ua);
+  const isChrome = /Chrome|CriOS/i.test(ua) && !isEdge && !isSamsungInternet;
+
+  if (isSamsungInternet) {
+    return "Open the menu (three lines) and tap Add page to > Home screen.";
+  }
+  if (isEdge) {
+    return "Open the menu (three dots) and tap Apps, then Install this site.";
+  }
+  if (isFirefox) {
+    return "Open the browser menu and tap Install, or use Add to Home screen.";
+  }
+  if (isChrome && isAndroid) {
+    return "Open the menu (three dots) and tap Install app or Add to Home screen.";
+  }
+  if (isAndroid) {
+    return "Open your browser menu and tap Add to Home screen or Install app.";
+  }
+  return "Open your browser menu and choose Install app or Add to Home screen.";
 }
 
 function buildPreviewAssetUrl(id: string, assetKey: string): string {
@@ -157,12 +203,22 @@ function buildExternalImportPreamble(sourceCode: string): string {
 function readPreviewData(id: string): PreviewData | null {
   const code = localStorage.getItem(`pwa-preview-${id}-code`);
   if (!code) return null;
+  const localIconVersionRaw = localStorage.getItem(`pwa-preview-${id}-icon-version`);
+  const localIconVersion = localIconVersionRaw ? Number(localIconVersionRaw) : 0;
+  const remoteUpdatedAtRaw = localStorage.getItem(`pwa-preview-${id}-remote-updated-at`);
+  const remoteUpdatedAt = remoteUpdatedAtRaw ? Number(remoteUpdatedAtRaw) : 0;
   return {
     code,
     language: localStorage.getItem(`pwa-preview-${id}-language`) || "jsx",
     name: localStorage.getItem(`pwa-preview-${id}-name`) || "My App",
     hasGeneratedIconHint:
       localStorage.getItem(`pwa-preview-${id}-has-generated-icon`) === "1",
+    localIconVersionHint:
+      Number.isFinite(localIconVersion) && localIconVersion > 0
+        ? localIconVersion
+        : undefined,
+    remoteUpdatedAtHint:
+      Number.isFinite(remoteUpdatedAt) && remoteUpdatedAt > 0 ? remoteUpdatedAt : undefined,
   };
 }
 
@@ -199,6 +255,13 @@ function readPreviewAssets(id: string): StoredPreviewAsset[] {
   } catch {
     return [];
   }
+}
+
+function buildAssetsSignature(assets: StoredPreviewAsset[]): string {
+  return assets
+    .map((asset) => `${asset.assetKey}:${asset.mimeType || "application/octet-stream"}`)
+    .sort()
+    .join("|");
 }
 
 function resolveCodeAssetPlaceholders(id: string, code: string): string {
@@ -251,43 +314,222 @@ function resolveCodeAssetPlaceholders(id: string, code: string): string {
 export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [iconVersion] = useState<number>(0);
+  const [deferredInstallPrompt, setDeferredInstallPrompt] =
+    useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [isInstalling, setIsInstalling] = useState(false);
+  const [isRefreshingInstallCache, setIsRefreshingInstallCache] = useState(false);
+  const [refreshInstallStatus, setRefreshInstallStatus] = useState<string | null>(null);
+  const [showIconRefreshNotice, setShowIconRefreshNotice] = useState(false);
+  const [showInstallHelp, setShowInstallHelp] = useState(false);
+  const installHelpMessage = useMemo(() => getInstallHelpMessage(), []);
 
   // Try localStorage first (synchronous). If empty, we'll check IndexedDB.
   const localData = id ? readPreviewData(id) : null;
   const [previewData, setPreviewData] = useState<PreviewData | null>(localData);
   const [idbChecked, setIdbChecked] = useState(!!localData);
+  const [remoteUnavailable, setRemoteUnavailable] = useState(false);
+  const iconVersion = useMemo(() => {
+    const localVersion =
+      typeof previewData?.localIconVersionHint === "number" &&
+      Number.isFinite(previewData.localIconVersionHint) &&
+      previewData.localIconVersionHint > 0
+        ? previewData.localIconVersionHint
+        : 0;
+    if (
+      typeof previewData?.remoteUpdatedAtHint === "number" &&
+      Number.isFinite(previewData.remoteUpdatedAtHint) &&
+      previewData.remoteUpdatedAtHint > 0
+    ) {
+      return Math.max(previewData.remoteUpdatedAtHint, localVersion);
+    }
+    return localVersion;
+  }, [previewData?.localIconVersionHint, previewData?.remoteUpdatedAtHint]);
+
+  const hydrateFromRecord = useCallback((
+    record: {
+      code: string;
+      language: string;
+      name: string;
+      hasGeneratedIcon: boolean;
+    },
+    options?: { assets?: StoredPreviewAsset[]; persistIDB?: boolean; remoteUpdatedAt?: number }
+  ) => {
+    if (!id) return;
+    try {
+      localStorage.setItem(`pwa-preview-${id}-code`, record.code);
+      localStorage.setItem(`pwa-preview-${id}-language`, record.language);
+      localStorage.setItem(`pwa-preview-${id}-name`, record.name);
+      if (record.hasGeneratedIcon) {
+        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+      }
+      if (options?.assets) {
+        localStorage.setItem(`pwa-preview-${id}-assets`, JSON.stringify(options.assets));
+      }
+      if (
+        typeof options?.remoteUpdatedAt === "number" &&
+        Number.isFinite(options.remoteUpdatedAt) &&
+        options.remoteUpdatedAt > 0
+      ) {
+        localStorage.setItem(
+          `pwa-preview-${id}-remote-updated-at`,
+          String(options.remoteUpdatedAt),
+        );
+      }
+    } catch {
+      // localStorage quota exceeded — proceed with in-memory/IDB data only
+    }
+
+    if (options?.persistIDB) {
+      savePreviewToIDB({
+        id,
+        standaloneHTML: "",
+        code: record.code,
+        language: record.language,
+        name: record.name,
+        hasGeneratedIcon: record.hasGeneratedIcon,
+        timestamp: Date.now(),
+      }).catch(() => {});
+    }
+
+    setPreviewData({
+      code: record.code,
+      language: record.language,
+      name: record.name,
+      hasGeneratedIconHint: record.hasGeneratedIcon,
+      localIconVersionHint: readPreviewData(id)?.localIconVersionHint,
+      remoteUpdatedAtHint:
+        typeof options?.remoteUpdatedAt === "number" &&
+        Number.isFinite(options.remoteUpdatedAt) &&
+        options.remoteUpdatedAt > 0
+          ? options.remoteUpdatedAt
+          : undefined,
+    });
+    setRemoteUnavailable(false);
+    setIdbChecked(true);
+  }, [id]);
 
   // When localStorage misses, try IndexedDB as a durable fallback.
   // If found, restore localStorage so future loads are instant.
   useEffect(() => {
     if (previewData || !id || idbChecked) return;
     let cancelled = false;
-    getPreviewFromIDB(id).then((record) => {
-      if (cancelled || !record) {
-        setIdbChecked(true);
+
+    (async () => {
+      const record = await getPreviewFromIDB(id);
+      if (cancelled) return;
+      if (record) {
+        hydrateFromRecord({
+          code: record.code,
+          language: record.language,
+          name: record.name,
+          hasGeneratedIcon: record.hasGeneratedIcon,
+        });
         return;
       }
+
       try {
-        localStorage.setItem(`pwa-preview-${id}-code`, record.code);
-        localStorage.setItem(`pwa-preview-${id}-language`, record.language);
-        localStorage.setItem(`pwa-preview-${id}-name`, record.name);
-        if (record.hasGeneratedIcon) {
-          localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+        const remoteResp = await fetch(`/api/apps/${id}`, { cache: "no-store" });
+        if (!remoteResp.ok) {
+          setRemoteUnavailable(remoteResp.status === 404);
+          setIdbChecked(true);
+          return;
         }
+        const shared = (await remoteResp.json()) as SharedPreviewResponse;
+        hydrateFromRecord(
+          {
+            code: shared.code,
+            language: shared.language,
+            name: shared.name,
+            hasGeneratedIcon: Boolean(shared.hasGeneratedIcon),
+          },
+          {
+            assets: (shared.assets ?? []).map((asset) => ({
+              assetKey: asset.assetKey,
+              mimeType: asset.mimeType || "application/octet-stream",
+            })),
+            persistIDB: true,
+            remoteUpdatedAt: shared.updatedAt,
+          }
+        );
       } catch {
-        // localStorage quota exceeded — proceed with IDB data only
+        setRemoteUnavailable(false);
+        setIdbChecked(true);
       }
-      setPreviewData({
-        code: record.code,
-        language: record.language,
-        name: record.name,
-        hasGeneratedIconHint: record.hasGeneratedIcon,
-      });
-      setIdbChecked(true);
-    });
+    })();
+
     return () => { cancelled = true; };
-  }, [id, previewData, idbChecked]);
+  }, [hydrateFromRecord, id, previewData, idbChecked]);
+
+  // Revalidate against remote when online, even if local data already exists.
+  // This keeps installed PWAs updated across devices/profiles.
+  useEffect(() => {
+    if (!id || !previewData) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const remoteResp = await fetch(`/api/apps/${id}`, { cache: "no-store" });
+        if (!remoteResp.ok || cancelled) return;
+        const shared = (await remoteResp.json()) as SharedPreviewResponse;
+        if (cancelled) return;
+
+        const nextCode = shared.code || "";
+        const nextLanguage = shared.language || "jsx";
+        const nextName = shared.name || "My App";
+        const nextHasIcon = Boolean(shared.hasGeneratedIcon);
+        const currentHasIcon = Boolean(previewData.hasGeneratedIconHint);
+        const currentUpdatedAt =
+          typeof previewData.remoteUpdatedAtHint === "number" &&
+          Number.isFinite(previewData.remoteUpdatedAtHint)
+            ? previewData.remoteUpdatedAtHint
+            : 0;
+        const nextUpdatedAt =
+          typeof shared.updatedAt === "number" && Number.isFinite(shared.updatedAt)
+            ? shared.updatedAt
+            : 0;
+        const localAssetsSignature = buildAssetsSignature(readPreviewAssets(id));
+        const remoteAssetsSignature = buildAssetsSignature(
+          (shared.assets ?? []).map((asset) => ({
+            assetKey: asset.assetKey,
+            mimeType: asset.mimeType || "application/octet-stream",
+          })),
+        );
+
+        const isChanged =
+          nextUpdatedAt > currentUpdatedAt ||
+          nextCode !== previewData.code ||
+          nextLanguage !== previewData.language ||
+          nextName !== previewData.name ||
+          nextHasIcon !== currentHasIcon ||
+          remoteAssetsSignature !== localAssetsSignature;
+        if (!isChanged) return;
+
+        hydrateFromRecord(
+          {
+            code: nextCode,
+            language: nextLanguage,
+            name: nextName,
+            hasGeneratedIcon: nextHasIcon,
+          },
+          {
+            assets: (shared.assets ?? []).map((asset) => ({
+              assetKey: asset.assetKey,
+              mimeType: asset.mimeType || "application/octet-stream",
+            })),
+            persistIDB: true,
+            remoteUpdatedAt: shared.updatedAt,
+          }
+        );
+      } catch {
+        // keep local version when remote revalidation fails
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrateFromRecord, id, previewData]);
 
   const [hasGeneratedIcon, setHasGeneratedIcon] = useState(
     () => previewData?.hasGeneratedIconHint ?? false,
@@ -296,7 +538,7 @@ export default function PreviewClient() {
   const icon192Href = useMemo(() => {
     const base = hasGeneratedIcon
       ? `/api/preview/${id}/generate-icon?size=192`
-      : "/icons/icon.svg";
+      : "/icons/icon-192.png";
     // Use & (not ?) when the base already contains a query string
     if (!iconVersion) return base;
     const separator = base.includes("?") ? "&" : "?";
@@ -360,16 +602,30 @@ export default function PreviewClient() {
           });
         };
         if (icon192b64) {
+          const icon192Response = b64ToResponse(icon192b64);
           await cache.put(
             new Request(`/api/preview/${id}/generate-icon?size=192`),
-            b64ToResponse(icon192b64),
+            icon192Response.clone(),
           );
+          if (iconVersion) {
+            await cache.put(
+              new Request(`/api/preview/${id}/generate-icon?size=192&v=${iconVersion}`),
+              icon192Response.clone(),
+            );
+          }
         }
         if (icon512b64) {
+          const icon512Response = b64ToResponse(icon512b64);
           await cache.put(
             new Request(`/api/preview/${id}/generate-icon?size=512`),
-            b64ToResponse(icon512b64),
+            icon512Response.clone(),
           );
+          if (iconVersion) {
+            await cache.put(
+              new Request(`/api/preview/${id}/generate-icon?size=512&v=${iconVersion}`),
+              icon512Response.clone(),
+            );
+          }
         }
         // Clean up — data is now in the SW cache
         localStorage.removeItem(`pwa-preview-${id}-icon192-b64`);
@@ -378,7 +634,7 @@ export default function PreviewClient() {
         // caching is best-effort
       }
     })();
-  }, [id, hasGeneratedIcon]);
+  }, [iconVersion, id, hasGeneratedIcon]);
 
   useEffect(() => {
     if (!id || !previewData) return;
@@ -402,9 +658,9 @@ export default function PreviewClient() {
       el.content = content;
     };
 
-    setMeta("theme-color", "#18181b");
+    setMeta("theme-color", "#ffffff");
     setMeta("apple-mobile-web-app-capable", "yes");
-    setMeta("apple-mobile-web-app-status-bar-style", "black-translucent");
+    setMeta("apple-mobile-web-app-status-bar-style", "default");
     setMeta("apple-mobile-web-app-title", name);
 
     // Manifest link
@@ -465,6 +721,7 @@ export default function PreviewClient() {
       language,
       name,
       id,
+      manifestUrl,
       icon192Href,
       hasGeneratedIcon,
     );
@@ -475,10 +732,146 @@ export default function PreviewClient() {
         icon192Href,
         hasGeneratedIcon
           ? `/api/preview/${id}/generate-icon?size=512${iconVersion ? `&v=${iconVersion}` : ""}`
-          : "/icons/icon.svg",
+          : "/icons/icon-512.png",
       ], previewAssets, code, language, hasGeneratedIcon);
     });
   }, [hasGeneratedIcon, icon192Href, iconVersion, id, previewData]);
+
+  useEffect(() => {
+    const displayModeStandalone = window.matchMedia("(display-mode: standalone)").matches;
+    const iosStandalone = "standalone" in navigator && (navigator as Navigator & { standalone?: boolean }).standalone;
+    if (displayModeStandalone || iosStandalone) {
+      setIsInstalled(true);
+    }
+
+    const onBeforeInstallPrompt = (event: Event) => {
+      const promptEvent = event as BeforeInstallPromptEvent;
+      promptEvent.preventDefault();
+      setDeferredInstallPrompt(promptEvent);
+    };
+
+    const onAppInstalled = () => {
+      setIsInstalled(true);
+      setDeferredInstallPrompt(null);
+    };
+
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onAppInstalled);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!id || !hasGeneratedIcon || !iconVersion || isInstalled) {
+      setShowIconRefreshNotice(false);
+      return;
+    }
+
+    try {
+      const acknowledgedRaw = localStorage.getItem(
+        `pwa-preview-${id}-icon-notice-dismissed-at`,
+      );
+      const acknowledgedVersion = acknowledgedRaw ? Number(acknowledgedRaw) : 0;
+      setShowIconRefreshNotice(!(acknowledgedVersion >= iconVersion));
+    } catch {
+      setShowIconRefreshNotice(true);
+    }
+  }, [hasGeneratedIcon, iconVersion, id, isInstalled]);
+
+  const handleInstallClick = async () => {
+    if (!deferredInstallPrompt) {
+      setShowInstallHelp(true);
+      return;
+    }
+    if (isInstalling) return;
+    setIsInstalling(true);
+    try {
+      await deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      if (choice.outcome === "accepted") {
+        setIsInstalled(true);
+      }
+      setDeferredInstallPrompt(null);
+    } finally {
+      setIsInstalling(false);
+    }
+  };
+
+  const handleRefreshInstalledApp = async () => {
+    if (!id || !previewData || isRefreshingInstallCache) return;
+    setIsRefreshingInstallCache(true);
+    setRefreshInstallStatus("Refreshing installed app cache...");
+    try {
+      const previewAssets = readPreviewAssets(id);
+      const codeWithAssets = resolveCodeAssetPlaceholders(id, previewData.code);
+      const manifestUrl = `/preview/${id}/manifest.json?name=${encodeURIComponent(previewData.name)}${
+        hasGeneratedIcon ? "&generated=1" : ""
+      }${
+        iconVersion ? `&v=${iconVersion}` : ""
+      }`;
+      const standaloneHTML = buildStandaloneHTML(
+        codeWithAssets,
+        previewData.language,
+        previewData.name,
+        id,
+        manifestUrl,
+        icon192Href,
+        hasGeneratedIcon,
+      );
+
+      if ("serviceWorker" in navigator) {
+        const registration = await navigator.serviceWorker.register("/preview-sw.js", {
+          scope: "/preview",
+        });
+        await registration.update().catch(() => {});
+      }
+
+      await cacheForOffline(
+        id,
+        previewData.name,
+        standaloneHTML,
+        [
+          manifestUrl,
+          icon192Href,
+          hasGeneratedIcon
+            ? `/api/preview/${id}/generate-icon?size=512${iconVersion ? `&v=${iconVersion}` : ""}`
+            : "/icons/icon-512.png",
+        ],
+        previewAssets,
+        previewData.code,
+        previewData.language,
+        hasGeneratedIcon,
+      );
+      setRefreshInstallStatus(
+        "Installed app refreshed. Close and reopen the installed app to load updates.",
+      );
+    } catch {
+      setRefreshInstallStatus(
+        "Unable to refresh installed app right now. Try again while online.",
+      );
+    } finally {
+      setIsRefreshingInstallCache(false);
+    }
+  };
+
+  const dismissIconRefreshNotice = () => {
+    if (!id || !iconVersion) {
+      setShowIconRefreshNotice(false);
+      return;
+    }
+    try {
+      localStorage.setItem(
+        `pwa-preview-${id}-icon-notice-dismissed-at`,
+        String(iconVersion),
+      );
+    } catch {
+      // best-effort dismissal persistence
+    }
+    setShowIconRefreshNotice(false);
+  };
 
   if (!previewData) {
     return (
@@ -509,8 +902,9 @@ export default function PreviewClient() {
                 No Preview Available
               </h1>
               <p>
-                Use the &ldquo;Install as App&rdquo; button from a code preview
-                to open this page.
+                {remoteUnavailable
+                  ? "This shared app link is unavailable or unpublished."
+                  : "Open a saved or shared app from chat preview or My Apps."}
               </p>
             </>
           )}
@@ -520,19 +914,237 @@ export default function PreviewClient() {
   }
 
   return (
-    <iframe
-      ref={iframeRef}
-      style={{
-        position: "fixed",
-        inset: 0,
-        width: "100%",
-        height: "100%",
-        border: "none",
-        backgroundColor: "white",
-      }}
-      sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
-      title="Preview App"
-    />
+    <>
+      {!isInstalled && (
+        <button
+          type="button"
+          onClick={handleInstallClick}
+          disabled={isInstalling}
+          style={{
+            position: "fixed",
+            top: "1rem",
+            right: "1rem",
+            zIndex: 1000,
+            backgroundColor: "#18181b",
+            color: "white",
+            border: "none",
+            borderRadius: "9999px",
+            padding: "0.65rem 1rem",
+            fontSize: "0.875rem",
+            fontWeight: 600,
+            cursor: isInstalling ? "wait" : "pointer",
+            boxShadow: "0 6px 20px rgba(0,0,0,0.2)",
+          }}
+          aria-label="Install this app"
+        >
+          {isInstalling
+            ? "Opening install..."
+            : deferredInstallPrompt
+              ? "Install App"
+              : "How to install"}
+        </button>
+      )}
+      {!isInstalled && showIconRefreshNotice ? (
+        <div
+          style={{
+            position: "fixed",
+            top: "4.25rem",
+            left: "1rem",
+            zIndex: 1000,
+            width: "min(28rem, calc(100vw - 2rem))",
+            borderRadius: "0.9rem",
+            backgroundColor: "rgba(24, 24, 27, 0.94)",
+            color: "white",
+            padding: "0.9rem 1rem",
+            boxShadow: "0 14px 30px rgba(0,0,0,0.24)",
+          }}
+          role="status"
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: "0.75rem",
+            }}
+          >
+            <div>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: "0.88rem",
+                  fontWeight: 700,
+                }}
+              >
+                Icon update note
+              </p>
+              <p
+                style={{
+                  margin: "0.35rem 0 0",
+                  fontSize: "0.8rem",
+                  lineHeight: 1.45,
+                  color: "rgba(255,255,255,0.82)",
+                }}
+              >
+                Installed app icons do not always refresh automatically after an update.
+                If the installed icon still looks old, uninstall and reinstall the app to
+                apply the new icon.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={dismissIconRefreshNotice}
+              style={{
+                border: "none",
+                borderRadius: "9999px",
+                backgroundColor: "rgba(255,255,255,0.14)",
+                color: "white",
+                padding: "0.38rem 0.7rem",
+                fontSize: "0.78rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {!isInstalled ? (
+        <>
+          <button
+            type="button"
+            onClick={handleRefreshInstalledApp}
+            disabled={isRefreshingInstallCache}
+            style={{
+              position: "fixed",
+              top: "4.25rem",
+              right: "1rem",
+              zIndex: 1000,
+              backgroundColor: "#2563eb",
+              color: "white",
+              border: "none",
+              borderRadius: "9999px",
+              padding: "0.6rem 1rem",
+              fontSize: "0.82rem",
+              fontWeight: 600,
+              cursor: isRefreshingInstallCache ? "wait" : "pointer",
+              boxShadow: "0 6px 20px rgba(0,0,0,0.2)",
+              opacity: isRefreshingInstallCache ? 0.75 : 1,
+            }}
+            aria-label="Refresh installed app"
+          >
+            {isRefreshingInstallCache ? "Refreshing..." : "Refresh Installed App"}
+          </button>
+          {refreshInstallStatus ? (
+            <div
+              style={{
+                position: "fixed",
+                top: "7.65rem",
+                right: "1rem",
+                zIndex: 1000,
+                maxWidth: "24rem",
+                borderRadius: "0.75rem",
+                backgroundColor: "rgba(24, 24, 27, 0.92)",
+                color: "white",
+                padding: "0.65rem 0.8rem",
+                fontSize: "0.78rem",
+                lineHeight: 1.35,
+                boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
+              }}
+              role="status"
+            >
+              {refreshInstallStatus}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      {showInstallHelp && !isInstalled && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Install app instructions"
+          onClick={() => setShowInstallHelp(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1100,
+            backgroundColor: "rgba(0, 0, 0, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "1rem",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: "22rem",
+              backgroundColor: "white",
+              borderRadius: "0.75rem",
+              boxShadow: "0 18px 40px rgba(0, 0, 0, 0.22)",
+              padding: "1rem",
+              fontFamily:
+                '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+              color: "#18181b",
+            }}
+          >
+            <h2
+              style={{
+                margin: 0,
+                fontSize: "1rem",
+                fontWeight: 700,
+              }}
+            >
+              Install this app
+            </h2>
+            <p
+              style={{
+                margin: "0.65rem 0 0",
+                fontSize: "0.9rem",
+                lineHeight: 1.45,
+                color: "#3f3f46",
+              }}
+            >
+              Install prompt is not available right now. {installHelpMessage}
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowInstallHelp(false)}
+              style={{
+                marginTop: "0.9rem",
+                width: "100%",
+                border: "none",
+                borderRadius: "0.6rem",
+                backgroundColor: "#18181b",
+                color: "white",
+                fontWeight: 600,
+                fontSize: "0.9rem",
+                padding: "0.6rem 0.8rem",
+                cursor: "pointer",
+              }}
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+      <iframe
+        ref={iframeRef}
+        style={{
+          position: "fixed",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          border: "none",
+          backgroundColor: "white",
+        }}
+        sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
+        title="Preview App"
+      />
+    </>
   );
 }
 
@@ -641,6 +1253,18 @@ async function cacheForOffline(
           } catch {
             // best-effort
           }
+          return;
+        }
+
+        // Remote shared links may only have asset metadata; fetch from
+        // stable same-origin preview asset URLs and cache for offline use.
+        try {
+          const resp = await fetch(assetUrl, { cache: "no-store" });
+          if (resp.ok) {
+            await cache.put(new Request(assetUrl), resp);
+          }
+        } catch {
+          // best-effort
         }
       }),
     );
@@ -690,6 +1314,7 @@ function buildStandaloneHTML(
   language: string,
   appName: string,
   id: string,
+  manifestHref: string,
   iconHref: string,
   useGeneratedIcons: boolean = false,
 ): string {
@@ -705,8 +1330,8 @@ function buildStandaloneHTML(
         navigator.serviceWorker.register('/preview-sw.js', { scope: '/preview' });
       }
     <\/script>`;
-    const manifestLink = `<link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}${useGeneratedIcons ? "&generated=1" : ""}">`;
-    const metaTheme = `<meta name="theme-color" content="#18181b">`;
+    const manifestLink = `<link rel="manifest" href="${manifestHref}">`;
+    const metaTheme = `<meta name="theme-color" content="#ffffff">`;
 
     if (code.includes("</head>")) {
       return code.replace(
@@ -722,9 +1347,9 @@ function buildStandaloneHTML(
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#18181b" />
+    <meta name="theme-color" content="#ffffff" />
     <title>${appName}</title>
-    <link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}${useGeneratedIcons ? "&generated=1" : ""}">
+    <link rel="manifest" href="${manifestHref}">
     <link rel="apple-touch-icon" href="${iconHref}">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="${appName}">

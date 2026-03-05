@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGeneratedIcon } from "@/lib/generated-icon-store";
 import { getGeneratedIconBlobUrl } from "@/lib/generated-icon-blob";
+import { hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { getSharedAppDoc } from "@/lib/shared-apps-store";
+import { isShareableInstallsEnabled } from "@/lib/shared-apps";
 
 export async function GET(
   request: NextRequest,
@@ -9,24 +12,31 @@ export async function GET(
   const { id } = await params;
   const { searchParams } = new URL(request.url);
   const name = searchParams.get("name") || "My App";
+  const version = searchParams.get("v") || "";
+  const iconVersionSuffix = version ? `&v=${encodeURIComponent(version)}` : "";
 
   // Auto-detect generated icons server-side so we don't depend on the client
   // passing a query flag.  Check in-memory store first (fast), then blob.
   const clientHint = searchParams.get("generated") === "1";
   const memoryHit = Boolean(getGeneratedIcon(id, 192));
   const blobHit = !memoryHit ? Boolean(await getGeneratedIconBlobUrl(id, 192)) : false;
-  const hasGeneratedIcons = clientHint || memoryHit || blobHit;
+  let sharedHit = false;
+  if (!memoryHit && !blobHit && isShareableInstallsEnabled() && hasFirebaseAdminConfig()) {
+    const sharedDoc = await getSharedAppDoc(id);
+    sharedHit = Boolean(sharedDoc?.hasGeneratedIcon);
+  }
+  const hasGeneratedIcons = clientHint || memoryHit || blobHit || sharedHit;
 
   const icons = hasGeneratedIcons
     ? [
         {
-          src: `/api/preview/${id}/generate-icon?size=192`,
+          src: `/api/preview/${id}/generate-icon?size=192${iconVersionSuffix}`,
           sizes: "192x192",
           type: "image/png",
           purpose: "any maskable",
         },
         {
-          src: `/api/preview/${id}/generate-icon?size=512`,
+          src: `/api/preview/${id}/generate-icon?size=512${iconVersionSuffix}`,
           sizes: "512x512",
           type: "image/png",
           purpose: "any maskable",
@@ -34,9 +44,15 @@ export async function GET(
       ]
     : [
         {
-          src: "/icons/icon.svg",
-          sizes: "any",
-          type: "image/svg+xml",
+          src: "/icons/icon-192.png",
+          sizes: "192x192",
+          type: "image/png",
+          purpose: "any maskable",
+        },
+        {
+          src: "/icons/icon-512.png",
+          sizes: "512x512",
+          type: "image/png",
           purpose: "any maskable",
         },
       ];

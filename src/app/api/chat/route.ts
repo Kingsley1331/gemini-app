@@ -61,9 +61,69 @@ interface ChatMessage {
   attachments?: { mimeType: string; data: string }[];
 }
 
+function normalizeIncomingMessages(input: unknown): ChatMessage[] {
+  if (!Array.isArray(input)) return [];
+
+  const normalized: ChatMessage[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object") continue;
+    const msg = item as ChatMessage;
+    const role = msg.role === "user" ? "user" : "assistant";
+    const content = typeof msg.content === "string" ? msg.content : "";
+    const attachments = Array.isArray(msg.attachments)
+      ? msg.attachments.filter(
+          (attachment) =>
+            attachment &&
+            typeof attachment.mimeType === "string" &&
+            typeof attachment.data === "string" &&
+            attachment.mimeType.length > 0 &&
+            attachment.data.length > 0,
+        )
+      : undefined;
+
+    normalized.push({
+      role,
+      content,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
+    });
+  }
+
+  // Gemini requires history to start with user content.
+  while (normalized.length > 0 && normalized[0]?.role !== "user") {
+    normalized.shift();
+  }
+
+  return normalized;
+}
+
 interface StreamResult {
   stream: ReadableStream<Uint8Array>;
   modelUsed: string;
+}
+
+type OpenAIReasoningEffort = "low" | "medium" | "high";
+
+interface OpenAIModelConfig {
+  apiModelId: string;
+  responseModelId: string;
+  reasoning?: {
+    effort: OpenAIReasoningEffort;
+  };
+}
+
+function getOpenAIModelConfig(modelId: string): OpenAIModelConfig {
+  if (modelId === "gpt-5.4-thinking") {
+    return {
+      apiModelId: "gpt-5.4",
+      responseModelId: "gpt-5.4-thinking",
+      reasoning: { effort: "high" },
+    };
+  }
+
+  return {
+    apiModelId: modelId,
+    responseModelId: modelId,
+  };
 }
 
 // Default system instruction for the main chat
@@ -331,6 +391,7 @@ async function streamOpenAI(
   }
 
   const openai = new OpenAI({ apiKey });
+  const modelConfig = getOpenAIModelConfig(modelId);
 
   // Build OpenAI Responses API input
   const openaiInput: unknown[] = [
@@ -364,14 +425,15 @@ async function streamOpenAI(
   }
 
   const stream = await openai.responses.create({
-    model: modelId,
+    model: modelConfig.apiModelId,
     input: openaiInput as never,
+    ...(modelConfig.reasoning ? { reasoning: modelConfig.reasoning } : {}),
     stream: true,
   });
 
   const encoder = new TextEncoder();
   return {
-    modelUsed: modelId,
+    modelUsed: modelConfig.responseModelId,
     stream: new ReadableStream({
     async start(controller) {
       try {
@@ -511,6 +573,16 @@ export async function POST(req: Request) {
       model: userModel,
       systemInstruction: customSystemInstruction,
     } = await req.json();
+    const normalizedMessages = normalizeIncomingMessages(messages);
+    if (normalizedMessages.length === 0) {
+      return NextResponse.json(
+        {
+          error: "Chat Error",
+          details: "No valid user message found in request history.",
+        },
+        { status: 400 },
+      );
+    }
 
     const modelId = userModel || "gemini-3.1-pro-preview";
     const provider = getProvider(modelId);
@@ -521,18 +593,26 @@ export async function POST(req: Request) {
 
     switch (provider) {
       case "openai":
-        streamResult = await streamOpenAI(modelId, messages, systemInstructionText);
+        streamResult = await streamOpenAI(
+          modelId,
+          normalizedMessages,
+          systemInstructionText,
+        );
         break;
       case "anthropic":
         streamResult = await streamAnthropic(
           modelId,
-          messages,
+          normalizedMessages,
           systemInstructionText,
         );
         break;
       case "gemini":
       default:
-        streamResult = await streamGemini(modelId, messages, systemInstructionText);
+        streamResult = await streamGemini(
+          modelId,
+          normalizedMessages,
+          systemInstructionText,
+        );
         break;
     }
 

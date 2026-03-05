@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Send,
   Image as ImageIcon,
@@ -14,13 +15,21 @@ import {
   ChevronDown,
   Type,
   Wand2,
+  Trash2,
 } from "lucide-react";
 import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 import PromptAssistant from "./PromptAssistant";
+import AppNav from "./AppNav";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import MessageItem, { Message } from "./MessageItem";
+import { loadAppBootstrapData } from "@/lib/app-bootstrap";
+import {
+  getChatSessionState,
+  resetChatSessionState,
+  setChatSessionState,
+} from "@/lib/chat-session-store";
 
 // Types for Web Speech API
 interface SpeechRecognitionEvent extends Event {
@@ -95,6 +104,28 @@ type PlannedAsset = {
 type GeneratedAsset = PlannedAsset & {
   attachment: VisualAttachment;
 };
+
+function getLatestAppsEditContext(
+  messages: Message[],
+): Message["previewContext"] | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const context = messages[i]?.previewContext;
+    if (context?.source === "apps") {
+      const latestName =
+        localStorage.getItem(`pwa-preview-${context.appId}-name`) ||
+        context.appName;
+      const latestHasIcon =
+        localStorage.getItem(`pwa-preview-${context.appId}-has-generated-icon`) === "1" ||
+        Boolean(context.hasGeneratedIcon);
+      return {
+        ...context,
+        appName: latestName,
+        hasGeneratedIcon: latestHasIcon,
+      };
+    }
+  }
+  return undefined;
+}
 
 function extractAssetKeysFromText(text: string): string[] {
   const keys = new Set<string>();
@@ -373,8 +404,11 @@ function extractGeneratedImage(
 }
 
 export default function Chat() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const [messages, setMessages] = useState<Message[]>(() => getChatSessionState().messages);
+  const [input, setInput] = useState(() => getChatSessionState().input);
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isMicInitializing, setIsMicInitializing] = useState(false);
@@ -386,12 +420,16 @@ export default function Chat() {
   );
   const [selectedModel, setSelectedModel] = useState("gemini-3.1-pro-preview");
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
-  const [isRichText, setIsRichText] = useState(false);
-  const [richTextContent, setRichTextContent] = useState("");
+  const [isRichText, setIsRichText] = useState(
+    () => getChatSessionState().isRichText,
+  );
+  const [richTextContent, setRichTextContent] = useState(
+    () => getChatSessionState().richTextContent,
+  );
   const [isPromptAssistantOpen, setIsPromptAssistantOpen] = useState(false);
   const [assetLibrary, setAssetLibrary] = useState<
     Record<string, VisualAttachment>
-  >({});
+  >(() => getChatSessionState().assetLibrary);
   const richTextRef = useRef<RichTextEditorRef>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -399,7 +437,7 @@ export default function Chat() {
     url: string;
     mimeType: string;
     data: string;
-  } | null>(null);
+  } | null>(() => getChatSessionState().selectedImage);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const models = useMemo(
@@ -430,6 +468,12 @@ export default function Chat() {
         provider: "gemini",
       },
       // OpenAI
+      {
+        id: "gpt-5.4-thinking",
+        name: "GPT-5.4 Thinking",
+        description: "High-reasoning mode for harder tasks",
+        provider: "openai",
+      },
       {
         id: "gpt-5.2-codex",
         name: "GPT-5.2 Codex",
@@ -518,6 +562,17 @@ export default function Chat() {
   }, [selectedModel]);
 
   useEffect(() => {
+    setChatSessionState({
+      messages,
+      input,
+      isRichText,
+      richTextContent,
+      assetLibrary,
+      selectedImage,
+    });
+  }, [messages, input, isRichText, richTextContent, assetLibrary, selectedImage]);
+
+  useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (
         modelDropdownRef.current &&
@@ -542,6 +597,74 @@ export default function Chat() {
   const useRefState = useRef<{ speakingMessageId: string | null }>({
     speakingMessageId: null,
   });
+  const consumedEditSessionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const editAppId = searchParams.get("editAppId");
+    const origin = searchParams.get("origin");
+    if (!editAppId || origin !== "apps") return;
+
+    const sessionKey = `${origin}:${editAppId}`;
+    if (consumedEditSessionRef.current === sessionKey) return;
+    consumedEditSessionRef.current = sessionKey;
+
+    const clearEditParams = () => {
+      const nextParams = new URLSearchParams(searchParams.toString());
+      nextParams.delete("editAppId");
+      nextParams.delete("origin");
+      const nextQuery = nextParams.toString();
+      router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname);
+    };
+
+    (async () => {
+      const loaded = await loadAppBootstrapData(editAppId);
+      if (!loaded) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            role: "assistant",
+            content:
+              "I couldn't load this app for editing. Please open it from My Apps again.",
+            type: "text",
+          },
+        ]);
+        clearEditParams();
+        return;
+      }
+
+      const codeLanguage = loaded.language || "tsx";
+      const bootstrapUserMessage: Message = {
+        id: Date.now().toString(),
+        role: "user",
+        content: `Load "${loaded.name}" from My Apps for editing.`,
+        type: "text",
+      };
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: `Editing \`${loaded.name}\` from My Apps.\n\n\`\`\`${codeLanguage}\n${loaded.code}\n\`\`\``,
+        type: "text",
+        attachments: loaded.assets.map((asset) => ({
+          url:
+            asset.url ||
+            `/preview/${encodeURIComponent(editAppId)}/assets/${encodeURIComponent(asset.assetKey)}`,
+          mimeType: asset.mimeType || "application/octet-stream",
+          data: asset.data,
+          assetKey: asset.assetKey,
+        })),
+        previewContext: {
+          source: "apps",
+          appId: loaded.id,
+          appName: loaded.name,
+          hasGeneratedIcon: loaded.hasGeneratedIcon,
+        },
+      };
+
+      setMessages((prev) => [...prev, bootstrapUserMessage, assistantMessage]);
+      clearEditParams();
+    })();
+  }, [pathname, router, searchParams]);
 
   // Ref to track input without triggering re-renders in callbacks
   const inputRef = useRef(input);
@@ -768,6 +891,31 @@ export default function Chat() {
     setIsGeneratingSpeech(null);
   }, []);
 
+  const clearChatSession = useCallback(() => {
+    if (isLoading) return;
+
+    stopSpeaking();
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // Recognition may already be stopped.
+    }
+
+    setIsListening(false);
+    setIsMicInitializing(false);
+    setIsModelDropdownOpen(false);
+    setIsPromptAssistantOpen(false);
+
+    const clearedState = resetChatSessionState();
+    setMessages(clearedState.messages);
+    setInput(clearedState.input);
+    setIsRichText(clearedState.isRichText);
+    setRichTextContent(clearedState.richTextContent);
+    setAssetLibrary(clearedState.assetLibrary);
+    setSelectedImage(clearedState.selectedImage);
+    richTextRef.current?.clear();
+  }, [isLoading, stopSpeaking]);
+
   const speak = useCallback(
     async (text: string, messageId: string) => {
       if (speakingMessageId === messageId || isGeneratingSpeech === messageId) {
@@ -941,6 +1089,7 @@ export default function Chat() {
       setMessages((prev) => [...prev, userMessage]);
       if (!overrideInput) {
         setInput("");
+        setRichTextContent("");
         if (isRichText) richTextRef.current?.clear();
       }
       setSelectedImage(null);
@@ -982,6 +1131,7 @@ export default function Chat() {
             ...historicalAssetLibrary,
             ...assetLibrary,
           };
+          const activeAppsEditContext = getLatestAppsEditContext(messages);
           const assetPlan = shouldGenerateEmbeddedImage
             ? buildVisualAssetPlan(normalizedInput)
             : [];
@@ -1054,6 +1204,10 @@ export default function Chat() {
             generatedAssets.length > 0 ? generatedAssets : reusedAssets;
 
           const requestMessages: Message[] = [...messages, userMessage];
+          // Some providers reject histories that do not start with a user turn.
+          while (requestMessages.length > 0 && requestMessages[0]?.role !== "user") {
+            requestMessages.shift();
+          }
           if (activeAssets.length > 0) {
             const syntheticAssetMessage: Message = {
               id: `${userMessage.id}-assets`,
@@ -1121,6 +1275,7 @@ export default function Chat() {
             role: "assistant",
             content: "",
             type: "text",
+            previewContext: activeAppsEditContext,
           };
 
           setMessages((prev) => [...prev, assistantMessage]);
@@ -1229,6 +1384,13 @@ export default function Chat() {
     [isRichText],
   );
 
+  const hasSessionContent =
+    messages.length > 0 ||
+    input.trim().length > 0 ||
+    richTextContent.trim().length > 0 ||
+    selectedImage !== null ||
+    Object.keys(assetLibrary).length > 0;
+
   return (
     <div className="flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900 sm:h-[90vh] sm:rounded-2xl">
       {/* Header */}
@@ -1247,70 +1409,85 @@ export default function Chat() {
           </div>
         </div>
 
-        <div className="relative w-full sm:w-auto" ref={modelDropdownRef}>
-          <button
-            onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-            className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 sm:w-auto sm:justify-start sm:py-1.5"
-          >
-            <span className="truncate">
-              {models.find((m) => m.id === selectedModel)?.name}
-            </span>
-            <ChevronDown
-              className={`w-4 h-4 transition-transform ${isModelDropdownOpen ? "rotate-180" : ""}`}
-            />
-          </button>
-
-          <AnimatePresence>
-            {isModelDropdownOpen && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-800 sm:left-auto sm:right-0 sm:w-72"
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:items-end">
+          <AppNav current="chat" />
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={clearChatSession}
+              disabled={!hasSessionContent || isLoading}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-100 sm:w-auto sm:py-1.5"
+              title="Clear chat history and start fresh"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span>Clear chat</span>
+            </button>
+            <div className="relative w-full sm:w-auto" ref={modelDropdownRef}>
+              <button
+                onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 sm:w-auto sm:justify-start sm:py-1.5"
               >
-                {Object.entries(groupedModels).map(
-                  ([provider, providerModels], groupIndex) => (
-                    <div key={provider}>
-                      {groupIndex > 0 && (
-                        <div className="border-t border-zinc-200 dark:border-zinc-700" />
-                      )}
-                      <div className="px-4 py-2 text-xs font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider bg-zinc-50/50 dark:bg-zinc-900/50">
-                        {providerLabels[provider] || provider}
-                      </div>
-                      {providerModels.map((model) => (
-                        <button
-                          key={model.id}
-                          onClick={() => {
-                            setSelectedModel(model.id);
-                            setIsModelDropdownOpen(false);
-                          }}
-                          className={cn(
-                            "w-full text-left px-4 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors flex flex-col gap-0.5",
-                            selectedModel === model.id &&
-                              "bg-blue-50 dark:bg-blue-900/20",
+                <span className="truncate">
+                  {models.find((m) => m.id === selectedModel)?.name}
+                </span>
+                <ChevronDown
+                  className={`w-4 h-4 transition-transform ${isModelDropdownOpen ? "rotate-180" : ""}`}
+                />
+              </button>
+
+              <AnimatePresence>
+                {isModelDropdownOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-800 sm:left-auto sm:right-0 sm:w-72"
+                  >
+                    {Object.entries(groupedModels).map(
+                      ([provider, providerModels], groupIndex) => (
+                        <div key={provider}>
+                          {groupIndex > 0 && (
+                            <div className="border-t border-zinc-200 dark:border-zinc-700" />
                           )}
-                        >
-                          <span
-                            className={cn(
-                              "text-sm font-medium",
-                              selectedModel === model.id
-                                ? "text-blue-600 dark:text-blue-400"
-                                : "text-zinc-900 dark:text-zinc-100",
-                            )}
-                          >
-                            {model.name}
-                          </span>
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                            {model.description}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  ),
+                          <div className="bg-zinc-50/50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 dark:bg-zinc-900/50 dark:text-zinc-500">
+                            {providerLabels[provider] || provider}
+                          </div>
+                          {providerModels.map((model) => (
+                            <button
+                              key={model.id}
+                              onClick={() => {
+                                setSelectedModel(model.id);
+                                setIsModelDropdownOpen(false);
+                              }}
+                              className={cn(
+                                "flex w-full flex-col gap-0.5 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-700/50",
+                                selectedModel === model.id &&
+                                  "bg-blue-50 dark:bg-blue-900/20",
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  "text-sm font-medium",
+                                  selectedModel === model.id
+                                    ? "text-blue-600 dark:text-blue-400"
+                                    : "text-zinc-900 dark:text-zinc-100",
+                                )}
+                              >
+                                {model.name}
+                              </span>
+                              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                                {model.description}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ),
+                    )}
+                  </motion.div>
                 )}
-              </motion.div>
-            )}
-          </AnimatePresence>
+              </AnimatePresence>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1326,6 +1503,12 @@ export default function Chat() {
                 className="px-3 py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-xs hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
               >
                 &quot;Build a simple calculator in React&quot;
+              </button>
+              <button
+                onClick={() => setInput("Build a TODO list app in React")}
+                className="px-3 py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-xs hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+              >
+                &quot;Build a TODO list app in React&quot;
               </button>
               <button
                 onClick={() =>
@@ -1523,7 +1706,7 @@ export default function Chat() {
                 placeholder="Type a message with rich formatting..."
                 onSubmit={() => handleSubmit()}
                 onChange={(md) => setRichTextContent(md)}
-                initialContent={input}
+                initialContent={richTextContent || input}
               />
             ) : (
               <input
