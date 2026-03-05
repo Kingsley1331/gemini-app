@@ -770,50 +770,54 @@ export default function PreviewClient() {
               : "How to install"}
         </button>
       )}
-      <button
-        type="button"
-        onClick={handleRefreshInstalledApp}
-        disabled={isRefreshingInstallCache}
-        style={{
-          position: "fixed",
-          top: !isInstalled ? "4.25rem" : "1rem",
-          right: "1rem",
-          zIndex: 1000,
-          backgroundColor: "#2563eb",
-          color: "white",
-          border: "none",
-          borderRadius: "9999px",
-          padding: "0.6rem 1rem",
-          fontSize: "0.82rem",
-          fontWeight: 600,
-          cursor: isRefreshingInstallCache ? "wait" : "pointer",
-          boxShadow: "0 6px 20px rgba(0,0,0,0.2)",
-          opacity: isRefreshingInstallCache ? 0.75 : 1,
-        }}
-        aria-label="Refresh installed app"
-      >
-        {isRefreshingInstallCache ? "Refreshing..." : "Refresh Installed App"}
-      </button>
-      {refreshInstallStatus ? (
-        <div
-          style={{
-            position: "fixed",
-            top: !isInstalled ? "7.65rem" : "4.35rem",
-            right: "1rem",
-            zIndex: 1000,
-            maxWidth: "24rem",
-            borderRadius: "0.75rem",
-            backgroundColor: "rgba(24, 24, 27, 0.92)",
-            color: "white",
-            padding: "0.65rem 0.8rem",
-            fontSize: "0.78rem",
-            lineHeight: 1.35,
-            boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
-          }}
-          role="status"
-        >
-          {refreshInstallStatus}
-        </div>
+      {!isInstalled ? (
+        <>
+          <button
+            type="button"
+            onClick={handleRefreshInstalledApp}
+            disabled={isRefreshingInstallCache}
+            style={{
+              position: "fixed",
+              top: "4.25rem",
+              right: "1rem",
+              zIndex: 1000,
+              backgroundColor: "#2563eb",
+              color: "white",
+              border: "none",
+              borderRadius: "9999px",
+              padding: "0.6rem 1rem",
+              fontSize: "0.82rem",
+              fontWeight: 600,
+              cursor: isRefreshingInstallCache ? "wait" : "pointer",
+              boxShadow: "0 6px 20px rgba(0,0,0,0.2)",
+              opacity: isRefreshingInstallCache ? 0.75 : 1,
+            }}
+            aria-label="Refresh installed app"
+          >
+            {isRefreshingInstallCache ? "Refreshing..." : "Refresh Installed App"}
+          </button>
+          {refreshInstallStatus ? (
+            <div
+              style={{
+                position: "fixed",
+                top: "7.65rem",
+                right: "1rem",
+                zIndex: 1000,
+                maxWidth: "24rem",
+                borderRadius: "0.75rem",
+                backgroundColor: "rgba(24, 24, 27, 0.92)",
+                color: "white",
+                padding: "0.65rem 0.8rem",
+                fontSize: "0.78rem",
+                lineHeight: 1.35,
+                boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
+              }}
+              role="status"
+            >
+              {refreshInstallStatus}
+            </div>
+          ) : null}
+        </>
       ) : null}
       {showInstallHelp && !isInstalled && (
         <div
