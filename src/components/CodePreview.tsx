@@ -760,6 +760,7 @@ export default function CodePreview({
         localStorage.setItem(`pwa-preview-${id}-icon512-b64`, icon512b64);
       }
       localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+      localStorage.setItem(`pwa-preview-${id}-icon-version`, String(Date.now()));
       setHasSaveIcon(true);
 
       const cacheBust = Date.now();
@@ -797,8 +798,12 @@ export default function CodePreview({
       localStorage.setItem(`pwa-preview-${id}-name`, name);
       if (hasGeneratedIcon) {
         localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+        if (!localStorage.getItem(`pwa-preview-${id}-icon-version`)) {
+          localStorage.setItem(`pwa-preview-${id}-icon-version`, String(Date.now()));
+        }
       } else {
         localStorage.removeItem(`pwa-preview-${id}-has-generated-icon`);
+        localStorage.removeItem(`pwa-preview-${id}-icon-version`);
       }
 
       await persistPwaPreviewAssets(id, latestAssetsRef.current);

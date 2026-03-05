@@ -24,6 +24,7 @@ interface PreviewData {
   language: string;
   name: string;
   hasGeneratedIconHint?: boolean;
+  localIconVersionHint?: number;
   remoteUpdatedAtHint?: number;
 }
 
@@ -202,6 +203,8 @@ function buildExternalImportPreamble(sourceCode: string): string {
 function readPreviewData(id: string): PreviewData | null {
   const code = localStorage.getItem(`pwa-preview-${id}-code`);
   if (!code) return null;
+  const localIconVersionRaw = localStorage.getItem(`pwa-preview-${id}-icon-version`);
+  const localIconVersion = localIconVersionRaw ? Number(localIconVersionRaw) : 0;
   const remoteUpdatedAtRaw = localStorage.getItem(`pwa-preview-${id}-remote-updated-at`);
   const remoteUpdatedAt = remoteUpdatedAtRaw ? Number(remoteUpdatedAtRaw) : 0;
   return {
@@ -210,6 +213,10 @@ function readPreviewData(id: string): PreviewData | null {
     name: localStorage.getItem(`pwa-preview-${id}-name`) || "My App",
     hasGeneratedIconHint:
       localStorage.getItem(`pwa-preview-${id}-has-generated-icon`) === "1",
+    localIconVersionHint:
+      Number.isFinite(localIconVersion) && localIconVersion > 0
+        ? localIconVersion
+        : undefined,
     remoteUpdatedAtHint:
       Number.isFinite(remoteUpdatedAt) && remoteUpdatedAt > 0 ? remoteUpdatedAt : undefined,
   };
@@ -313,6 +320,7 @@ export default function PreviewClient() {
   const [isInstalling, setIsInstalling] = useState(false);
   const [isRefreshingInstallCache, setIsRefreshingInstallCache] = useState(false);
   const [refreshInstallStatus, setRefreshInstallStatus] = useState<string | null>(null);
+  const [showIconRefreshNotice, setShowIconRefreshNotice] = useState(false);
   const [showInstallHelp, setShowInstallHelp] = useState(false);
   const installHelpMessage = useMemo(() => getInstallHelpMessage(), []);
 
@@ -322,15 +330,21 @@ export default function PreviewClient() {
   const [idbChecked, setIdbChecked] = useState(!!localData);
   const [remoteUnavailable, setRemoteUnavailable] = useState(false);
   const iconVersion = useMemo(() => {
+    const localVersion =
+      typeof previewData?.localIconVersionHint === "number" &&
+      Number.isFinite(previewData.localIconVersionHint) &&
+      previewData.localIconVersionHint > 0
+        ? previewData.localIconVersionHint
+        : 0;
     if (
       typeof previewData?.remoteUpdatedAtHint === "number" &&
       Number.isFinite(previewData.remoteUpdatedAtHint) &&
       previewData.remoteUpdatedAtHint > 0
     ) {
-      return previewData.remoteUpdatedAtHint;
+      return Math.max(previewData.remoteUpdatedAtHint, localVersion);
     }
-    return 0;
-  }, [previewData?.remoteUpdatedAtHint]);
+    return localVersion;
+  }, [previewData?.localIconVersionHint, previewData?.remoteUpdatedAtHint]);
 
   const hydrateFromRecord = useCallback((
     record: {
@@ -383,6 +397,7 @@ export default function PreviewClient() {
       language: record.language,
       name: record.name,
       hasGeneratedIconHint: record.hasGeneratedIcon,
+      localIconVersionHint: readPreviewData(id)?.localIconVersionHint,
       remoteUpdatedAtHint:
         typeof options?.remoteUpdatedAt === "number" &&
         Number.isFinite(options.remoteUpdatedAt) &&
@@ -587,16 +602,30 @@ export default function PreviewClient() {
           });
         };
         if (icon192b64) {
+          const icon192Response = b64ToResponse(icon192b64);
           await cache.put(
             new Request(`/api/preview/${id}/generate-icon?size=192`),
-            b64ToResponse(icon192b64),
+            icon192Response.clone(),
           );
+          if (iconVersion) {
+            await cache.put(
+              new Request(`/api/preview/${id}/generate-icon?size=192&v=${iconVersion}`),
+              icon192Response.clone(),
+            );
+          }
         }
         if (icon512b64) {
+          const icon512Response = b64ToResponse(icon512b64);
           await cache.put(
             new Request(`/api/preview/${id}/generate-icon?size=512`),
-            b64ToResponse(icon512b64),
+            icon512Response.clone(),
           );
+          if (iconVersion) {
+            await cache.put(
+              new Request(`/api/preview/${id}/generate-icon?size=512&v=${iconVersion}`),
+              icon512Response.clone(),
+            );
+          }
         }
         // Clean up — data is now in the SW cache
         localStorage.removeItem(`pwa-preview-${id}-icon192-b64`);
@@ -605,7 +634,7 @@ export default function PreviewClient() {
         // caching is best-effort
       }
     })();
-  }, [id, hasGeneratedIcon]);
+  }, [iconVersion, id, hasGeneratedIcon]);
 
   useEffect(() => {
     if (!id || !previewData) return;
@@ -735,6 +764,23 @@ export default function PreviewClient() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!id || !hasGeneratedIcon || !iconVersion || isInstalled) {
+      setShowIconRefreshNotice(false);
+      return;
+    }
+
+    try {
+      const acknowledgedRaw = localStorage.getItem(
+        `pwa-preview-${id}-icon-notice-dismissed-at`,
+      );
+      const acknowledgedVersion = acknowledgedRaw ? Number(acknowledgedRaw) : 0;
+      setShowIconRefreshNotice(!(acknowledgedVersion >= iconVersion));
+    } catch {
+      setShowIconRefreshNotice(true);
+    }
+  }, [hasGeneratedIcon, iconVersion, id, isInstalled]);
+
   const handleInstallClick = async () => {
     if (!deferredInstallPrompt) {
       setShowInstallHelp(true);
@@ -811,6 +857,22 @@ export default function PreviewClient() {
     }
   };
 
+  const dismissIconRefreshNotice = () => {
+    if (!id || !iconVersion) {
+      setShowIconRefreshNotice(false);
+      return;
+    }
+    try {
+      localStorage.setItem(
+        `pwa-preview-${id}-icon-notice-dismissed-at`,
+        String(iconVersion),
+      );
+    } catch {
+      // best-effort dismissal persistence
+    }
+    setShowIconRefreshNotice(false);
+  };
+
   if (!previewData) {
     return (
       <div
@@ -882,6 +944,73 @@ export default function PreviewClient() {
               : "How to install"}
         </button>
       )}
+      {!isInstalled && showIconRefreshNotice ? (
+        <div
+          style={{
+            position: "fixed",
+            top: "4.25rem",
+            left: "1rem",
+            zIndex: 1000,
+            width: "min(28rem, calc(100vw - 2rem))",
+            borderRadius: "0.9rem",
+            backgroundColor: "rgba(24, 24, 27, 0.94)",
+            color: "white",
+            padding: "0.9rem 1rem",
+            boxShadow: "0 14px 30px rgba(0,0,0,0.24)",
+          }}
+          role="status"
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: "0.75rem",
+            }}
+          >
+            <div>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: "0.88rem",
+                  fontWeight: 700,
+                }}
+              >
+                Icon update note
+              </p>
+              <p
+                style={{
+                  margin: "0.35rem 0 0",
+                  fontSize: "0.8rem",
+                  lineHeight: 1.45,
+                  color: "rgba(255,255,255,0.82)",
+                }}
+              >
+                Installed app icons do not always refresh automatically after an update.
+                If the installed icon still looks old, uninstall and reinstall the app to
+                apply the new icon.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={dismissIconRefreshNotice}
+              style={{
+                border: "none",
+                borderRadius: "9999px",
+                backgroundColor: "rgba(255,255,255,0.14)",
+                color: "white",
+                padding: "0.38rem 0.7rem",
+                fontSize: "0.78rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
       {!isInstalled ? (
         <>
           <button
