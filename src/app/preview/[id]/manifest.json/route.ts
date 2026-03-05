@@ -12,6 +12,8 @@ export async function GET(
   const { id } = await params;
   const { searchParams } = new URL(request.url);
   const name = searchParams.get("name") || "My App";
+  const version = searchParams.get("v") || "";
+  const iconVersionSuffix = version ? `&v=${encodeURIComponent(version)}` : "";
 
   // Auto-detect generated icons server-side so we don't depend on the client
   // passing a query flag.  Check in-memory store first (fast), then blob.
@@ -28,13 +30,13 @@ export async function GET(
   const icons = hasGeneratedIcons
     ? [
         {
-          src: `/api/preview/${id}/generate-icon?size=192`,
+          src: `/api/preview/${id}/generate-icon?size=192${iconVersionSuffix}`,
           sizes: "192x192",
           type: "image/png",
           purpose: "any maskable",
         },
         {
-          src: `/api/preview/${id}/generate-icon?size=512`,
+          src: `/api/preview/${id}/generate-icon?size=512${iconVersionSuffix}`,
           sizes: "512x512",
           type: "image/png",
           purpose: "any maskable",

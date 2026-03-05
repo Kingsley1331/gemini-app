@@ -307,7 +307,6 @@ function resolveCodeAssetPlaceholders(id: string, code: string): string {
 export default function PreviewClient() {
   const { id } = useParams<{ id: string }>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [iconVersion] = useState<number>(0);
   const [deferredInstallPrompt, setDeferredInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
@@ -322,6 +321,16 @@ export default function PreviewClient() {
   const [previewData, setPreviewData] = useState<PreviewData | null>(localData);
   const [idbChecked, setIdbChecked] = useState(!!localData);
   const [remoteUnavailable, setRemoteUnavailable] = useState(false);
+  const iconVersion = useMemo(() => {
+    if (
+      typeof previewData?.remoteUpdatedAtHint === "number" &&
+      Number.isFinite(previewData.remoteUpdatedAtHint) &&
+      previewData.remoteUpdatedAtHint > 0
+    ) {
+      return previewData.remoteUpdatedAtHint;
+    }
+    return 0;
+  }, [previewData?.remoteUpdatedAtHint]);
 
   const hydrateFromRecord = useCallback((
     record: {
@@ -683,6 +692,7 @@ export default function PreviewClient() {
       language,
       name,
       id,
+      manifestUrl,
       icon192Href,
       hasGeneratedIcon,
     );
@@ -761,6 +771,7 @@ export default function PreviewClient() {
         previewData.language,
         previewData.name,
         id,
+        manifestUrl,
         icon192Href,
         hasGeneratedIcon,
       );
@@ -1174,6 +1185,7 @@ function buildStandaloneHTML(
   language: string,
   appName: string,
   id: string,
+  manifestHref: string,
   iconHref: string,
   useGeneratedIcons: boolean = false,
 ): string {
@@ -1189,7 +1201,7 @@ function buildStandaloneHTML(
         navigator.serviceWorker.register('/preview-sw.js', { scope: '/preview' });
       }
     <\/script>`;
-    const manifestLink = `<link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}${useGeneratedIcons ? "&generated=1" : ""}">`;
+    const manifestLink = `<link rel="manifest" href="${manifestHref}">`;
     const metaTheme = `<meta name="theme-color" content="#ffffff">`;
 
     if (code.includes("</head>")) {
@@ -1208,7 +1220,7 @@ function buildStandaloneHTML(
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#ffffff" />
     <title>${appName}</title>
-    <link rel="manifest" href="/preview/${id}/manifest.json?name=${encodeURIComponent(appName)}${useGeneratedIcons ? "&generated=1" : ""}">
+    <link rel="manifest" href="${manifestHref}">
     <link rel="apple-touch-icon" href="${iconHref}">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="${appName}">
