@@ -61,6 +61,41 @@ interface ChatMessage {
   attachments?: { mimeType: string; data: string }[];
 }
 
+function normalizeIncomingMessages(input: unknown): ChatMessage[] {
+  if (!Array.isArray(input)) return [];
+
+  const normalized = input
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const msg = item as ChatMessage;
+      const role = msg.role === "user" ? "user" : "assistant";
+      const content = typeof msg.content === "string" ? msg.content : "";
+      const attachments = Array.isArray(msg.attachments)
+        ? msg.attachments.filter(
+            (attachment) =>
+              attachment &&
+              typeof attachment.mimeType === "string" &&
+              typeof attachment.data === "string" &&
+              attachment.mimeType.length > 0 &&
+              attachment.data.length > 0,
+          )
+        : undefined;
+      return {
+        role,
+        content,
+        attachments: attachments && attachments.length > 0 ? attachments : undefined,
+      } satisfies ChatMessage;
+    })
+    .filter((msg): msg is ChatMessage => Boolean(msg));
+
+  // Gemini requires history to start with user content.
+  while (normalized.length > 0 && normalized[0]?.role !== "user") {
+    normalized.shift();
+  }
+
+  return normalized;
+}
+
 interface StreamResult {
   stream: ReadableStream<Uint8Array>;
   modelUsed: string;
@@ -511,6 +546,16 @@ export async function POST(req: Request) {
       model: userModel,
       systemInstruction: customSystemInstruction,
     } = await req.json();
+    const normalizedMessages = normalizeIncomingMessages(messages);
+    if (normalizedMessages.length === 0) {
+      return NextResponse.json(
+        {
+          error: "Chat Error",
+          details: "No valid user message found in request history.",
+        },
+        { status: 400 },
+      );
+    }
 
     const modelId = userModel || "gemini-3.1-pro-preview";
     const provider = getProvider(modelId);
@@ -521,18 +566,26 @@ export async function POST(req: Request) {
 
     switch (provider) {
       case "openai":
-        streamResult = await streamOpenAI(modelId, messages, systemInstructionText);
+        streamResult = await streamOpenAI(
+          modelId,
+          normalizedMessages,
+          systemInstructionText,
+        );
         break;
       case "anthropic":
         streamResult = await streamAnthropic(
           modelId,
-          messages,
+          normalizedMessages,
           systemInstructionText,
         );
         break;
       case "gemini":
       default:
-        streamResult = await streamGemini(modelId, messages, systemInstructionText);
+        streamResult = await streamGemini(
+          modelId,
+          normalizedMessages,
+          systemInstructionText,
+        );
         break;
     }
 
