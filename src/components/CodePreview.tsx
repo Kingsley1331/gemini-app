@@ -22,6 +22,11 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import JSZip from "jszip";
 import { savePreviewToIDB, requestPersistentStorage } from "@/lib/preview-idb";
 import { saveApp } from "@/lib/saved-apps-idb";
+import {
+  cacheGeneratedPreviewIcons,
+  createPwaPreviewId,
+  persistPwaPreviewAssets,
+} from "@/lib/pwa-preview";
 
 interface CodePreviewProps {
   code: string;
@@ -45,13 +50,6 @@ interface CodePreviewProps {
   initialHasGeneratedIcon?: boolean;
 }
 
-const SW_CACHE_NAME = "preview-pwa-v5";
-
-interface StoredPreviewAssetRecord {
-  assetKey: string;
-  mimeType: string;
-}
-
 const EMPTY_PREVIEW_ASSETS: Array<{
   url: string;
   mimeType: string;
@@ -67,91 +65,9 @@ function normalizePreviewError(message: string): string {
   return `${message}\n\nHint: This preview failed due to an invalid React hook context. This usually happens when code imports React UI libraries that bundle/use a different React runtime, or when a hook is called outside a React function component/custom hook. Try using plain React + Tailwind in a single file and keep all hooks inside App/custom hooks.`;
 }
 
-function createPwaPreviewId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-}
-
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
-
-function buildPreviewAssetUrl(id: string, assetKey: string): string {
-  return `/preview/${encodeURIComponent(id)}/assets/${encodeURIComponent(assetKey)}`;
-}
-
-async function persistPwaPreviewAssets(
-  id: string,
-  assets: CodePreviewProps["assets"],
-) {
-  const normalized = (assets || []).map((asset, index) => ({
-    assetKey: asset.assetKey || `asset_${index + 1}`,
-    mimeType: asset.mimeType || "image/png",
-    data: asset.data || "",
-    url: asset.url || "",
-  }));
-  const lightweightRecords: StoredPreviewAssetRecord[] = normalized.map((asset) => ({
-    assetKey: asset.assetKey,
-    mimeType: asset.mimeType,
-  }));
-
-  // Persist metadata in localStorage (best-effort) so category/fuzzy matching
-  // still works even if binary payloads are not stored there.
-  try {
-    localStorage.setItem(
-      `pwa-preview-${id}-assets`,
-      JSON.stringify(lightweightRecords),
-    );
-  } catch {
-    // best-effort; SW cache below is the primary source for large assets
-  }
-
-  // Cache sprite/image bytes under stable same-origin URLs so installed PWAs
-  // can load assets without relying on localStorage size limits.
-  try {
-    const cache = await caches.open(SW_CACHE_NAME);
-    await Promise.allSettled(
-      normalized.map(async (asset) => {
-        const targetUrl = buildPreviewAssetUrl(id, asset.assetKey);
-        let response: Response | null = null;
-
-        if (asset.data) {
-          const binaryString = window.atob(asset.data);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          response = new Response(bytes, {
-            headers: {
-              "Content-Type": asset.mimeType || "image/png",
-              "Cache-Control": "public, max-age=31536000",
-            },
-          });
-        } else if (asset.url) {
-          try {
-            const fetched = await fetch(asset.url, { mode: "cors" });
-            if (fetched.ok) {
-              response = fetched;
-            }
-          } catch {
-            try {
-              const fetched = await fetch(asset.url, { mode: "no-cors" });
-              response = fetched;
-            } catch {
-              response = null;
-            }
-          }
-        }
-
-        if (response) {
-          await cache.put(new Request(targetUrl), response);
-        }
-      }),
-    );
-  } catch {
-    // best-effort; localStorage metadata still allows legacy fallback paths
-  }
-}
-
 const EXTERNAL_IMPORT_BLOCKLIST = new Set([
   "fs",
   "path",
@@ -752,15 +668,14 @@ export default function CodePreview({
 
       const icon192b64 = data?.iconDataUrls?.icon192?.replace(/^data:[^,]+,/, "") || null;
       const icon512b64 = data?.iconDataUrls?.icon512?.replace(/^data:[^,]+,/, "") || null;
+      const iconVersion = Date.now();
       if (icon192b64) {
         localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
         setGeneratedIconBase64(icon192b64);
       }
-      if (icon512b64) {
-        localStorage.setItem(`pwa-preview-${id}-icon512-b64`, icon512b64);
-      }
       localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-      localStorage.setItem(`pwa-preview-${id}-icon-version`, String(Date.now()));
+      localStorage.setItem(`pwa-preview-${id}-icon-version`, String(iconVersion));
+      await cacheGeneratedPreviewIcons(id, { icon192b64, icon512b64, version: iconVersion });
       setHasSaveIcon(true);
 
       const cacheBust = Date.now();

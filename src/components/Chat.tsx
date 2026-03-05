@@ -23,7 +23,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import MessageItem, { Message } from "./MessageItem";
-import { getPreviewFromIDB, savePreviewToIDB } from "@/lib/preview-idb";
+import { loadAppBootstrapData } from "@/lib/app-bootstrap";
 
 // Types for Web Speech API
 interface SpeechRecognitionEvent extends Event {
@@ -97,34 +97,6 @@ type PlannedAsset = {
 
 type GeneratedAsset = PlannedAsset & {
   attachment: VisualAttachment;
-};
-
-type StoredPreviewAsset = {
-  assetKey: string;
-  mimeType: string;
-  data?: string;
-  url?: string;
-};
-
-type SharedPreviewResponse = {
-  id: string;
-  code: string;
-  language: string;
-  name: string;
-  hasGeneratedIcon: boolean;
-  assets?: Array<{
-    assetKey: string;
-    mimeType: string;
-  }>;
-};
-
-type AppEditBootstrapData = {
-  id: string;
-  code: string;
-  language: string;
-  name: string;
-  hasGeneratedIcon: boolean;
-  assets: StoredPreviewAsset[];
 };
 
 function getLatestAppsEditContext(
@@ -425,104 +397,6 @@ function extractGeneratedImage(
   };
 }
 
-function readPreviewAssets(id: string): StoredPreviewAsset[] {
-  try {
-    const raw = localStorage.getItem(`pwa-preview-${id}-assets`);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item) => item && typeof item.assetKey === "string");
-  } catch {
-    return [];
-  }
-}
-
-function readEditBootstrapFromLocal(id: string): AppEditBootstrapData | null {
-  const code = localStorage.getItem(`pwa-preview-${id}-code`);
-  if (!code) return null;
-  return {
-    id,
-    code,
-    language: localStorage.getItem(`pwa-preview-${id}-language`) || "tsx",
-    name: localStorage.getItem(`pwa-preview-${id}-name`) || "My App",
-    hasGeneratedIcon:
-      localStorage.getItem(`pwa-preview-${id}-has-generated-icon`) === "1",
-    assets: readPreviewAssets(id),
-  };
-}
-
-async function loadEditBootstrapData(
-  id: string,
-): Promise<AppEditBootstrapData | null> {
-  const local = readEditBootstrapFromLocal(id);
-  if (local) return local;
-
-  const idbRecord = await getPreviewFromIDB(id);
-  if (idbRecord) {
-    try {
-      localStorage.setItem(`pwa-preview-${id}-code`, idbRecord.code);
-      localStorage.setItem(`pwa-preview-${id}-language`, idbRecord.language);
-      localStorage.setItem(`pwa-preview-${id}-name`, idbRecord.name);
-      if (idbRecord.hasGeneratedIcon) {
-        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-      }
-    } catch {
-      // localStorage hydration is best-effort
-    }
-    return {
-      id,
-      code: idbRecord.code,
-      language: idbRecord.language,
-      name: idbRecord.name,
-      hasGeneratedIcon: idbRecord.hasGeneratedIcon,
-      assets: readPreviewAssets(id),
-    };
-  }
-
-  try {
-    const remoteResp = await fetch(`/api/apps/${id}`, { cache: "no-store" });
-    if (!remoteResp.ok) return null;
-    const shared = (await remoteResp.json()) as SharedPreviewResponse;
-    const assets: StoredPreviewAsset[] = (shared.assets ?? []).map((asset) => ({
-      assetKey: asset.assetKey,
-      mimeType: asset.mimeType || "application/octet-stream",
-    }));
-
-    try {
-      localStorage.setItem(`pwa-preview-${id}-code`, shared.code);
-      localStorage.setItem(`pwa-preview-${id}-language`, shared.language);
-      localStorage.setItem(`pwa-preview-${id}-name`, shared.name);
-      if (shared.hasGeneratedIcon) {
-        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-      }
-      localStorage.setItem(`pwa-preview-${id}-assets`, JSON.stringify(assets));
-    } catch {
-      // localStorage hydration is best-effort
-    }
-
-    savePreviewToIDB({
-      id,
-      standaloneHTML: "",
-      code: shared.code,
-      language: shared.language,
-      name: shared.name,
-      hasGeneratedIcon: Boolean(shared.hasGeneratedIcon),
-      timestamp: Date.now(),
-    }).catch(() => {});
-
-    return {
-      id,
-      code: shared.code,
-      language: shared.language,
-      name: shared.name,
-      hasGeneratedIcon: Boolean(shared.hasGeneratedIcon),
-      assets,
-    };
-  } catch {
-    return null;
-  }
-}
-
 export default function Chat() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -722,7 +596,7 @@ export default function Chat() {
     };
 
     (async () => {
-      const loaded = await loadEditBootstrapData(editAppId);
+      const loaded = await loadAppBootstrapData(editAppId);
       if (!loaded) {
         setMessages((prev) => [
           ...prev,
