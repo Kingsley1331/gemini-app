@@ -655,6 +655,9 @@ export default function CodePreview({
   const openSaveModal = useCallback(() => {
     const targetId =
       editSource === "apps" && existingAppId ? existingAppId : null;
+    const existingStoredName = targetId
+      ? localStorage.getItem(`pwa-preview-${targetId}-name`)
+      : null;
     const existingIconFromStorage = targetId
       ? localStorage.getItem(`pwa-preview-${targetId}-has-generated-icon`) === "1"
       : false;
@@ -666,7 +669,9 @@ export default function CodePreview({
       : false;
 
     setSaveName(
-      initialAppName || (title && title !== "Preview" ? title : "My App"),
+      existingStoredName ||
+        initialAppName ||
+        (title && title !== "Preview" ? title : "My App"),
     );
     setSaveIconPrompt("");
     setSaveStatus(null);

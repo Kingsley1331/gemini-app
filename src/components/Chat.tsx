@@ -132,7 +132,19 @@ function getLatestAppsEditContext(
 ): Message["previewContext"] | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const context = messages[i]?.previewContext;
-    if (context?.source === "apps") return context;
+    if (context?.source === "apps") {
+      const latestName =
+        localStorage.getItem(`pwa-preview-${context.appId}-name`) ||
+        context.appName;
+      const latestHasIcon =
+        localStorage.getItem(`pwa-preview-${context.appId}-has-generated-icon`) === "1" ||
+        Boolean(context.hasGeneratedIcon);
+      return {
+        ...context,
+        appName: latestName,
+        hasGeneratedIcon: latestHasIcon,
+      };
+    }
   }
   return undefined;
 }
