@@ -585,6 +585,12 @@ export default function Chat() {
       },
       // OpenAI
       {
+        id: "gpt-5.4-thinking",
+        name: "GPT-5.4 Thinking",
+        description: "High-reasoning mode for harder tasks",
+        provider: "openai",
+      },
+      {
         id: "gpt-5.2-codex",
         name: "GPT-5.2 Codex",
         description: "Best coding model, agentic tasks",

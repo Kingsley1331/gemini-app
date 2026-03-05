@@ -101,6 +101,31 @@ interface StreamResult {
   modelUsed: string;
 }
 
+type OpenAIReasoningEffort = "low" | "medium" | "high";
+
+interface OpenAIModelConfig {
+  apiModelId: string;
+  responseModelId: string;
+  reasoning?: {
+    effort: OpenAIReasoningEffort;
+  };
+}
+
+function getOpenAIModelConfig(modelId: string): OpenAIModelConfig {
+  if (modelId === "gpt-5.4-thinking") {
+    return {
+      apiModelId: "gpt-5.4",
+      responseModelId: "gpt-5.4-thinking",
+      reasoning: { effort: "high" },
+    };
+  }
+
+  return {
+    apiModelId: modelId,
+    responseModelId: modelId,
+  };
+}
+
 // Default system instruction for the main chat
 const defaultSystemInstruction = `You are a helpful assistant that can write code and explain complex topics including mathematics.
 When a user asks for visual content (web galleries, game assets, app artwork, illustrations, logos, or image-heavy UI), provide clear implementation code and include concise image guidance that can be used to generate fitting visuals.
@@ -366,6 +391,7 @@ async function streamOpenAI(
   }
 
   const openai = new OpenAI({ apiKey });
+  const modelConfig = getOpenAIModelConfig(modelId);
 
   // Build OpenAI Responses API input
   const openaiInput: unknown[] = [
@@ -399,14 +425,15 @@ async function streamOpenAI(
   }
 
   const stream = await openai.responses.create({
-    model: modelId,
+    model: modelConfig.apiModelId,
     input: openaiInput as never,
+    ...(modelConfig.reasoning ? { reasoning: modelConfig.reasoning } : {}),
     stream: true,
   });
 
   const encoder = new TextEncoder();
   return {
-    modelUsed: modelId,
+    modelUsed: modelConfig.responseModelId,
     stream: new ReadableStream({
     async start(controller) {
       try {
