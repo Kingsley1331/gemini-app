@@ -15,6 +15,7 @@ import {
   ChevronDown,
   Type,
   Wand2,
+  Trash2,
 } from "lucide-react";
 import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 import PromptAssistant from "./PromptAssistant";
@@ -24,6 +25,11 @@ import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import MessageItem, { Message } from "./MessageItem";
 import { loadAppBootstrapData } from "@/lib/app-bootstrap";
+import {
+  getChatSessionState,
+  resetChatSessionState,
+  setChatSessionState,
+} from "@/lib/chat-session-store";
 
 // Types for Web Speech API
 interface SpeechRecognitionEvent extends Event {
@@ -401,8 +407,8 @@ export default function Chat() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<Message[]>(() => getChatSessionState().messages);
+  const [input, setInput] = useState(() => getChatSessionState().input);
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isMicInitializing, setIsMicInitializing] = useState(false);
@@ -414,12 +420,16 @@ export default function Chat() {
   );
   const [selectedModel, setSelectedModel] = useState("gemini-3.1-pro-preview");
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
-  const [isRichText, setIsRichText] = useState(false);
-  const [richTextContent, setRichTextContent] = useState("");
+  const [isRichText, setIsRichText] = useState(
+    () => getChatSessionState().isRichText,
+  );
+  const [richTextContent, setRichTextContent] = useState(
+    () => getChatSessionState().richTextContent,
+  );
   const [isPromptAssistantOpen, setIsPromptAssistantOpen] = useState(false);
   const [assetLibrary, setAssetLibrary] = useState<
     Record<string, VisualAttachment>
-  >({});
+  >(() => getChatSessionState().assetLibrary);
   const richTextRef = useRef<RichTextEditorRef>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -427,7 +437,7 @@ export default function Chat() {
     url: string;
     mimeType: string;
     data: string;
-  } | null>(null);
+  } | null>(() => getChatSessionState().selectedImage);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const models = useMemo(
@@ -550,6 +560,17 @@ export default function Chat() {
       console.warn("Failed to save selected model to localStorage:", error);
     }
   }, [selectedModel]);
+
+  useEffect(() => {
+    setChatSessionState({
+      messages,
+      input,
+      isRichText,
+      richTextContent,
+      assetLibrary,
+      selectedImage,
+    });
+  }, [messages, input, isRichText, richTextContent, assetLibrary, selectedImage]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -870,6 +891,31 @@ export default function Chat() {
     setIsGeneratingSpeech(null);
   }, []);
 
+  const clearChatSession = useCallback(() => {
+    if (isLoading) return;
+
+    stopSpeaking();
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // Recognition may already be stopped.
+    }
+
+    setIsListening(false);
+    setIsMicInitializing(false);
+    setIsModelDropdownOpen(false);
+    setIsPromptAssistantOpen(false);
+
+    const clearedState = resetChatSessionState();
+    setMessages(clearedState.messages);
+    setInput(clearedState.input);
+    setIsRichText(clearedState.isRichText);
+    setRichTextContent(clearedState.richTextContent);
+    setAssetLibrary(clearedState.assetLibrary);
+    setSelectedImage(clearedState.selectedImage);
+    richTextRef.current?.clear();
+  }, [isLoading, stopSpeaking]);
+
   const speak = useCallback(
     async (text: string, messageId: string) => {
       if (speakingMessageId === messageId || isGeneratingSpeech === messageId) {
@@ -1043,6 +1089,7 @@ export default function Chat() {
       setMessages((prev) => [...prev, userMessage]);
       if (!overrideInput) {
         setInput("");
+        setRichTextContent("");
         if (isRichText) richTextRef.current?.clear();
       }
       setSelectedImage(null);
@@ -1337,6 +1384,13 @@ export default function Chat() {
     [isRichText],
   );
 
+  const hasSessionContent =
+    messages.length > 0 ||
+    input.trim().length > 0 ||
+    richTextContent.trim().length > 0 ||
+    selectedImage !== null ||
+    Object.keys(assetLibrary).length > 0;
+
   return (
     <div className="flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900 sm:h-[90vh] sm:rounded-2xl">
       {/* Header */}
@@ -1357,70 +1411,82 @@ export default function Chat() {
 
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:items-end">
           <AppNav current="chat" />
-          <div className="relative w-full sm:w-auto" ref={modelDropdownRef}>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
             <button
-              onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-              className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 sm:w-auto sm:justify-start sm:py-1.5"
+              type="button"
+              onClick={clearChatSession}
+              disabled={!hasSessionContent || isLoading}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-100 sm:w-auto sm:py-1.5"
+              title="Clear chat history and start fresh"
             >
-              <span className="truncate">
-                {models.find((m) => m.id === selectedModel)?.name}
-              </span>
-              <ChevronDown
-                className={`w-4 h-4 transition-transform ${isModelDropdownOpen ? "rotate-180" : ""}`}
-              />
+              <Trash2 className="h-4 w-4" />
+              <span>Clear chat</span>
             </button>
+            <div className="relative w-full sm:w-auto" ref={modelDropdownRef}>
+              <button
+                onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 sm:w-auto sm:justify-start sm:py-1.5"
+              >
+                <span className="truncate">
+                  {models.find((m) => m.id === selectedModel)?.name}
+                </span>
+                <ChevronDown
+                  className={`w-4 h-4 transition-transform ${isModelDropdownOpen ? "rotate-180" : ""}`}
+                />
+              </button>
 
-            <AnimatePresence>
-              {isModelDropdownOpen && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-800 sm:left-auto sm:right-0 sm:w-72"
-                >
-                  {Object.entries(groupedModels).map(
-                    ([provider, providerModels], groupIndex) => (
-                      <div key={provider}>
-                        {groupIndex > 0 && (
-                          <div className="border-t border-zinc-200 dark:border-zinc-700" />
-                        )}
-                        <div className="bg-zinc-50/50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 dark:bg-zinc-900/50 dark:text-zinc-500">
-                          {providerLabels[provider] || provider}
-                        </div>
-                        {providerModels.map((model) => (
-                          <button
-                            key={model.id}
-                            onClick={() => {
-                              setSelectedModel(model.id);
-                              setIsModelDropdownOpen(false);
-                            }}
-                            className={cn(
-                              "flex w-full flex-col gap-0.5 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-700/50",
-                              selectedModel === model.id &&
-                                "bg-blue-50 dark:bg-blue-900/20",
-                            )}
-                          >
-                            <span
+              <AnimatePresence>
+                {isModelDropdownOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-800 sm:left-auto sm:right-0 sm:w-72"
+                  >
+                    {Object.entries(groupedModels).map(
+                      ([provider, providerModels], groupIndex) => (
+                        <div key={provider}>
+                          {groupIndex > 0 && (
+                            <div className="border-t border-zinc-200 dark:border-zinc-700" />
+                          )}
+                          <div className="bg-zinc-50/50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 dark:bg-zinc-900/50 dark:text-zinc-500">
+                            {providerLabels[provider] || provider}
+                          </div>
+                          {providerModels.map((model) => (
+                            <button
+                              key={model.id}
+                              onClick={() => {
+                                setSelectedModel(model.id);
+                                setIsModelDropdownOpen(false);
+                              }}
                               className={cn(
-                                "text-sm font-medium",
-                                selectedModel === model.id
-                                  ? "text-blue-600 dark:text-blue-400"
-                                  : "text-zinc-900 dark:text-zinc-100",
+                                "flex w-full flex-col gap-0.5 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-700/50",
+                                selectedModel === model.id &&
+                                  "bg-blue-50 dark:bg-blue-900/20",
                               )}
                             >
-                              {model.name}
-                            </span>
-                            <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                              {model.description}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    ),
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
+                              <span
+                                className={cn(
+                                  "text-sm font-medium",
+                                  selectedModel === model.id
+                                    ? "text-blue-600 dark:text-blue-400"
+                                    : "text-zinc-900 dark:text-zinc-100",
+                                )}
+                              >
+                                {model.name}
+                              </span>
+                              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                                {model.description}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ),
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
         </div>
       </div>
@@ -1640,7 +1706,7 @@ export default function Chat() {
                 placeholder="Type a message with rich formatting..."
                 onSubmit={() => handleSubmit()}
                 onChange={(md) => setRichTextContent(md)}
-                initialContent={input}
+                initialContent={richTextContent || input}
               />
             ) : (
               <input
