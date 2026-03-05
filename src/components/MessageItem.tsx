@@ -27,6 +27,12 @@ export type Message = {
     data?: string; // base64 for user uploads
     assetKey?: string;
   }[];
+  previewContext?: {
+    source: "apps";
+    appId: string;
+    appName?: string;
+    hasGeneratedIcon?: boolean;
+  };
 };
 
 interface MessageItemProps {
@@ -128,6 +134,10 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug,
                         language={language}
                         title={`${language.toUpperCase()} Artifact`}
                         assets={m.role === "assistant" ? m.attachments : undefined}
+                        editSource={m.previewContext?.source}
+                        existingAppId={m.previewContext?.appId}
+                        initialAppName={m.previewContext?.appName}
+                        initialHasGeneratedIcon={m.previewContext?.hasGeneratedIcon}
                         onDebug={onDebug}
                         onSnapshot={onSnapshot}
                       />

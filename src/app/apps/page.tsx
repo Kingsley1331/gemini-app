@@ -88,6 +88,11 @@ export default function AppsPage() {
     setLocalApps((prev) => prev.filter((a) => a.id !== appId));
   };
 
+  const handleEdit = (e: React.MouseEvent, appId: string) => {
+    e.stopPropagation();
+    router.push(`/?editAppId=${encodeURIComponent(appId)}&origin=apps`);
+  };
+
   const loaded = loadedLocal && loadedRemote;
 
   return (
@@ -129,6 +134,13 @@ export default function AppsPage() {
                 onClick={() => router.push(`/preview/${app.id}`)}
                 className="group relative flex flex-col items-center gap-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 cursor-pointer hover:border-zinc-400 dark:hover:border-zinc-600 hover:shadow-md transition-all"
               >
+                <button
+                  onClick={(e) => handleEdit(e, app.id)}
+                  className="absolute top-2 left-2 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white/95 dark:bg-zinc-900/95 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 opacity-0 group-hover:opacity-100 transition-all"
+                  title="Edit in chat"
+                >
+                  Edit
+                </button>
                 {app.local ? (
                   <button
                     onClick={(e) => handleDelete(e, app.id)}

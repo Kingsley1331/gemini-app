@@ -39,6 +39,10 @@ interface CodePreviewProps {
     mimeType: string;
     data: string;
   }) => void;
+  editSource?: "apps";
+  existingAppId?: string;
+  initialAppName?: string;
+  initialHasGeneratedIcon?: boolean;
 }
 
 const SW_CACHE_NAME = "preview-pwa-v5";
@@ -270,6 +274,10 @@ export default function CodePreview({
   language,
   title = "Preview",
   assets = EMPTY_PREVIEW_ASSETS,
+  editSource,
+  existingAppId,
+  initialAppName,
+  initialHasGeneratedIcon,
   onDebug,
   onSnapshot,
 }: CodePreviewProps) {
@@ -288,6 +296,7 @@ export default function CodePreview({
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [isSavingApp, setIsSavingApp] = useState(false);
   const [savePreviewId, setSavePreviewId] = useState<string | null>(null);
+  const [hasSaveIcon, setHasSaveIcon] = useState(false);
   const [generatedIconBase64, setGeneratedIconBase64] = useState<string | null>(null);
   const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
   const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
@@ -644,14 +653,37 @@ export default function CodePreview({
   }, [code, language]);
 
   const openSaveModal = useCallback(() => {
-    setSaveName(title && title !== "Preview" ? title : "My App");
+    const targetId =
+      editSource === "apps" && existingAppId ? existingAppId : null;
+    const existingIconFromStorage = targetId
+      ? localStorage.getItem(`pwa-preview-${targetId}-has-generated-icon`) === "1"
+      : false;
+    const existingIcon192 = targetId
+      ? localStorage.getItem(`pwa-preview-${targetId}-icon192-b64`)
+      : null;
+    const hasExistingIcon = targetId
+      ? existingIconFromStorage || Boolean(initialHasGeneratedIcon)
+      : false;
+
+    setSaveName(
+      initialAppName || (title && title !== "Preview" ? title : "My App"),
+    );
     setSaveIconPrompt("");
     setSaveStatus(null);
-    setSavePreviewId(null);
-    setGeneratedIconBase64(null);
-    setGeneratedIconPreviewUrl(null);
+    setSavePreviewId(targetId);
+    setHasSaveIcon(hasExistingIcon);
+    setGeneratedIconBase64(existingIcon192 || null);
+    if (existingIcon192) {
+      setGeneratedIconPreviewUrl(`data:image/png;base64,${existingIcon192}`);
+    } else if (hasExistingIcon && targetId) {
+      setGeneratedIconPreviewUrl(
+        `/api/preview/${targetId}/generate-icon?size=192&v=${Date.now()}`,
+      );
+    } else {
+      setGeneratedIconPreviewUrl(null);
+    }
     setShowSaveModal(true);
-  }, [title]);
+  }, [editSource, existingAppId, initialAppName, initialHasGeneratedIcon, title]);
 
   const closeSaveModal = useCallback(() => {
     setShowSaveModal(false);
@@ -723,6 +755,7 @@ export default function CodePreview({
         localStorage.setItem(`pwa-preview-${id}-icon512-b64`, icon512b64);
       }
       localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+      setHasSaveIcon(true);
 
       const cacheBust = Date.now();
       const baseIconUrl = data?.icons?.icon192 || `/api/preview/${id}/generate-icon?size=192`;
@@ -742,8 +775,13 @@ export default function CodePreview({
 
   const handleSaveApp = useCallback(async () => {
     if (isSavingApp) return;
-    const id = savePreviewId || createPwaPreviewId();
+    const id =
+      savePreviewId ||
+      (editSource === "apps" && existingAppId
+        ? existingAppId
+        : createPwaPreviewId());
     const name = saveName.trim() || "My App";
+    const hasGeneratedIcon = hasSaveIcon;
     const effectiveLanguage = resolveEffectiveLanguage();
 
     setIsSavingApp(true);
@@ -752,7 +790,7 @@ export default function CodePreview({
       localStorage.setItem(`pwa-preview-${id}-code`, code);
       localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
       localStorage.setItem(`pwa-preview-${id}-name`, name);
-      if (generatedIconBase64) {
+      if (hasGeneratedIcon) {
         localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
       } else {
         localStorage.removeItem(`pwa-preview-${id}-has-generated-icon`);
@@ -765,7 +803,7 @@ export default function CodePreview({
         code,
         language: effectiveLanguage,
         name,
-        hasGeneratedIcon: Boolean(generatedIconBase64),
+        hasGeneratedIcon,
         timestamp: Date.now(),
       }).catch(() => {});
       requestPersistentStorage();
@@ -774,7 +812,7 @@ export default function CodePreview({
         id,
         name,
         iconBase64: generatedIconBase64 ?? undefined,
-        hasIcon: Boolean(generatedIconBase64),
+        hasIcon: hasGeneratedIcon,
         timestamp: Date.now(),
       });
 
@@ -786,7 +824,7 @@ export default function CodePreview({
           name,
           code,
           language: effectiveLanguage,
-          hasGeneratedIcon: Boolean(generatedIconBase64),
+          hasGeneratedIcon,
           assets: (latestAssetsRef.current || []).map((asset, index) => ({
             assetKey: asset.assetKey || `asset_${index + 1}`,
             mimeType: asset.mimeType || "application/octet-stream",
@@ -814,7 +852,10 @@ export default function CodePreview({
     }
   }, [
     code,
+    editSource,
+    existingAppId,
     generatedIconBase64,
+    hasSaveIcon,
     isSavingApp,
     resolveEffectiveLanguage,
     saveName,
