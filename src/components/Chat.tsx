@@ -1505,10 +1505,10 @@ export default function Chat() {
                 &quot;Build a simple calculator in React&quot;
               </button>
               <button
-                onClick={() => setInput("Build a TODO list app in React")}
+                onClick={() => setInput("Build a todo list app in React")}
                 className="px-3 py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-xs hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
               >
-                &quot;Build a TODO list app in React&quot;
+                &quot;Build a todo list app in React&quot;
               </button>
               <button
                 onClick={() =>
