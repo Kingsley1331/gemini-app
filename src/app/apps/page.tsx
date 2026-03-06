@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { deleteSavedApp, getAllSavedApps, saveApp, type SavedApp } from "@/lib/saved-apps-idb";
+import { getAllSavedApps, saveApp, type SavedApp } from "@/lib/saved-apps-idb";
+import { purgeLocalAppData } from "@/lib/local-app-cleanup";
 import { requestPersistentStorage, savePreviewToIDB } from "@/lib/preview-idb";
 import { loadAppBootstrapData, type AppBootstrapData } from "@/lib/app-bootstrap";
 import {
@@ -78,6 +79,8 @@ export default function AppsPage() {
   const [loadedLocal, setLoadedLocal] = useState(false);
   const [loadedRemote, setLoadedRemote] = useState(false);
   const [brokenRemoteIcons, setBrokenRemoteIcons] = useState<Record<string, boolean>>({});
+  const [deletingIds, setDeletingIds] = useState<Record<string, boolean>>({});
+  const [appPendingDelete, setAppPendingDelete] = useState<MergedApp | null>(null);
   const [showCloneModal, setShowCloneModal] = useState(false);
   const [cloneSource, setCloneSource] = useState<MergedApp | null>(null);
   const [cloneSourceData, setCloneSourceData] = useState<AppBootstrapData | null>(null);
@@ -154,11 +157,47 @@ export default function AppsPage() {
     return Array.from(merged.values()).sort((a, b) => b.timestamp - a.timestamp);
   }, [localApps, remoteApps]);
 
-  const handleDelete = async (e: React.MouseEvent, appId: string) => {
+  const requestDelete = useCallback((e: React.MouseEvent, app: MergedApp) => {
     e.stopPropagation();
-    await deleteSavedApp(appId);
-    setLocalApps((prev) => prev.filter((a) => a.id !== appId));
-  };
+    if (deletingIds[app.id]) return;
+    setAppPendingDelete(app);
+  }, [deletingIds]);
+
+  const closeDeleteModal = useCallback(() => {
+    if (appPendingDelete && deletingIds[appPendingDelete.id]) return;
+    setAppPendingDelete(null);
+  }, [appPendingDelete, deletingIds]);
+
+  const confirmDelete = useCallback(async () => {
+    const app = appPendingDelete;
+    if (!app || deletingIds[app.id]) return;
+
+    setDeletingIds((prev) => ({ ...prev, [app.id]: true }));
+    try {
+      if (app.remote) {
+        const resp = await fetch(`/api/apps/${encodeURIComponent(app.id)}`, { method: "DELETE" });
+        if (!resp.ok) {
+          const payload = (await resp.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(payload?.error || "Failed to delete remote app.");
+        }
+      }
+
+      await purgeLocalAppData(app.id);
+      setLocalApps((prev) => prev.filter((savedApp) => savedApp.id !== app.id));
+      setRemoteApps((prev) => prev.filter((remoteApp) => remoteApp.id !== app.id));
+      setAppPendingDelete(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete app.";
+      window.alert(message);
+    } finally {
+      setDeletingIds((prev) => {
+        const next = { ...prev };
+        delete next[app.id];
+        return next;
+      });
+      void refreshRemoteApps();
+    }
+  }, [appPendingDelete, deletingIds, refreshRemoteApps]);
 
   const handleEdit = (e: React.MouseEvent, appId: string) => {
     e.stopPropagation();
@@ -486,11 +525,18 @@ export default function AppsPage() {
                     Clone
                   </button>
                 </div>
-                {app.local ? (
+                {app.local || app.remote ? (
                   <button
-                    onClick={(e) => handleDelete(e, app.id)}
+                    onClick={(e) => requestDelete(e, app)}
+                    disabled={Boolean(deletingIds[app.id])}
                     className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 opacity-0 group-hover:opacity-100 transition-all"
-                    title="Remove local copy"
+                    title={
+                      app.local && app.remote
+                        ? "Delete local and remote app"
+                        : app.remote
+                          ? "Delete remote app"
+                          : "Delete local app"
+                    }
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <line x1="18" y1="6" x2="6" y2="18" />
@@ -636,6 +682,54 @@ export default function AppsPage() {
                   {isSavingClone ? "Cloning..." : "Clone"}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {appPendingDelete ? (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-2xl p-4">
+            <div className="flex items-start justify-between gap-4 mb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Delete App?
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  This will permanently delete {appPendingDelete.name} from this device
+                  {appPendingDelete.remote ? " and remove its published remote version." : "."}
+                </p>
+              </div>
+              <button
+                onClick={closeDeleteModal}
+                className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:opacity-50"
+                disabled={Boolean(deletingIds[appPendingDelete.id])}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="rounded-md border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/20 p-3">
+              <p className="text-xs text-red-700 dark:text-red-200">
+                This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={closeDeleteModal}
+                className="px-3 py-1.5 text-xs rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 disabled:opacity-50"
+                disabled={Boolean(deletingIds[appPendingDelete.id])}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="px-3 py-1.5 text-xs rounded-md bg-red-600 text-white disabled:opacity-50"
+                disabled={Boolean(deletingIds[appPendingDelete.id])}
+              >
+                {deletingIds[appPendingDelete.id] ? "Deleting..." : "Delete App"}
+              </button>
             </div>
           </div>
         </div>

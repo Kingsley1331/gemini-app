@@ -12,6 +12,10 @@ import {
 const ALLOWED_ASSET_KEY = /^[a-zA-Z0-9_-]{1,120}$/;
 const ALLOWED_MIME_TYPE = /^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+$/;
 
+function getSharedAppCandidatePaths(id: string): string[] {
+  return Array.from(new Set([getSharedAppDocPath(id), `shared-apps/${id}`, `sharedApps/${id}`]));
+}
+
 function normalizeBase64(input: string): string {
   const marker = "base64,";
   const markerIndex = input.indexOf(marker);
@@ -108,9 +112,7 @@ export async function upsertSharedApp(doc: SharedAppDoc): Promise<void> {
 
 export async function getSharedAppDoc(id: string): Promise<SharedAppDoc | null> {
   const db = getFirebaseDb();
-  const candidatePaths = Array.from(
-    new Set([getSharedAppDocPath(id), `shared-apps/${id}`, `sharedApps/${id}`])
-  );
+  const candidatePaths = getSharedAppCandidatePaths(id);
 
   for (const path of candidatePaths) {
     const snap = await db.doc(path).get();
@@ -123,6 +125,42 @@ export async function getSharedAppDoc(id: string): Promise<SharedAppDoc | null> 
   }
 
   return null;
+}
+
+export async function deleteSharedApp(id: string): Promise<{
+  removedDocs: string[];
+  removedStoragePaths: string[];
+}> {
+  const db = getFirebaseDb();
+  const bucket = getFirebaseBucket();
+  const candidatePaths = getSharedAppCandidatePaths(id);
+  const storagePrefix = `shared-apps/${id}/`;
+
+  const [files] = await bucket.getFiles({ prefix: storagePrefix });
+  const removedStoragePaths: string[] = [];
+
+  await Promise.allSettled(
+    files.map(async (file) => {
+      await file.delete();
+      removedStoragePaths.push(file.name);
+    }),
+  );
+
+  const removedDocs: string[] = [];
+  await Promise.allSettled(
+    candidatePaths.map(async (path) => {
+      const ref = db.doc(path);
+      const snap = await ref.get();
+      if (!snap.exists) return;
+      await ref.delete();
+      removedDocs.push(path);
+    }),
+  );
+
+  return {
+    removedDocs,
+    removedStoragePaths,
+  };
 }
 
 export function toSharedAppReadPayload(doc: SharedAppDoc): SharedAppReadPayload {

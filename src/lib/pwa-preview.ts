@@ -21,6 +21,7 @@ type PreviewAssetInput = {
 
 const SW_CACHE_NAME = "preview-pwa-v5";
 const ICON_CACHE_NAME = "preview-pwa-v6";
+const LEGACY_PREVIEW_CACHE_NAME = "preview-pwa-v6";
 
 export function createPwaPreviewId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -46,6 +47,35 @@ function base64ToResponse(b64: string): Response {
   return new Response(bytes, {
     headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" },
   });
+}
+
+function listPreviewLocalStorageKeys(id: string): string[] {
+  const prefix = `pwa-preview-${id}-`;
+  const keys: string[] = [];
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(prefix)) {
+        keys.push(key);
+      }
+    }
+  } catch {
+    return [];
+  }
+  return keys;
+}
+
+function isAppScopedCacheRequest(request: Request, id: string): boolean {
+  try {
+    const url = new URL(request.url, window.location.origin);
+    const encodedId = encodeURIComponent(id);
+    return (
+      url.pathname.startsWith(`/preview/${encodedId}/assets/`) ||
+      url.pathname === `/api/preview/${encodedId}/generate-icon`
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function readPreviewAssets(id: string): StoredPreviewAsset[] {
@@ -155,5 +185,32 @@ export async function cacheGeneratedPreviewIcons(
     }
   } catch {
     // best-effort; the icon route still provides the canonical source
+  }
+}
+
+export async function purgePwaPreviewLocalArtifacts(id: string): Promise<void> {
+  for (const key of listPreviewLocalStorageKeys(id)) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // best-effort
+    }
+  }
+
+  try {
+    const cacheNames = Array.from(new Set([SW_CACHE_NAME, ICON_CACHE_NAME, LEGACY_PREVIEW_CACHE_NAME]));
+    await Promise.allSettled(
+      cacheNames.map(async (cacheName) => {
+        const cache = await caches.open(cacheName);
+        const requests = await cache.keys();
+        await Promise.allSettled(
+          requests
+            .filter((request) => isAppScopedCacheRequest(request, id))
+            .map((request) => cache.delete(request)),
+        );
+      }),
+    );
+  } catch {
+    // best-effort; local storage and IDB remain the canonical local cleanup
   }
 }

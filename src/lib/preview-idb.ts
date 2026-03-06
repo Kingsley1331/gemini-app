@@ -56,6 +56,17 @@ export async function getPreviewFromIDB(
   }
 }
 
+export async function deletePreviewFromIDB(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    const store = tx.objectStore(IDB_STORE);
+    store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export async function requestPersistentStorage(): Promise<boolean> {
   try {
     if (navigator.storage?.persist) {
