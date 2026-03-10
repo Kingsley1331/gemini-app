@@ -3,7 +3,7 @@
 import Link from "next/link";
 
 type AppNavProps = {
-  current: "chat" | "apps";
+  current: "chat" | "apps" | "studio";
 };
 
 export default function AppNav({ current }: AppNavProps) {
@@ -31,6 +31,16 @@ export default function AppNav({ current }: AppNavProps) {
         }`}
       >
         Apps
+      </Link>
+      <Link
+        href="/studio"
+        className={`${baseClass} ${
+          current === "studio"
+            ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+            : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
+        }`}
+      >
+        Studio
       </Link>
     </nav>
   );

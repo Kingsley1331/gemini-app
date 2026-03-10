@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Image from "next/image";
+import { usePathname } from "next/navigation";
 import {
   Play,
   Code,
@@ -16,6 +17,7 @@ import {
   Camera,
   Loader2,
   Share2,
+  ExternalLink,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -56,6 +58,7 @@ const EMPTY_PREVIEW_ASSETS: Array<{
   data?: string;
   assetKey?: string;
 }> = [];
+const STUDIO_DRAFT_STORAGE_PREFIX = "studio-draft:";
 
 function normalizePreviewError(message: string): string {
   const invalidHookPattern =
@@ -197,6 +200,7 @@ export default function CodePreview({
   onDebug,
   onSnapshot,
 }: CodePreviewProps) {
+  const pathname = usePathname();
   const [activeTab, setActiveTab] = useState<"preview" | "code">(
     language === "html" || language === "jsx" || language === "tsx"
       ? "preview"
@@ -311,6 +315,26 @@ export default function CodePreview({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const handleOpenInStudio = useCallback(() => {
+    if (typeof window === "undefined") return;
+
+    const draftId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+    window.sessionStorage.setItem(
+      `${STUDIO_DRAFT_STORAGE_PREFIX}${draftId}`,
+      JSON.stringify({
+        code,
+        language,
+        title,
+        assets,
+      }),
+    );
+    window.location.assign(`/studio?draft=${encodeURIComponent(draftId)}`);
+  }, [assets, code, language, title]);
 
   const handleDownload = useCallback(async () => {
     const name =
@@ -1475,7 +1499,7 @@ export default function CodePreview({
                   : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
               }`}
             >
-              <Play className="w-3 h-3 inline-block mr-1" /> Preview
+              <Play className="w-3 h-3 inline-block mr-1" /> Preview1
             </button>
             <button
               onClick={() => setActiveTab("code")}
@@ -1500,6 +1524,15 @@ export default function CodePreview({
         </div>
 
         <div className="flex flex-wrap items-center gap-1 sm:gap-2">
+          {pathname !== "/studio" ? (
+            <button
+              onClick={handleOpenInStudio}
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+              title="Open in Studio"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </button>
+          ) : null}
           <button
             onClick={copyToClipboard}
             className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"

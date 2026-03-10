@@ -201,7 +201,7 @@ export default function AppsPage() {
 
   const handleEdit = (e: React.MouseEvent, appId: string) => {
     e.stopPropagation();
-    router.push(`/?editAppId=${encodeURIComponent(appId)}&origin=apps`);
+    router.push(`/studio?appId=${encodeURIComponent(appId)}`);
   };
 
   const resetCloneState = useCallback(() => {
