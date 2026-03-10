@@ -19,14 +19,25 @@ type SharedPreviewResponse = {
   }>;
 };
 
+type AppBootstrapAsset = StoredPreviewAsset & {
+  url: string;
+};
+
 export type AppBootstrapData = {
   id: string;
   code: string;
   language: string;
   name: string;
   hasGeneratedIcon: boolean;
-  assets: StoredPreviewAsset[];
+  assets: AppBootstrapAsset[];
 };
+
+function hydrateBootstrapAssets(id: string, assets: StoredPreviewAsset[]): AppBootstrapAsset[] {
+  return assets.map((asset) => ({
+    ...asset,
+    url: asset.url || buildPreviewAssetUrl(id, asset.assetKey),
+  }));
+}
 
 async function getPreviewFromIDBWithTimeout(
   id: string,
@@ -49,7 +60,7 @@ export function readAppBootstrapFromLocal(id: string): AppBootstrapData | null {
     language: localStorage.getItem(`pwa-preview-${id}-language`) || "tsx",
     name: localStorage.getItem(`pwa-preview-${id}-name`) || "My App",
     hasGeneratedIcon: localStorage.getItem(`pwa-preview-${id}-has-generated-icon`) === "1",
-    assets: readPreviewAssets(id),
+    assets: hydrateBootstrapAssets(id, readPreviewAssets(id)),
   };
 }
 
@@ -86,7 +97,7 @@ export async function loadAppBootstrapData(id: string): Promise<AppBootstrapData
       language: idbRecord.language,
       name: idbRecord.name,
       hasGeneratedIcon: idbRecord.hasGeneratedIcon,
-      assets: readPreviewAssets(id),
+      assets: hydrateBootstrapAssets(id, readPreviewAssets(id)),
     };
     hydrateAppBootstrapToLocalStorage(hydrated);
     return hydrated;
