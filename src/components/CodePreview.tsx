@@ -25,6 +25,7 @@ import JSZip from "jszip";
 import { savePreviewToIDB, requestPersistentStorage } from "@/lib/preview-idb";
 import { saveApp } from "@/lib/saved-apps-idb";
 import {
+  buildPreviewAssetUrl,
   cacheGeneratedPreviewIcons,
   createPwaPreviewId,
   persistPwaPreviewAssets,
@@ -255,11 +256,14 @@ export default function CodePreview({
 
     const createdObjectUrls: string[] = [];
     const nextMap: Record<string, string> = {};
+    const previewAssetId = existingAppId || savePreviewId;
 
     for (const [index, asset] of stableAssets.entries()) {
       const key = asset.assetKey || `asset_${index + 1}`;
       const placeholder = `__ASSET_${key}__`;
-      let resolvedUrl = asset.url;
+      let resolvedUrl =
+        asset.url ||
+        (previewAssetId ? buildPreviewAssetUrl(previewAssetId, key) : "");
 
       if (asset.data) {
         try {
@@ -274,7 +278,9 @@ export default function CodePreview({
           resolvedUrl = URL.createObjectURL(blob);
           createdObjectUrls.push(resolvedUrl);
         } catch {
-          resolvedUrl = asset.url;
+          resolvedUrl =
+            asset.url ||
+            (previewAssetId ? buildPreviewAssetUrl(previewAssetId, key) : "");
         }
       }
 
@@ -297,7 +303,7 @@ export default function CodePreview({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [assetSignature]);
+  }, [assetSignature, existingAppId, savePreviewId]);
 
   // Remove legacy large icon data-url keys left by earlier builds.
   useEffect(() => {
@@ -1048,11 +1054,18 @@ export default function CodePreview({
       "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
     const inferAssetCategory = (assetKey: string): string => {
       const key = assetKey.toLowerCase();
-      if (key.includes("background") || key.includes("scene")) {
+      if (
+        key.includes("background") ||
+        key.includes("scene") ||
+        key === "bg"
+      ) {
         return "background";
       }
       if (
         key.includes("character") ||
+        key.includes("bird") ||
+        key.includes("player") ||
+        key.includes("hero") ||
         key.includes("avatar") ||
         key.includes("actor")
       ) {
@@ -1060,6 +1073,8 @@ export default function CodePreview({
       }
       if (
         key.includes("target") ||
+        key.includes("pig") ||
+        key.includes("enemy") ||
         key.includes("secondary") ||
         key.includes("opponent")
       ) {
@@ -1067,6 +1082,8 @@ export default function CodePreview({
       }
       if (
         key.includes("structure") ||
+        key.includes("wood") ||
+        key.includes("slingshot") ||
         key.includes("obstacle") ||
         key.includes("block") ||
         key.includes("terrain")
@@ -1127,19 +1144,57 @@ export default function CodePreview({
         return transparentFallbackDataUrl;
       },
     );
+    const codeWithResolvedFallbacks = codeWithAssetUrls.replace(
+      /(["'`])((?:\/)?[a-zA-Z0-9_-]+\.(?:png|jpe?g|gif|webp|svg))\1/g,
+      (fullMatch, quote: string, rawPath: string) => {
+        const normalizedPath = rawPath.trim().toLowerCase();
+        if (
+          normalizedPath.startsWith("http://") ||
+          normalizedPath.startsWith("https://") ||
+          normalizedPath.startsWith("data:") ||
+          normalizedPath.startsWith("blob:") ||
+          normalizedPath.startsWith("/preview/") ||
+          normalizedPath.startsWith("/api/")
+        ) {
+          return fullMatch;
+        }
+
+        const requestKey = normalizedPath
+          .replace(/^\//, "")
+          .replace(/\.[a-z0-9]+$/, "");
+        const requestCategory = inferAssetCategory(requestKey);
+
+        const categoryMatch = indexedAssets.find(
+          (entry) => entry.category === requestCategory,
+        );
+        if (categoryMatch?.assetUrl) {
+          return `${quote}${categoryMatch.assetUrl}${quote}`;
+        }
+
+        const fuzzyMatch = indexedAssets.find(
+          (entry) =>
+            entry.key.includes(requestKey) || requestKey.includes(entry.key),
+        );
+        if (fuzzyMatch?.assetUrl) {
+          return `${quote}${fuzzyMatch.assetUrl}${quote}`;
+        }
+
+        return fullMatch;
+      },
+    );
 
     // Detect if "html"-tagged code is actually React/JSX
     const isReactCode =
-      /import\s.*from\s/.test(codeWithAssetUrls) ||
-      /export\s+default\s+function/.test(codeWithAssetUrls) ||
-      /useState|useEffect|useRef|useCallback/.test(codeWithAssetUrls);
+      /import\s.*from\s/.test(codeWithResolvedFallbacks) ||
+      /export\s+default\s+function/.test(codeWithResolvedFallbacks) ||
+      /useState|useEffect|useRef|useCallback/.test(codeWithResolvedFallbacks);
 
     const effectiveLanguage =
       language === "html" && isReactCode ? "tsx" : language;
 
     let content = "";
     if (effectiveLanguage === "html") {
-      content = codeWithAssetUrls;
+      content = codeWithResolvedFallbacks;
     } else if (
       effectiveLanguage === "jsx" ||
       effectiveLanguage === "tsx" ||
@@ -1150,7 +1205,7 @@ export default function CodePreview({
       // strip all other imports, and handle exports
 
       // Extract the default-exported function name before transforms
-      const defaultExportMatch = codeWithAssetUrls.match(
+      const defaultExportMatch = codeWithResolvedFallbacks.match(
         /export\s+default\s+function\s+(\w+)/,
       );
       const defaultExportName = defaultExportMatch
@@ -1158,7 +1213,7 @@ export default function CodePreview({
         : null;
 
       const cleanedCode =
-        codeWithAssetUrls
+        codeWithResolvedFallbacks
           // Remove type-only imports
           .replace(
             /import\s+type\s+\{[^}]*\}\s*from\s*['"][^'"]*['"];?\n?/g,
@@ -1242,7 +1297,7 @@ export default function CodePreview({
 
       const finalCode = escapeLatex(cleanedCode);
       const externalImportPreamble = buildExternalImportPreamble(
-        codeWithAssetUrls,
+        codeWithResolvedFallbacks,
       );
 
       // Basic React/JS runner template

@@ -28,6 +28,18 @@ export type AppBootstrapData = {
   assets: StoredPreviewAsset[];
 };
 
+async function getPreviewFromIDBWithTimeout(
+  id: string,
+  timeoutMs = 1500,
+): Promise<Awaited<ReturnType<typeof getPreviewFromIDB>>> {
+  return await Promise.race([
+    getPreviewFromIDB(id),
+    new Promise<null>((resolve) => {
+      window.setTimeout(() => resolve(null), timeoutMs);
+    }),
+  ]);
+}
+
 export function readAppBootstrapFromLocal(id: string): AppBootstrapData | null {
   const code = localStorage.getItem(`pwa-preview-${id}-code`);
   if (!code) return null;
@@ -66,7 +78,7 @@ export async function loadAppBootstrapData(id: string): Promise<AppBootstrapData
   const local = readAppBootstrapFromLocal(id);
   if (local) return local;
 
-  const idbRecord = await getPreviewFromIDB(id);
+  const idbRecord = await getPreviewFromIDBWithTimeout(id);
   if (idbRecord) {
     const hydrated: AppBootstrapData = {
       id,

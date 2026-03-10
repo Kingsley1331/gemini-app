@@ -139,6 +139,7 @@ export default function StudioClient({
   appId,
   draftId,
 }: StudioClientProps) {
+  const hasBootstrapTarget = Boolean(appId || draftId);
   const [input, setInput] = useState("");
   const [isRichText, setIsRichText] = useState(false);
   const [richTextContent, setRichTextContent] = useState("");
@@ -155,6 +156,8 @@ export default function StudioClient({
   const [previewLanguage, setPreviewLanguage] = useState(initialLanguage);
   const [previewTitle, setPreviewTitle] = useState(initialTitle);
   const [previewAssets, setPreviewAssets] = useState<StudioPreviewAsset[]>([]);
+  const [isPreviewBootstrapping, setIsPreviewBootstrapping] =
+    useState(hasBootstrapTarget);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [lastPrompt, setLastPrompt] = useState<string | null>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
@@ -163,7 +166,9 @@ export default function StudioClient({
   const richTextRef = useRef<RichTextEditorRef>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const bootstrappedSourceRef = useRef<string | null>(null);
+  const activeBootstrapRequestRef = useRef(0);
+  const resolvedBootstrapKeyRef = useRef<string | null>(null);
+  const cachedDraftsRef = useRef<Record<string, StudioDraftPayload>>({});
 
   const models = useMemo<StudioModel[]>(
     () => [
@@ -384,30 +389,66 @@ export default function StudioClient({
         ? `app:${appId}`
         : "default";
 
-    if (bootstrappedSourceRef.current === nextBootstrapKey) return;
-    bootstrappedSourceRef.current = nextBootstrapKey;
+    if (resolvedBootstrapKeyRef.current === nextBootstrapKey) {
+      setIsPreviewBootstrapping(false);
+      return;
+    }
+
+    activeBootstrapRequestRef.current += 1;
+    const requestId = activeBootstrapRequestRef.current;
+    const isActiveRequest = () => activeBootstrapRequestRef.current === requestId;
 
     if (!draftId && !appId) {
+      resolvedBootstrapKeyRef.current = nextBootstrapKey;
+      setIsPreviewBootstrapping(false);
       setPreviewCode(initialCode);
       setPreviewLanguage(initialLanguage);
       setPreviewTitle(initialTitle);
       setPreviewAssets([]);
-      return;
+      return () => {
+        if (activeBootstrapRequestRef.current === requestId) {
+          activeBootstrapRequestRef.current += 1;
+        }
+      };
     }
+
+    setIsPreviewBootstrapping(true);
 
     if (draftId) {
       if (typeof window === "undefined") return;
 
       try {
-        const rawDraft = window.sessionStorage.getItem(
-          `${STUDIO_DRAFT_STORAGE_PREFIX}${draftId}`,
-        );
-        if (!rawDraft) {
-          setStatusMessage("That Studio draft is no longer available.");
+        const cachedDraft = cachedDraftsRef.current[draftId];
+        let parsedDraft = cachedDraft;
+
+        if (!parsedDraft) {
+          const rawDraft = window.sessionStorage.getItem(
+            `${STUDIO_DRAFT_STORAGE_PREFIX}${draftId}`,
+          );
+          if (!rawDraft) {
+            if (!isActiveRequest()) return;
+            setStatusMessage("That Studio draft is no longer available.");
+            setIsPreviewBootstrapping(false);
+            return;
+          }
+
+          parsedDraft = JSON.parse(rawDraft) as StudioDraftPayload;
+          cachedDraftsRef.current[draftId] = parsedDraft;
+          window.sessionStorage.removeItem(
+            `${STUDIO_DRAFT_STORAGE_PREFIX}${draftId}`,
+          );
+        }
+
+        if (!isActiveRequest()) {
           return;
         }
 
-        const parsedDraft = JSON.parse(rawDraft) as StudioDraftPayload;
+        if (!parsedDraft) {
+          setStatusMessage("That Studio draft is no longer available.");
+          setIsPreviewBootstrapping(false);
+          return;
+        }
+
         setPreviewCode(parsedDraft.code || initialCode);
         setPreviewLanguage(parsedDraft.language || initialLanguage);
         setPreviewTitle(parsedDraft.title || "Studio Draft");
@@ -421,24 +462,31 @@ export default function StudioClient({
             content: "Loaded a preview draft into Studio.",
           },
         ]);
-        window.sessionStorage.removeItem(
-          `${STUDIO_DRAFT_STORAGE_PREFIX}${draftId}`,
-        );
+        resolvedBootstrapKeyRef.current = nextBootstrapKey;
+        setIsPreviewBootstrapping(false);
       } catch (error) {
+        if (!isActiveRequest()) {
+          return;
+        }
         console.error("Failed to hydrate Studio draft:", error);
         setStatusMessage("Unable to load that Studio draft.");
+        setIsPreviewBootstrapping(false);
       }
-      return;
+      return () => {
+        if (activeBootstrapRequestRef.current === requestId) {
+          activeBootstrapRequestRef.current += 1;
+        }
+      };
     }
 
     if (!appId) return;
 
-    let cancelled = false;
     void (async () => {
       const loaded = await loadAppBootstrapData(appId);
-      if (cancelled) return;
+      if (!isActiveRequest()) return;
       if (!loaded) {
         setStatusMessage("I couldn't load this app in Studio.");
+        setIsPreviewBootstrapping(false);
         return;
       }
 
@@ -455,10 +503,14 @@ export default function StudioClient({
           content: `Loaded \`${loaded.name}\` from My Apps into Studio.`,
         },
       ]);
+      resolvedBootstrapKeyRef.current = nextBootstrapKey;
+      setIsPreviewBootstrapping(false);
     })();
 
     return () => {
-      cancelled = true;
+      if (activeBootstrapRequestRef.current === requestId) {
+        activeBootstrapRequestRef.current += 1;
+      }
     };
   }, [appId, draftId, initialCode, initialLanguage, initialTitle]);
 
@@ -732,13 +784,30 @@ export default function StudioClient({
 
   return (
     <div className="space-y-6">
-      <CodePreview
-        code={previewCode}
-        language={previewLanguage}
-        title={previewTitle}
-        assets={previewAssets}
-        onSnapshot={handlePreviewSnapshot}
-      />
+      {isPreviewBootstrapping ? (
+        <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="flex min-h-[320px] flex-col items-center justify-center gap-3 text-center sm:min-h-[500px]">
+            <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+            <div>
+              <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+                Loading Studio preview
+              </h2>
+              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                Fetching the selected app and preparing its assets.
+              </p>
+            </div>
+          </div>
+        </section>
+      ) : (
+        <CodePreview
+          code={previewCode}
+          language={previewLanguage}
+          title={previewTitle}
+          assets={previewAssets}
+          existingAppId={appId}
+          onSnapshot={handlePreviewSnapshot}
+        />
+      )}
 
       <section className="rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
