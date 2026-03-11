@@ -10,6 +10,7 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import CodePreview from "./CodePreview";
+import type { AppAsset } from "@/lib/app-assets";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -46,6 +47,12 @@ interface MessageItemProps {
     mimeType: string;
     data: string;
   }) => void;
+}
+
+function getPreviewAssets(attachments: Message["attachments"]): AppAsset[] | undefined {
+  return attachments?.filter(
+    (attachment): attachment is AppAsset => typeof attachment.assetKey === "string",
+  );
 }
 
 const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug, onSnapshot }: MessageItemProps) => {
@@ -133,7 +140,7 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug,
                         code={code}
                         language={language}
                         title={`${language.toUpperCase()} Artifact`}
-                        assets={m.role === "assistant" ? m.attachments : undefined}
+                        assets={m.role === "assistant" ? getPreviewAssets(m.attachments) : undefined}
                         editSource={m.previewContext?.source}
                         existingAppId={m.previewContext?.appId}
                         initialAppName={m.previewContext?.appName}
