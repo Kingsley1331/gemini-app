@@ -76,6 +76,7 @@ type StudioMessage = {
   attachments?: Array<{
     url: string;
     mimeType: string;
+    data?: string;
   }>;
 };
 
@@ -664,7 +665,13 @@ export default function StudioClient({
         role: "user",
         content: messageInput,
         attachments: attachedImage
-          ? [{ url: attachedImage.url, mimeType: attachedImage.mimeType }]
+          ? [
+              {
+                url: attachedImage.url,
+                mimeType: attachedImage.mimeType,
+                data: attachedImage.data,
+              },
+            ]
           : undefined,
       },
       {
@@ -675,7 +682,29 @@ export default function StudioClient({
     ]);
 
     try {
-      const requestMessages: ChatRequestMessage[] = [];
+      const requestMessages: ChatRequestMessage[] = messages
+        .filter((message) => message.content.trim().length > 0)
+        .map((message) => ({
+          role: message.role,
+          content: message.content,
+          attachments:
+            message.role === "user"
+              ? message.attachments
+                  ?.filter(
+                    (
+                      attachment,
+                    ): attachment is {
+                      url: string;
+                      mimeType: string;
+                      data: string;
+                    } => Boolean(attachment.data),
+                  )
+                  .map((attachment) => ({
+                    mimeType: attachment.mimeType,
+                    data: attachment.data,
+                  }))
+              : undefined,
+        }));
       const previewContextMessage = await buildPreviewContextRequestMessage({
         title: previewTitle || "Studio Preview",
         code: previewCode,
@@ -697,6 +726,9 @@ export default function StudioClient({
             ]
           : undefined,
       });
+      while (requestMessages.length > 0 && requestMessages[0]?.role !== "user") {
+        requestMessages.shift();
+      }
 
       const response = await fetch("/api/chat", {
         method: "POST",
