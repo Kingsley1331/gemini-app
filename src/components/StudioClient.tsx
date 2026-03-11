@@ -23,6 +23,10 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { loadAppBootstrapData } from "@/lib/app-bootstrap";
 import type { AppAsset } from "@/lib/app-assets";
+import {
+  buildPreviewContextRequestMessage,
+  type ChatRequestMessage,
+} from "@/lib/preview-chat-context";
 import CodePreview from "@/components/CodePreview";
 import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 import PromptAssistant from "./PromptAssistant";
@@ -671,25 +675,35 @@ export default function StudioClient({
     ]);
 
     try {
+      const requestMessages: ChatRequestMessage[] = [];
+      const previewContextMessage = await buildPreviewContextRequestMessage({
+        title: previewTitle || "Studio Preview",
+        code: previewCode,
+        language: previewLanguage,
+        assets: previewAssets,
+      });
+      if (previewContextMessage) {
+        requestMessages.push(previewContextMessage);
+      }
+      requestMessages.push({
+        role: "user",
+        content: messageInput,
+        attachments: attachedImage
+          ? [
+              {
+                mimeType: attachedImage.mimeType,
+                data: attachedImage.data,
+              },
+            ]
+          : undefined,
+      });
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: selectedModel,
-          messages: [
-            {
-              role: "user",
-              content: messageInput,
-              attachments: attachedImage
-                ? [
-                    {
-                      mimeType: attachedImage.mimeType,
-                      data: attachedImage.data,
-                    },
-                  ]
-                : undefined,
-            },
-          ],
+          messages: requestMessages,
         }),
       });
 
@@ -770,6 +784,10 @@ export default function StudioClient({
     isLoading,
     isRichText,
     models,
+    previewAssets,
+    previewCode,
+    previewLanguage,
+    previewTitle,
     richTextContent,
     selectedImage,
     selectedModel,

@@ -26,6 +26,10 @@ import { twMerge } from "tailwind-merge";
 import MessageItem, { Message } from "./MessageItem";
 import { loadAppBootstrapData } from "@/lib/app-bootstrap";
 import {
+  buildPreviewContextRequestMessage,
+  type ChatRequestMessage,
+} from "@/lib/preview-chat-context";
+import {
   getChatSessionState,
   resetChatSessionState,
   setChatSessionState,
@@ -1203,23 +1207,67 @@ export default function Chat() {
           const activeAssets =
             generatedAssets.length > 0 ? generatedAssets : reusedAssets;
 
-          const requestMessages: Message[] = [...messages, userMessage];
+          const requestMessages: ChatRequestMessage[] = messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+            attachments:
+              message.role === "user"
+                ? message.attachments
+                    ?.filter(
+                      (
+                        attachment,
+                      ): attachment is {
+                        url: string;
+                        mimeType: string;
+                        data: string;
+                      } => Boolean(attachment.data),
+                    )
+                    .map((attachment) => ({
+                      mimeType: attachment.mimeType,
+                      data: attachment.data,
+                    }))
+                : undefined,
+          }));
+          requestMessages.push({
+            role: "user",
+            content: userMessage.content,
+            attachments: selectedImage
+              ? [
+                  {
+                    mimeType: selectedImage.mimeType,
+                    data: selectedImage.data,
+                  },
+                ]
+              : undefined,
+          });
           // Some providers reject histories that do not start with a user turn.
           while (requestMessages.length > 0 && requestMessages[0]?.role !== "user") {
             requestMessages.shift();
           }
+          if (activeAppsEditContext?.appId) {
+            const loadedApp = await loadAppBootstrapData(activeAppsEditContext.appId);
+            if (loadedApp) {
+              const previewContextMessage = await buildPreviewContextRequestMessage({
+                title: loadedApp.name || activeAppsEditContext.appName || "My App",
+                code: loadedApp.code,
+                language: loadedApp.language,
+                assets: loadedApp.assets,
+              });
+              if (previewContextMessage) {
+                requestMessages.splice(requestMessages.length - 1, 0, previewContextMessage);
+              }
+            }
+          }
           if (activeAssets.length > 0) {
-            const syntheticAssetMessage: Message = {
-              id: `${userMessage.id}-assets`,
+            const syntheticAssetMessage: ChatRequestMessage = {
               role: "user",
               content: buildAssetContextMessage(
                 normalizedInput,
                 activeAssets,
               ),
-              type: "text",
               attachments: activeAssets.map((asset) => ({
-                ...asset.attachment,
-                assetKey: asset.name,
+                mimeType: asset.attachment.mimeType,
+                data: asset.attachment.data,
               })),
             };
             requestMessages.splice(requestMessages.length - 1, 0, syntheticAssetMessage);
@@ -1230,27 +1278,7 @@ export default function Chat() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               model: selectedModel,
-              messages: requestMessages.map((m) => ({
-                role: m.role,
-                content: m.content,
-                attachments:
-                  m.role === "user"
-                    ? m.attachments
-                        ?.filter(
-                          (
-                            attachment,
-                          ): attachment is {
-                            url: string;
-                            mimeType: string;
-                            data: string;
-                          } => Boolean(attachment.data),
-                        )
-                        .map((attachment) => ({
-                          mimeType: attachment.mimeType,
-                          data: attachment.data,
-                        }))
-                    : undefined,
-              })),
+              messages: requestMessages,
             }),
           });
 
