@@ -22,6 +22,7 @@ import rehypeKatex from "rehype-katex";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { loadAppBootstrapData } from "@/lib/app-bootstrap";
+import type { AppAsset } from "@/lib/app-assets";
 import CodePreview from "@/components/CodePreview";
 import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 import PromptAssistant from "./PromptAssistant";
@@ -44,12 +45,7 @@ type StudioClientProps = {
   draftId?: string;
 };
 
-type StudioPreviewAsset = {
-  url: string;
-  mimeType: string;
-  data?: string;
-  assetKey?: string;
-};
+type StudioPreviewAsset = AppAsset;
 
 type StudioModel = {
   id: string;
@@ -804,8 +800,10 @@ export default function StudioClient({
           language={previewLanguage}
           title={previewTitle}
           assets={previewAssets}
+          editSource={appId ? "apps" : undefined}
           existingAppId={appId}
           onSnapshot={handlePreviewSnapshot}
+          onAssetsChange={setPreviewAssets}
         />
       )}
 

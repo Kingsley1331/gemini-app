@@ -5,11 +5,19 @@ export type StoredPreviewAsset = {
   mimeType: string;
   data?: string;
   url?: string;
+  displayName?: string;
+  rolePrompt?: string;
+  sourceType?: "upload" | "generated" | "edited";
+  svgText?: string;
 };
 
 type StoredPreviewAssetRecord = {
   assetKey: string;
   mimeType: string;
+  displayName?: string;
+  rolePrompt?: string;
+  sourceType?: "upload" | "generated" | "edited";
+  svgText?: string;
 };
 
 type PreviewAssetInput = {
@@ -17,6 +25,10 @@ type PreviewAssetInput = {
   mimeType?: string;
   data?: string;
   url?: string;
+  displayName?: string;
+  rolePrompt?: string;
+  sourceType?: "upload" | "generated" | "edited";
+  svgText?: string;
 };
 
 const SW_CACHE_NAME = "preview-pwa-v5";
@@ -99,10 +111,18 @@ export async function persistPwaPreviewAssets(
     mimeType: asset.mimeType || "image/png",
     data: asset.data || "",
     url: asset.url || "",
+    displayName: asset.displayName || "",
+    rolePrompt: asset.rolePrompt || "",
+    sourceType: asset.sourceType,
+    svgText: asset.svgText || "",
   }));
   const lightweightRecords: StoredPreviewAssetRecord[] = normalized.map((asset) => ({
     assetKey: asset.assetKey,
     mimeType: asset.mimeType,
+    displayName: asset.displayName || undefined,
+    rolePrompt: asset.rolePrompt || undefined,
+    sourceType: asset.sourceType,
+    svgText: asset.svgText || undefined,
   }));
 
   try {

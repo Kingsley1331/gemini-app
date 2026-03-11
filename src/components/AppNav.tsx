@@ -23,16 +23,6 @@ export default function AppNav({ current }: AppNavProps) {
         Chat
       </Link>
       <Link
-        href="/apps"
-        className={`${baseClass} ${
-          current === "apps"
-            ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-            : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
-        }`}
-      >
-        Apps
-      </Link>
-      <Link
         href="/studio"
         className={`${baseClass} ${
           current === "studio"
@@ -41,6 +31,16 @@ export default function AppNav({ current }: AppNavProps) {
         }`}
       >
         Studio
+      </Link>
+      <Link
+        href="/apps"
+        className={`${baseClass} ${
+          current === "apps"
+            ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+            : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
+        }`}
+      >
+        Apps
       </Link>
     </nav>
   );

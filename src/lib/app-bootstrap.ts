@@ -13,9 +13,14 @@ type SharedPreviewResponse = {
   language: string;
   name: string;
   hasGeneratedIcon: boolean;
+  updatedAt?: number;
   assets?: Array<{
     assetKey: string;
     mimeType: string;
+    displayName?: string;
+    rolePrompt?: string;
+    sourceType?: "upload" | "generated" | "edited";
+    svgText?: string;
   }>;
 };
 
@@ -30,6 +35,7 @@ export type AppBootstrapData = {
   name: string;
   hasGeneratedIcon: boolean;
   assets: AppBootstrapAsset[];
+  remoteUpdatedAtHint?: number;
 };
 
 function hydrateBootstrapAssets(id: string, assets: StoredPreviewAsset[]): AppBootstrapAsset[] {
@@ -54,6 +60,8 @@ async function getPreviewFromIDBWithTimeout(
 export function readAppBootstrapFromLocal(id: string): AppBootstrapData | null {
   const code = localStorage.getItem(`pwa-preview-${id}-code`);
   if (!code) return null;
+  const remoteUpdatedAtRaw = localStorage.getItem(`pwa-preview-${id}-remote-updated-at`);
+  const remoteUpdatedAt = remoteUpdatedAtRaw ? Number(remoteUpdatedAtRaw) : 0;
   return {
     id,
     code,
@@ -61,6 +69,8 @@ export function readAppBootstrapFromLocal(id: string): AppBootstrapData | null {
     name: localStorage.getItem(`pwa-preview-${id}-name`) || "My App",
     hasGeneratedIcon: localStorage.getItem(`pwa-preview-${id}-has-generated-icon`) === "1",
     assets: hydrateBootstrapAssets(id, readPreviewAssets(id)),
+    remoteUpdatedAtHint:
+      Number.isFinite(remoteUpdatedAt) && remoteUpdatedAt > 0 ? remoteUpdatedAt : undefined,
   };
 }
 
@@ -74,6 +84,16 @@ function hydrateAppBootstrapToLocalStorage(data: AppBootstrapData) {
     } else {
       localStorage.removeItem(`pwa-preview-${data.id}-has-generated-icon`);
     }
+    if (
+      typeof data.remoteUpdatedAtHint === "number" &&
+      Number.isFinite(data.remoteUpdatedAtHint) &&
+      data.remoteUpdatedAtHint > 0
+    ) {
+      localStorage.setItem(
+        `pwa-preview-${data.id}-remote-updated-at`,
+        String(data.remoteUpdatedAtHint),
+      );
+    }
 
     if (data.assets.length > 0) {
       localStorage.setItem(`pwa-preview-${data.id}-assets`, JSON.stringify(data.assets));
@@ -85,9 +105,51 @@ function hydrateAppBootstrapToLocalStorage(data: AppBootstrapData) {
   }
 }
 
+async function fetchRemoteBootstrapData(id: string): Promise<AppBootstrapData | null> {
+  try {
+    const remoteResp = await fetch(`/api/apps/${id}`, { cache: "no-store" });
+    if (!remoteResp.ok) return null;
+    const shared = (await remoteResp.json()) as SharedPreviewResponse;
+    return {
+      id,
+      code: shared.code,
+      language: shared.language,
+      name: shared.name,
+      hasGeneratedIcon: Boolean(shared.hasGeneratedIcon),
+      assets: (shared.assets ?? []).map((asset) => ({
+        assetKey: asset.assetKey,
+        mimeType: asset.mimeType || "application/octet-stream",
+        url: buildPreviewAssetUrl(id, asset.assetKey),
+        displayName: asset.displayName,
+        rolePrompt: asset.rolePrompt,
+        sourceType: asset.sourceType,
+        svgText: asset.svgText,
+      })),
+      remoteUpdatedAtHint:
+        typeof shared.updatedAt === "number" && Number.isFinite(shared.updatedAt)
+          ? shared.updatedAt
+          : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function loadAppBootstrapData(id: string): Promise<AppBootstrapData | null> {
   const local = readAppBootstrapFromLocal(id);
-  if (local) return local;
+  if (local) {
+    const remote = await fetchRemoteBootstrapData(id);
+    if (
+      remote &&
+      typeof local.remoteUpdatedAtHint === "number" &&
+      typeof remote.remoteUpdatedAtHint === "number" &&
+      remote.remoteUpdatedAtHint > local.remoteUpdatedAtHint
+    ) {
+      hydrateAppBootstrapToLocalStorage(remote);
+      return remote;
+    }
+    return local;
+  }
 
   const idbRecord = await getPreviewFromIDBWithTimeout(id);
   if (idbRecord) {
@@ -103,26 +165,8 @@ export async function loadAppBootstrapData(id: string): Promise<AppBootstrapData
     return hydrated;
   }
 
-  try {
-    const remoteResp = await fetch(`/api/apps/${id}`, { cache: "no-store" });
-    if (!remoteResp.ok) return null;
-    const shared = (await remoteResp.json()) as SharedPreviewResponse;
-    const hydrated: AppBootstrapData = {
-      id,
-      code: shared.code,
-      language: shared.language,
-      name: shared.name,
-      hasGeneratedIcon: Boolean(shared.hasGeneratedIcon),
-      assets: (shared.assets ?? []).map((asset) => ({
-        assetKey: asset.assetKey,
-        mimeType: asset.mimeType || "application/octet-stream",
-        url: buildPreviewAssetUrl(id, asset.assetKey),
-      })),
-    };
-
-    hydrateAppBootstrapToLocalStorage(hydrated);
-    return hydrated;
-  } catch {
-    return null;
-  }
+  const remote = await fetchRemoteBootstrapData(id);
+  if (!remote) return null;
+  hydrateAppBootstrapToLocalStorage(remote);
+  return remote;
 }

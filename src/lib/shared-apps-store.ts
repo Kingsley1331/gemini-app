@@ -12,6 +12,24 @@ import {
 const ALLOWED_ASSET_KEY = /^[a-zA-Z0-9_-]{1,120}$/;
 const ALLOWED_MIME_TYPE = /^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+$/;
 
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is NonNullable<typeof item> => item !== undefined)
+      .map((item) => stripUndefinedDeep(item)) as T;
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .map(([key, entry]) => [key, stripUndefinedDeep(entry)]),
+    ) as T;
+  }
+
+  return value;
+}
+
 function getSharedAppCandidatePaths(id: string): string[] {
   return Array.from(new Set([getSharedAppDocPath(id), `shared-apps/${id}`, `sharedApps/${id}`]));
 }
@@ -46,13 +64,25 @@ export function validateAssetInput(asset: SharedAppAssetInput): SharedAppAssetIn
     mimeType,
     data: asset.data?.trim(),
     url: asset.url?.trim(),
+    displayName: asset.displayName?.trim() || undefined,
+    rolePrompt: asset.rolePrompt?.trim() || undefined,
+    sourceType: asset.sourceType,
+    svgText: asset.svgText?.trim() || undefined,
   };
 }
 
 export async function uploadSharedAsset(
   id: string,
   asset: SharedAppAssetInput
-): Promise<{ assetKey: string; mimeType: string; storagePath: string } | null> {
+): Promise<{
+  assetKey: string;
+  mimeType: string;
+  storagePath: string;
+  displayName?: string;
+  rolePrompt?: string;
+  sourceType?: "upload" | "generated" | "edited";
+  svgText?: string;
+} | null> {
   const validated = validateAssetInput(asset);
   const storagePath = getSharedAssetStoragePath(id, validated.assetKey);
   const file = getFirebaseBucket().file(storagePath);
@@ -81,6 +111,10 @@ export async function uploadSharedAsset(
     assetKey: validated.assetKey,
     mimeType: validated.mimeType,
     storagePath,
+    displayName: validated.displayName,
+    rolePrompt: validated.rolePrompt,
+    sourceType: validated.sourceType,
+    svgText: validated.svgText,
   };
 }
 
@@ -103,7 +137,7 @@ export async function uploadSharedIcon(
 
 export async function upsertSharedApp(doc: SharedAppDoc): Promise<void> {
   const ref = getFirebaseDb().doc(getSharedAppDocPath(doc.id));
-  await ref.set(doc, { merge: true });
+  await ref.set(stripUndefinedDeep(doc), { merge: true });
   const verify = await ref.get();
   if (!verify.exists) {
     throw new Error(`Shared app write verification failed for id "${doc.id}".`);
@@ -173,6 +207,10 @@ export function toSharedAppReadPayload(doc: SharedAppDoc): SharedAppReadPayload 
     assets: (doc.assets || []).map((asset) => ({
       assetKey: asset.assetKey,
       mimeType: asset.mimeType,
+      displayName: asset.displayName,
+      rolePrompt: asset.rolePrompt,
+      sourceType: asset.sourceType,
+      svgText: asset.svgText,
     })),
     updatedAt: doc.updatedAt,
   };
@@ -211,7 +249,15 @@ export async function getSharedIconBytes(
 export async function buildSharedAppDoc(
   input: SharedAppPublishInput,
   opts?: {
-    assets?: Array<{ assetKey: string; mimeType: string; storagePath: string }>;
+    assets?: Array<{
+      assetKey: string;
+      mimeType: string;
+      storagePath: string;
+      displayName?: string;
+      rolePrompt?: string;
+      sourceType?: "upload" | "generated" | "edited";
+      svgText?: string;
+    }>;
     icon192Path?: string;
     icon512Path?: string;
   }

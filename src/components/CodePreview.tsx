@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent } from "react";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   Play,
   Code,
+  ImageIcon,
   Maximize2,
   Minimize2,
   RotateCcw,
@@ -18,10 +19,13 @@ import {
   Loader2,
   Share2,
   ExternalLink,
+  Plus,
+  Sparkles,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import JSZip from "jszip";
+import { isSvgMimeType, isVisualAsset, sanitizeAssetKey, type AppAsset } from "@/lib/app-assets";
 import { savePreviewToIDB, requestPersistentStorage } from "@/lib/preview-idb";
 import { saveApp } from "@/lib/saved-apps-idb";
 import {
@@ -35,31 +39,23 @@ interface CodePreviewProps {
   code: string;
   language: string;
   title?: string;
-  assets?: Array<{
-    url: string;
-    mimeType: string;
-    data?: string;
-    assetKey?: string;
-  }>;
+  assets?: AppAsset[];
   onDebug?: (error: string, code: string, language: string) => void;
   onSnapshot?: (snapshot: {
     url: string;
     mimeType: string;
     data: string;
   }) => void;
+  onAssetsChange?: (assets: AppAsset[]) => void;
   editSource?: "apps";
   existingAppId?: string;
   initialAppName?: string;
   initialHasGeneratedIcon?: boolean;
 }
 
-const EMPTY_PREVIEW_ASSETS: Array<{
-  url: string;
-  mimeType: string;
-  data?: string;
-  assetKey?: string;
-}> = [];
+const EMPTY_PREVIEW_ASSETS: AppAsset[] = [];
 const STUDIO_DRAFT_STORAGE_PREFIX = "studio-draft:";
+const ASSET_FILE_ACCEPT = "image/*,.svg";
 
 function normalizePreviewError(message: string): string {
   const invalidHookPattern =
@@ -189,11 +185,27 @@ function buildExternalImportPreamble(sourceCode: string): string {
   return lines.join("\n");
 }
 
+function getAssetDisplayName(asset: AppAsset, index: number): string {
+  return asset.displayName || asset.assetKey || `asset_${index + 1}`;
+}
+
+function getAssetBadgeLabel(asset: AppAsset): string {
+  if (isSvgMimeType(asset.mimeType)) return "SVG";
+  const mimeSubtype = (asset.mimeType || "").split("/")[1];
+  return mimeSubtype ? mimeSubtype.toUpperCase() : "IMAGE";
+}
+
+function dataUrlToBase64(dataUrl: string): string {
+  const [, base64 = ""] = dataUrl.split(",", 2);
+  return base64;
+}
+
 export default function CodePreview({
   code,
   language,
   title = "Preview",
   assets = EMPTY_PREVIEW_ASSETS,
+  onAssetsChange,
   editSource,
   existingAppId,
   initialAppName,
@@ -202,7 +214,8 @@ export default function CodePreview({
   onSnapshot,
 }: CodePreviewProps) {
   const pathname = usePathname();
-  const [activeTab, setActiveTab] = useState<"preview" | "code">(
+  const isStudioPage = pathname === "/studio";
+  const [activeTab, setActiveTab] = useState<"preview" | "code" | "assets">(
     language === "html" || language === "jsx" || language === "tsx"
       ? "preview"
       : "code",
@@ -219,13 +232,28 @@ export default function CodePreview({
   const [savePreviewId, setSavePreviewId] = useState<string | null>(null);
   const [hasSaveIcon, setHasSaveIcon] = useState(false);
   const [generatedIconBase64, setGeneratedIconBase64] = useState<string | null>(null);
+  const [generatedIcon512Base64, setGeneratedIcon512Base64] = useState<string | null>(null);
   const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
   const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
   const [assetUrlMap, setAssetUrlMap] = useState<Record<string, string>>({});
   const [isPublishingShare, setIsPublishingShare] = useState(false);
   const [shareStatus, setShareStatus] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [showAddAssetModal, setShowAddAssetModal] = useState(false);
+  const [addAssetMode, setAddAssetMode] = useState<"upload" | "raster" | "svg">("upload");
+  const [addAssetName, setAddAssetName] = useState("");
+  const [addAssetRolePrompt, setAddAssetRolePrompt] = useState("");
+  const [addAssetPrompt, setAddAssetPrompt] = useState("");
+  const [addAssetStatus, setAddAssetStatus] = useState<string | null>(null);
+  const [pendingUploadAsset, setPendingUploadAsset] = useState<AppAsset | null>(null);
+  const [isCreatingAsset, setIsCreatingAsset] = useState(false);
+  const [selectedAssetKey, setSelectedAssetKey] = useState<string | null>(null);
+  const [assetEditPrompt, setAssetEditPrompt] = useState("");
+  const [assetEditStatus, setAssetEditStatus] = useState<string | null>(null);
+  const [assetCandidate, setAssetCandidate] = useState<AppAsset | null>(null);
+  const [isGeneratingAssetCandidate, setIsGeneratingAssetCandidate] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const addAssetInputRef = useRef<HTMLInputElement>(null);
   const latestAssetsRef = useRef(assets);
   const shareInstallsEnabled =
     process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "1" ||
@@ -235,7 +263,7 @@ export default function CodePreview({
       assets
         .map(
           (asset, index) =>
-            `${asset.assetKey || `asset_${index + 1}`}|${asset.mimeType}|${asset.data?.length || 0}|${asset.url}`,
+            `${asset.assetKey || `asset_${index + 1}`}|${asset.mimeType}|${asset.data?.length || 0}|${asset.url}|${asset.displayName || ""}|${asset.rolePrompt || ""}|${asset.svgText?.length || 0}`,
         )
         .join("||"),
     [assets],
@@ -246,6 +274,66 @@ export default function CodePreview({
   }, [assets]);
 
   useEffect(() => {
+    if (!isStudioPage && activeTab === "assets") {
+      setActiveTab(
+        language === "html" || language === "jsx" || language === "tsx"
+          ? "preview"
+          : "code",
+      );
+    }
+  }, [activeTab, isStudioPage, language]);
+
+  const buildUniqueAssetKey = useCallback((rawName: string) => {
+    const fallback = `asset_${latestAssetsRef.current.length + 1}`;
+    const baseKey = sanitizeAssetKey(rawName, fallback);
+    const usedKeys = new Set(
+      latestAssetsRef.current.map((asset, index) => asset.assetKey || `asset_${index + 1}`),
+    );
+    let nextKey = baseKey;
+    let suffix = 2;
+    while (usedKeys.has(nextKey)) {
+      nextKey = `${baseKey}_${suffix}`;
+      suffix += 1;
+    }
+    return nextKey;
+  }, []);
+
+  const resolveAssetPreviewUrl = useCallback(
+    (asset: AppAsset, index: number) => {
+      const key = asset.assetKey || `asset_${index + 1}`;
+      const placeholder = `__ASSET_${key}__`;
+      if (assetUrlMap[placeholder]) return assetUrlMap[placeholder];
+      if (asset.data) return `data:${asset.mimeType};base64,${asset.data}`;
+      return asset.url;
+    },
+    [assetUrlMap],
+  );
+
+  const visualAssets = useMemo(
+    () =>
+      assets
+        .map((asset, index) => ({ asset, index }))
+        .filter(({ asset }) => isVisualAsset(asset.mimeType)),
+    [assets],
+  );
+
+  const selectedAssetEntry = useMemo(
+    () =>
+      visualAssets.find(
+        ({ asset, index }) =>
+          (asset.assetKey || `asset_${index + 1}`) === selectedAssetKey,
+      ) || null,
+    [selectedAssetKey, visualAssets],
+  );
+
+  const selectedAsset = selectedAssetEntry?.asset || null;
+  const selectedAssetIndex = selectedAssetEntry?.index ?? -1;
+  const selectedAssetPreviewUrl =
+    selectedAsset && selectedAssetIndex >= 0
+      ? resolveAssetPreviewUrl(selectedAsset, selectedAssetIndex)
+      : "";
+
+  useEffect(() => {
     const stableAssets = latestAssetsRef.current;
     if (!stableAssets.length) {
       setAssetUrlMap((prev) =>
@@ -254,51 +342,79 @@ export default function CodePreview({
       return;
     }
 
+    let cancelled = false;
     const createdObjectUrls: string[] = [];
-    const nextMap: Record<string, string> = {};
     const previewAssetId = existingAppId || savePreviewId;
 
-    for (const [index, asset] of stableAssets.entries()) {
-      const key = asset.assetKey || `asset_${index + 1}`;
-      const placeholder = `__ASSET_${key}__`;
-      let resolvedUrl =
-        asset.url ||
-        (previewAssetId ? buildPreviewAssetUrl(previewAssetId, key) : "");
+    void (async () => {
+      const nextMap: Record<string, string> = {};
 
-      if (asset.data) {
-        try {
-          const binaryString = window.atob(asset.data);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
+      for (const [index, asset] of stableAssets.entries()) {
+        const key = asset.assetKey || `asset_${index + 1}`;
+        const placeholder = `__ASSET_${key}__`;
+        const fallbackUrl =
+          asset.url ||
+          (previewAssetId ? buildPreviewAssetUrl(previewAssetId, key) : "");
+        let resolvedUrl = fallbackUrl;
+
+        if (asset.data) {
+          try {
+            const binaryString = window.atob(asset.data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            const blob = new Blob([bytes], {
+              type: asset.mimeType || "image/png",
+            });
+            resolvedUrl = URL.createObjectURL(blob);
+            createdObjectUrls.push(resolvedUrl);
+          } catch {
+            resolvedUrl = fallbackUrl;
           }
-          const blob = new Blob([bytes], {
-            type: asset.mimeType || "image/png",
-          });
-          resolvedUrl = URL.createObjectURL(blob);
-          createdObjectUrls.push(resolvedUrl);
-        } catch {
-          resolvedUrl =
-            asset.url ||
-            (previewAssetId ? buildPreviewAssetUrl(previewAssetId, key) : "");
+        } else if (fallbackUrl && previewAssetId) {
+          try {
+            const cacheNames = ["preview-pwa-v5", "preview-pwa-v6"];
+            let cachedResponse: Response | undefined;
+            for (const cacheName of cacheNames) {
+              const cache = await caches.open(cacheName);
+              const match = await cache.match(new Request(fallbackUrl));
+              if (match) {
+                cachedResponse = match;
+                break;
+              }
+            }
+
+            if (cachedResponse) {
+              const blob = await cachedResponse.blob();
+              resolvedUrl = URL.createObjectURL(blob);
+              createdObjectUrls.push(resolvedUrl);
+            }
+          } catch {
+            resolvedUrl = fallbackUrl;
+          }
         }
+
+        nextMap[placeholder] = resolvedUrl;
       }
 
-      nextMap[placeholder] = resolvedUrl;
-    }
+      if (cancelled) return;
 
-    setAssetUrlMap((prev) => {
-      const prevKeys = Object.keys(prev);
-      const nextKeys = Object.keys(nextMap);
-      if (prevKeys.length === nextKeys.length) {
-        const unchanged = nextKeys.every((key) => prev[key] === nextMap[key]);
-        if (unchanged) {
-          return prev;
+      setAssetUrlMap((prev) => {
+        const prevKeys = Object.keys(prev);
+        const nextKeys = Object.keys(nextMap);
+        if (prevKeys.length === nextKeys.length) {
+          const unchanged = nextKeys.every((mapKey) => prev[mapKey] === nextMap[mapKey]);
+          if (unchanged) {
+            return prev;
+          }
         }
-      }
-      return nextMap;
-    });
+        return nextMap;
+      });
+    })();
+
     return () => {
+      cancelled = true;
       for (const objectUrl of createdObjectUrls) {
         URL.revokeObjectURL(objectUrl);
       }
@@ -315,6 +431,308 @@ export default function CodePreview({
       }
     }
   }, []);
+
+  const readFileAsDataUrl = useCallback((file: File) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error("Unable to read file."));
+      };
+      reader.onerror = () => reject(reader.error || new Error("Unable to read file."));
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const blobToBase64 = useCallback((blob: Blob) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === "string") {
+          resolve(dataUrlToBase64(reader.result));
+          return;
+        }
+        reject(new Error("Unable to encode asset."));
+      };
+      reader.onerror = () => reject(reader.error || new Error("Unable to encode asset."));
+      reader.readAsDataURL(blob);
+    });
+  }, []);
+
+  const updateAssets = useCallback(
+    (updater: (current: AppAsset[]) => AppAsset[]) => {
+      if (!onAssetsChange) return;
+      onAssetsChange(updater(latestAssetsRef.current));
+    },
+    [onAssetsChange],
+  );
+
+  const ensureInlineAsset = useCallback(
+    async (asset: AppAsset, index: number): Promise<AppAsset> => {
+      if (asset.data && (!isSvgMimeType(asset.mimeType) || asset.svgText)) {
+        return asset;
+      }
+
+      const resolvedUrl = resolveAssetPreviewUrl(asset, index);
+      if (!resolvedUrl) {
+        throw new Error("This asset is missing file data.");
+      }
+
+      const response = await fetch(resolvedUrl);
+      if (!response.ok) {
+        throw new Error("Unable to load asset bytes.");
+      }
+
+      const blob = await response.blob();
+      const data = await blobToBase64(blob);
+      const svgText = isSvgMimeType(asset.mimeType)
+        ? await blob.text()
+        : asset.svgText;
+
+      return {
+        ...asset,
+        mimeType: blob.type || asset.mimeType,
+        url: resolvedUrl,
+        data,
+        svgText,
+      };
+    },
+    [blobToBase64, resolveAssetPreviewUrl],
+  );
+
+  const resetAddAssetModal = useCallback(() => {
+    setShowAddAssetModal(false);
+    setAddAssetMode("upload");
+    setAddAssetName("");
+    setAddAssetRolePrompt("");
+    setAddAssetPrompt("");
+    setAddAssetStatus(null);
+    setPendingUploadAsset(null);
+    if (addAssetInputRef.current) {
+      addAssetInputRef.current.value = "";
+    }
+  }, []);
+
+  const closeAssetModal = useCallback(() => {
+    setSelectedAssetKey(null);
+    setAssetEditPrompt("");
+    setAssetEditStatus(null);
+    setAssetCandidate(null);
+  }, []);
+
+  const openAssetModal = useCallback((assetKey: string) => {
+    setSelectedAssetKey(assetKey);
+    setAssetEditPrompt("");
+    setAssetEditStatus(null);
+    setAssetCandidate(null);
+  }, []);
+
+  const handleAddAssetFileChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      if (!file.type.startsWith("image/") && !file.name.toLowerCase().endsWith(".svg")) {
+        setAddAssetStatus("Please choose an image or SVG file.");
+        return;
+      }
+
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        const svgText = file.type.includes("svg") || file.name.toLowerCase().endsWith(".svg")
+          ? await file.text()
+          : undefined;
+        const displayName = file.name;
+        const assetKey = buildUniqueAssetKey(displayName);
+        setPendingUploadAsset({
+          assetKey,
+          displayName,
+          mimeType: file.type || (svgText ? "image/svg+xml" : "image/png"),
+          url: dataUrl,
+          data: dataUrlToBase64(dataUrl),
+          rolePrompt: addAssetRolePrompt.trim() || undefined,
+          sourceType: "upload",
+          svgText,
+        });
+        if (!addAssetName.trim()) {
+          setAddAssetName(displayName);
+        }
+        setAddAssetStatus("Asset ready to add.");
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "Unable to read asset.";
+        setAddAssetStatus(message);
+      }
+    },
+    [addAssetName, addAssetRolePrompt, buildUniqueAssetKey, readFileAsDataUrl],
+  );
+
+  const handleCreateAsset = useCallback(async () => {
+    if (!onAssetsChange || isCreatingAsset) return;
+
+    const displayName = addAssetName.trim() || pendingUploadAsset?.displayName || "app-asset";
+    const rolePrompt = addAssetRolePrompt.trim() || undefined;
+    const assetKey = buildUniqueAssetKey(displayName);
+
+    if (addAssetMode === "upload") {
+      if (!pendingUploadAsset) {
+        setAddAssetStatus("Choose a file first.");
+        return;
+      }
+
+      updateAssets((current) => [
+        ...current,
+        {
+          ...pendingUploadAsset,
+          assetKey,
+          displayName,
+          rolePrompt,
+          sourceType: "upload",
+        },
+      ]);
+      resetAddAssetModal();
+      return;
+    }
+
+    if (!addAssetPrompt.trim()) {
+      setAddAssetStatus("Describe the asset you want to generate.");
+      return;
+    }
+
+    setIsCreatingAsset(true);
+    setAddAssetStatus("Generating asset...");
+    try {
+      const response = await fetch("/api/assets/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: addAssetPrompt.trim(),
+          rolePrompt,
+          outputType: addAssetMode === "svg" ? "svg" : "raster",
+          pro: true,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.asset) {
+        throw new Error(payload?.details || payload?.error || "Unable to generate asset.");
+      }
+
+      updateAssets((current) => [
+        ...current,
+        {
+          assetKey,
+          displayName,
+          rolePrompt,
+          sourceType: "generated",
+          mimeType: payload.asset.mimeType || "image/png",
+          data: payload.asset.data,
+          url: payload.asset.url || "",
+          svgText: payload.asset.svgText,
+        },
+      ]);
+      resetAddAssetModal();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unable to generate asset.";
+      setAddAssetStatus(message);
+    } finally {
+      setIsCreatingAsset(false);
+    }
+  }, [
+    addAssetMode,
+    addAssetName,
+    addAssetPrompt,
+    addAssetRolePrompt,
+    buildUniqueAssetKey,
+    isCreatingAsset,
+    onAssetsChange,
+    pendingUploadAsset,
+    resetAddAssetModal,
+    updateAssets,
+  ]);
+
+  const handleGenerateAssetCandidate = useCallback(async () => {
+    if (!selectedAsset || selectedAssetIndex < 0 || isGeneratingAssetCandidate) return;
+    if (!assetEditPrompt.trim()) {
+      setAssetEditStatus("Describe the changes you want to make first.");
+      return;
+    }
+
+    setIsGeneratingAssetCandidate(true);
+    setAssetEditStatus("Generating candidate...");
+    try {
+      const preparedAsset = await ensureInlineAsset(selectedAsset, selectedAssetIndex);
+      const endpoint = isSvgMimeType(preparedAsset.mimeType)
+        ? "/api/assets/edit-svg"
+        : "/api/assets/edit-image";
+      const body = isSvgMimeType(preparedAsset.mimeType)
+        ? {
+            prompt: assetEditPrompt.trim(),
+            rolePrompt: preparedAsset.rolePrompt,
+            displayName: preparedAsset.displayName,
+            svgText: preparedAsset.svgText,
+          }
+        : {
+            prompt: assetEditPrompt.trim(),
+            rolePrompt: preparedAsset.rolePrompt,
+            displayName: preparedAsset.displayName,
+            mimeType: preparedAsset.mimeType,
+            outputMimeType: preparedAsset.mimeType,
+            data: preparedAsset.data,
+            pro: true,
+          };
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.asset) {
+        throw new Error(payload?.details || payload?.error || "Unable to generate candidate.");
+      }
+
+      setAssetCandidate({
+        ...preparedAsset,
+        mimeType: payload.asset.mimeType || preparedAsset.mimeType,
+        data: payload.asset.data,
+        url: payload.asset.url || preparedAsset.url,
+        svgText: payload.asset.svgText ?? preparedAsset.svgText,
+        sourceType: "edited",
+      });
+      setAssetEditStatus("Candidate ready. Review it, then click Keep.");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unable to edit asset.";
+      setAssetEditStatus(message);
+    } finally {
+      setIsGeneratingAssetCandidate(false);
+    }
+  }, [
+    assetEditPrompt,
+    ensureInlineAsset,
+    isGeneratingAssetCandidate,
+    selectedAsset,
+    selectedAssetIndex,
+  ]);
+
+  const handleKeepAssetCandidate = useCallback(() => {
+    if (!assetCandidate || !selectedAssetKey) return;
+    updateAssets((current) =>
+      current.map((asset, index) =>
+        (asset.assetKey || `asset_${index + 1}`) === selectedAssetKey
+          ? {
+              ...asset,
+              ...assetCandidate,
+              assetKey: selectedAssetKey,
+              displayName: assetCandidate.displayName || asset.displayName,
+              rolePrompt: assetCandidate.rolePrompt || asset.rolePrompt,
+            }
+          : asset,
+      ),
+    );
+    closeAssetModal();
+  }, [assetCandidate, closeAssetModal, selectedAssetKey, updateAssets]);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(code);
@@ -610,6 +1028,9 @@ export default function CodePreview({
     const existingIcon192 = targetId
       ? localStorage.getItem(`pwa-preview-${targetId}-icon192-b64`)
       : null;
+    const existingIcon512 = targetId
+      ? localStorage.getItem(`pwa-preview-${targetId}-icon512-b64`)
+      : null;
     const hasExistingIcon = targetId
       ? existingIconFromStorage || Boolean(initialHasGeneratedIcon)
       : false;
@@ -624,6 +1045,7 @@ export default function CodePreview({
     setSavePreviewId(targetId);
     setHasSaveIcon(hasExistingIcon);
     setGeneratedIconBase64(existingIcon192 || null);
+    setGeneratedIcon512Base64(existingIcon512 || null);
     if (existingIcon192) {
       setGeneratedIconPreviewUrl(`data:image/png;base64,${existingIcon192}`);
     } else if (hasExistingIcon && targetId) {
@@ -703,6 +1125,8 @@ export default function CodePreview({
         localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
         setGeneratedIconBase64(icon192b64);
       }
+      setGeneratedIcon512Base64(icon512b64);
+      localStorage.removeItem(`pwa-preview-${id}-icon512-b64`);
       localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
       localStorage.setItem(`pwa-preview-${id}-icon-version`, String(iconVersion));
       await cacheGeneratedPreviewIcons(id, { icon192b64, icon512b64, version: iconVersion });
@@ -734,6 +1158,12 @@ export default function CodePreview({
     const name = saveName.trim() || "My App";
     const hasGeneratedIcon = hasSaveIcon;
     const effectiveLanguage = resolveEffectiveLanguage();
+    const icon192Base64 =
+      localStorage.getItem(`pwa-preview-${id}-icon192-b64`) || generatedIconBase64 || undefined;
+    const icon512Base64 =
+      generatedIcon512Base64 ||
+      localStorage.getItem(`pwa-preview-${id}-icon512-b64`) ||
+      undefined;
 
     setIsSavingApp(true);
     setSaveStatus("Saving...");
@@ -780,11 +1210,17 @@ export default function CodePreview({
           code,
           language: effectiveLanguage,
           hasGeneratedIcon,
+          icon192Base64,
+          icon512Base64,
           assets: (latestAssetsRef.current || []).map((asset, index) => ({
             assetKey: asset.assetKey || `asset_${index + 1}`,
             mimeType: asset.mimeType || "application/octet-stream",
             data: asset.data,
             url: asset.url,
+            displayName: asset.displayName,
+            rolePrompt: asset.rolePrompt,
+            sourceType: asset.sourceType,
+            svgText: asset.svgText,
           })),
         }),
       });
@@ -794,12 +1230,22 @@ export default function CodePreview({
           publishData?.details || publishData?.error || "Cloud save failed.";
         setSaveStatus(`Saved locally. Firebase sync failed: ${details}`);
       } else {
+        if (
+          typeof publishData?.updatedAt === "number" &&
+          Number.isFinite(publishData.updatedAt) &&
+          publishData.updatedAt > 0
+        ) {
+          localStorage.setItem(
+            `pwa-preview-${id}-remote-updated-at`,
+            String(publishData.updatedAt),
+          );
+        }
         const sharedLink = publishData.shareUrl as string;
         setShareUrl(sharedLink);
         setShareStatus("Saved locally and synced to Firebase.");
         setSaveStatus("Saved to My Apps and Firebase.");
+        setShowSaveModal(false);
       }
-      setShowSaveModal(false);
     } catch {
       setSaveStatus("Failed to save. Please try again.");
     } finally {
@@ -810,6 +1256,7 @@ export default function CodePreview({
     editSource,
     existingAppId,
     generatedIconBase64,
+    generatedIcon512Base64,
     hasSaveIcon,
     isSavingApp,
     resolveEffectiveLanguage,
@@ -862,6 +1309,10 @@ export default function CodePreview({
             mimeType: asset.mimeType || "application/octet-stream",
             data: asset.data,
             url: asset.url,
+            displayName: asset.displayName,
+            rolePrompt: asset.rolePrompt,
+            sourceType: asset.sourceType,
+            svgText: asset.svgText,
           })),
         }),
       });
@@ -1540,6 +1991,13 @@ export default function CodePreview({
         isFullscreen ? "fixed inset-1 z-50 sm:inset-4" : "w-full"
       }`}
     >
+      <input
+        ref={addAssetInputRef}
+        type="file"
+        accept={ASSET_FILE_ACCEPT}
+        className="hidden"
+        onChange={handleAddAssetFileChange}
+      />
       <div className="flex flex-col gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900/50 sm:flex-row sm:items-center sm:justify-between sm:px-4">
         <div className="flex flex-wrap items-center gap-2 sm:gap-4">
           <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
@@ -1554,7 +2012,7 @@ export default function CodePreview({
                   : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
               }`}
             >
-              <Play className="w-3 h-3 inline-block mr-1" /> Preview1
+              <Play className="w-3 h-3 inline-block mr-1" /> Preview
             </button>
             <button
               onClick={() => setActiveTab("code")}
@@ -1566,6 +2024,18 @@ export default function CodePreview({
             >
               <Code className="w-3 h-3 inline-block mr-1" /> Code
             </button>
+            {isStudioPage ? (
+              <button
+                onClick={() => setActiveTab("assets")}
+                className={`rounded-md px-3 py-1 text-xs transition-all ${
+                  activeTab === "assets"
+                    ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm"
+                    : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                }`}
+              >
+                <ImageIcon className="w-3 h-3 inline-block mr-1" /> Assets
+              </button>
+            ) : null}
           </div>
           {error && onDebug && activeTab === "preview" && (
             <button
@@ -1692,7 +2162,7 @@ export default function CodePreview({
             sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
             title="Code Preview"
           />
-        ) : (
+        ) : activeTab === "code" || !isStudioPage ? (
           <div className="h-full max-h-[55vh] overflow-auto bg-[#1e1e1e] sm:max-h-[600px]">
             <SyntaxHighlighter
               language={language}
@@ -1723,8 +2193,358 @@ export default function CodePreview({
               {code}
             </SyntaxHighlighter>
           </div>
+        ) : (
+          <div className="flex h-full min-h-[320px] flex-col sm:min-h-[500px]">
+            <div className="flex items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Visual Assets
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  View, add, and iterate on the images used by this app.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddAssetModal(true)}
+                disabled={!onAssetsChange}
+                className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add Asset
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              {visualAssets.length === 0 ? (
+                <div className="flex min-h-[260px] flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-300 bg-white/70 px-6 text-center dark:border-zinc-700 dark:bg-zinc-950/40">
+                  <ImageIcon className="mb-3 h-10 w-10 text-zinc-400" />
+                  <h4 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    No visual assets yet
+                  </h4>
+                  <p className="mt-1 max-w-md text-sm text-zinc-500 dark:text-zinc-400">
+                    Add an image or SVG, or generate one from a prompt, and it will show up here.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {visualAssets.map(({ asset, index }) => {
+                    const assetKey = asset.assetKey || `asset_${index + 1}`;
+                    const previewUrl = resolveAssetPreviewUrl(asset, index);
+                    return (
+                      <button
+                        key={assetKey}
+                        type="button"
+                        onClick={() => openAssetModal(assetKey)}
+                        className="group rounded-2xl border border-zinc-200 bg-white p-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-zinc-400 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-zinc-600"
+                      >
+                        <div className="relative mb-3 flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-900">
+                          {previewUrl ? (
+                            <Image
+                              src={previewUrl}
+                              alt={getAssetDisplayName(asset, index)}
+                              fill
+                              unoptimized
+                              className="object-contain"
+                            />
+                          ) : (
+                            <ImageIcon className="h-10 w-10 text-zinc-400" />
+                          )}
+                        </div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                              {getAssetDisplayName(asset, index)}
+                            </p>
+                            <p className="mt-1 line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
+                              {asset.rolePrompt || "No role prompt yet."}
+                            </p>
+                          </div>
+                          <span className="rounded-full bg-zinc-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                            {getAssetBadgeLabel(asset)}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
+
+      {showAddAssetModal ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-2xl rounded-xl border border-zinc-200 bg-white p-4 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Add Asset
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Upload a visual asset or generate one from a prompt.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={resetAddAssetModal}
+                className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mb-4 flex flex-wrap gap-2">
+              {[
+                { id: "upload", label: "Upload" },
+                { id: "raster", label: "Generate Image" },
+                { id: "svg", label: "Generate SVG" },
+              ].map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => {
+                    setAddAssetMode(option.id as "upload" | "raster" | "svg");
+                    setAddAssetStatus(null);
+                  }}
+                  className={`rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+                    addAssetMode === option.id
+                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-4">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    File Name
+                  </label>
+                  <input
+                    value={addAssetName}
+                    onChange={(e) => setAddAssetName(e.target.value)}
+                    className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    placeholder="hero-image.png"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    Role Prompt
+                  </label>
+                  <textarea
+                    value={addAssetRolePrompt}
+                    onChange={(e) => setAddAssetRolePrompt(e.target.value)}
+                    className="min-h-[100px] w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    placeholder="Describe how this asset should be used in the app."
+                  />
+                </div>
+
+                {addAssetMode === "upload" ? (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                      Asset File
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => addAssetInputRef.current?.click()}
+                      className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Choose File
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                      Generation Prompt
+                    </label>
+                    <textarea
+                      value={addAssetPrompt}
+                      onChange={(e) => setAddAssetPrompt(e.target.value)}
+                      className="min-h-[120px] w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      placeholder={
+                        addAssetMode === "svg"
+                          ? "Describe the SVG you want to generate."
+                          : "Describe the image you want to generate."
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
+                <p className="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                  Preview
+                </p>
+                {pendingUploadAsset && addAssetMode === "upload" ? (
+                  <div className="space-y-3">
+                    <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-white dark:bg-zinc-900">
+                      <Image
+                        src={pendingUploadAsset.url}
+                        alt={pendingUploadAsset.displayName || "Pending asset"}
+                        fill
+                        unoptimized
+                        className="object-contain"
+                      />
+                    </div>
+                    <p className="text-sm text-zinc-600 dark:text-zinc-300">
+                      {pendingUploadAsset.displayName}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex min-h-[260px] flex-col items-center justify-center text-center">
+                    <Sparkles className="mb-3 h-8 w-8 text-zinc-400" />
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      {addAssetMode === "upload"
+                        ? "Pick a file to preview it here before adding it."
+                        : "The generated asset will be added to the gallery when it is ready."}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {addAssetStatus ? (
+              <p className="mt-4 text-xs text-zinc-600 dark:text-zinc-300">{addAssetStatus}</p>
+            ) : null}
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={resetAddAssetModal}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateAsset}
+                disabled={isCreatingAsset || !onAssetsChange}
+                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+              >
+                {isCreatingAsset ? "Generating..." : addAssetMode === "upload" ? "Add Asset" : "Generate Asset"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedAsset ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-5xl rounded-xl border border-zinc-200 bg-white p-4 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  {selectedAsset.displayName || selectedAsset.assetKey || "Asset"}
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {selectedAsset.rolePrompt || "No role prompt saved yet."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeAssetModal}
+                className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Current
+                  </p>
+                  <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-lg bg-white dark:bg-zinc-900">
+                    {selectedAssetPreviewUrl ? (
+                      <Image
+                        src={selectedAssetPreviewUrl}
+                        alt={selectedAsset.displayName || "Current asset"}
+                        fill
+                        unoptimized
+                        className="object-contain"
+                      />
+                    ) : (
+                      <ImageIcon className="h-10 w-10 text-zinc-400" />
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Candidate
+                  </p>
+                  <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-lg bg-white dark:bg-zinc-900">
+                    {assetCandidate?.url ? (
+                      <Image
+                        src={assetCandidate.url}
+                        alt={assetCandidate.displayName || "Candidate asset"}
+                        fill
+                        unoptimized
+                        className="object-contain"
+                      />
+                    ) : (
+                      <div className="px-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
+                        Generate a candidate to preview the updated asset here.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Change Prompt
+                  </p>
+                  <textarea
+                    value={assetEditPrompt}
+                    onChange={(e) => setAssetEditPrompt(e.target.value)}
+                    className="mt-2 min-h-[180px] w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    placeholder="Describe the visual changes you want to make."
+                  />
+                </div>
+
+                {assetEditStatus ? (
+                  <p className="text-xs text-zinc-600 dark:text-zinc-300">{assetEditStatus}</p>
+                ) : null}
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={closeAssetModal}
+                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:text-zinc-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleGenerateAssetCandidate}
+                    disabled={isGeneratingAssetCandidate || !onAssetsChange}
+                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+                  >
+                    {isGeneratingAssetCandidate ? "Generating..." : "Generate"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleKeepAssetCandidate}
+                    disabled={!assetCandidate || !onAssetsChange}
+                    className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                  >
+                    Keep
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showSaveModal ? (
         <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center p-4">

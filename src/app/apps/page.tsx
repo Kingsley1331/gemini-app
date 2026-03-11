@@ -6,6 +6,7 @@ import { getAllSavedApps, saveApp, type SavedApp } from "@/lib/saved-apps-idb";
 import { purgeLocalAppData } from "@/lib/local-app-cleanup";
 import { requestPersistentStorage, savePreviewToIDB } from "@/lib/preview-idb";
 import { loadAppBootstrapData, type AppBootstrapData } from "@/lib/app-bootstrap";
+import { isSvgMimeType, type AppAsset } from "@/lib/app-assets";
 import {
   cacheGeneratedPreviewIcons,
   createPwaPreviewId,
@@ -42,6 +43,68 @@ type GenerateIconResponse = {
 function stripDataUrlPrefix(value?: string | null): string | null {
   if (!value) return null;
   return value.replace(/^data:[^,]+,/, "");
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Unable to encode cloned asset."));
+        return;
+      }
+      resolve(stripDataUrlPrefix(reader.result) || "");
+    };
+    reader.onerror = () => reject(reader.error || new Error("Unable to encode cloned asset."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function materializeCloneAsset(asset: AppBootstrapData["assets"][number], index: number): Promise<AppAsset> {
+  if (asset.data) {
+    return {
+      assetKey: asset.assetKey || `asset_${index + 1}`,
+      mimeType: asset.mimeType || "application/octet-stream",
+      data: asset.data,
+      url: asset.url,
+      displayName: asset.displayName,
+      rolePrompt: asset.rolePrompt,
+      sourceType: asset.sourceType,
+      svgText: asset.svgText,
+    };
+  }
+
+  if (!asset.url) {
+    return {
+      assetKey: asset.assetKey || `asset_${index + 1}`,
+      mimeType: asset.mimeType || "application/octet-stream",
+      url: "",
+      displayName: asset.displayName,
+      rolePrompt: asset.rolePrompt,
+      sourceType: asset.sourceType,
+      svgText: asset.svgText,
+    };
+  }
+
+  const response = await fetch(asset.url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Unable to copy asset "${asset.displayName || asset.assetKey || `asset_${index + 1}`}".`);
+  }
+
+  const blob = await response.blob();
+  const mimeType = blob.type || asset.mimeType || "application/octet-stream";
+  return {
+    assetKey: asset.assetKey || `asset_${index + 1}`,
+    mimeType,
+    data: await blobToBase64(blob),
+    url: asset.url,
+    displayName: asset.displayName,
+    rolePrompt: asset.rolePrompt,
+    sourceType: asset.sourceType,
+    svgText: isSvgMimeType(mimeType)
+      ? asset.svgText || (await blob.text())
+      : asset.svgText,
+  };
 }
 
 function getInitialCloneIconState(app: MergedApp) {
@@ -361,12 +424,6 @@ export default function AppsPage() {
     const id = clonePreviewId;
     const name = cloneName.trim() || "My App";
     const timestamp = Date.now();
-    const assets = cloneSourceData.assets.map((asset, index) => ({
-      assetKey: asset.assetKey || `asset_${index + 1}`,
-      mimeType: asset.mimeType || "application/octet-stream",
-      data: asset.data,
-      url: asset.url,
-    }));
 
     setIsSavingClone(true);
     setCloneStatus("Saving clone...");
@@ -390,6 +447,11 @@ export default function AppsPage() {
         }
         nextIconBase64 = (await applyIconResponse(id, copyData, "copied")) ?? nextIconBase64;
       }
+
+      setCloneStatus("Copying assets...");
+      const assets = await Promise.all(
+        cloneSourceData.assets.map((asset, index) => materializeCloneAsset(asset, index)),
+      );
 
       localStorage.setItem(`pwa-preview-${id}-code`, cloneSourceData.code);
       localStorage.setItem(`pwa-preview-${id}-language`, cloneSourceData.language);

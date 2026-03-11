@@ -8,6 +8,10 @@ export interface SharedAppAssetInput {
   mimeType: string;
   data?: string;
   url?: string;
+  displayName?: string;
+  rolePrompt?: string;
+  sourceType?: "upload" | "generated" | "edited";
+  svgText?: string;
 }
 
 export interface SharedAppPublishInput {
@@ -16,6 +20,8 @@ export interface SharedAppPublishInput {
   code: string;
   language: string;
   hasGeneratedIcon: boolean;
+  icon192Base64?: string;
+  icon512Base64?: string;
   assets?: SharedAppAssetInput[];
 }
 
@@ -23,6 +29,10 @@ export interface SharedAppAssetRef {
   assetKey: string;
   mimeType: string;
   storagePath: string;
+  displayName?: string;
+  rolePrompt?: string;
+  sourceType?: "upload" | "generated" | "edited";
+  svgText?: string;
 }
 
 export interface SharedAppDoc {
@@ -48,6 +58,10 @@ export interface SharedAppReadPayload {
   assets: Array<{
     assetKey: string;
     mimeType: string;
+    displayName?: string;
+    rolePrompt?: string;
+    sourceType?: "upload" | "generated" | "edited";
+    svgText?: string;
   }>;
   icon192Url?: string;
   icon512Url?: string;
