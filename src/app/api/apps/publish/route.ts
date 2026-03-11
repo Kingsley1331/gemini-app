@@ -66,6 +66,7 @@ function parsePublishBody(body: unknown, baseOrigin: string): SharedAppPublishIn
     const assetKey = normalizeAssetKey(rawAsset.assetKey || `asset_${index + 1}`);
     const mimeType = (rawAsset.mimeType || "application/octet-stream").trim();
     const data = rawAsset.data?.trim();
+    const storagePath = rawAsset.storagePath?.trim();
     const rawUrl = rawAsset.url?.trim();
     const url =
       rawUrl && rawUrl.startsWith("/")
@@ -78,7 +79,7 @@ function parsePublishBody(body: unknown, baseOrigin: string): SharedAppPublishIn
     if (data && data.length > MAX_SHARED_ASSET_BASE64_LENGTH) {
       throw new Error(`Asset ${assetKey} is too large for base64 upload.`);
     }
-    return { assetKey, mimeType, data, url, displayName, rolePrompt, sourceType, svgText };
+    return { assetKey, mimeType, data, url, storagePath, displayName, rolePrompt, sourceType, svgText };
   });
 
   return {

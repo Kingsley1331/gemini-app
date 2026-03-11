@@ -7,6 +7,7 @@ import { purgeLocalAppData } from "@/lib/local-app-cleanup";
 import { requestPersistentStorage, savePreviewToIDB } from "@/lib/preview-idb";
 import { loadAppBootstrapData, type AppBootstrapData } from "@/lib/app-bootstrap";
 import { isSvgMimeType, type AppAsset } from "@/lib/app-assets";
+import { ensureDraftAppAssets } from "@/lib/app-asset-drafts";
 import {
   cacheGeneratedPreviewIcons,
   createPwaPreviewId,
@@ -452,6 +453,8 @@ export default function AppsPage() {
       const assets = await Promise.all(
         cloneSourceData.assets.map((asset, index) => materializeCloneAsset(asset, index)),
       );
+      setCloneStatus("Uploading assets...");
+      const preparedAssets = await ensureDraftAppAssets(id, assets);
 
       localStorage.setItem(`pwa-preview-${id}-code`, cloneSourceData.code);
       localStorage.setItem(`pwa-preview-${id}-language`, cloneSourceData.language);
@@ -466,7 +469,7 @@ export default function AppsPage() {
         localStorage.removeItem(`pwa-preview-${id}-icon-version`);
       }
 
-      await persistPwaPreviewAssets(id, assets);
+      await persistPwaPreviewAssets(id, preparedAssets);
       savePreviewToIDB({
         id,
         standaloneHTML: "",
@@ -498,7 +501,16 @@ export default function AppsPage() {
           code: cloneSourceData.code,
           language: cloneSourceData.language,
           hasGeneratedIcon: cloneHasIcon,
-          assets,
+          assets: preparedAssets.map((asset, index) => ({
+            assetKey: asset.assetKey || `asset_${index + 1}`,
+            mimeType: asset.mimeType || "application/octet-stream",
+            url: asset.url,
+            storagePath: asset.storagePath,
+            displayName: asset.displayName,
+            rolePrompt: asset.rolePrompt,
+            sourceType: asset.sourceType,
+            svgText: asset.svgText,
+          })),
         }),
       });
       const publishData = (await publishResp.json().catch(() => ({}))) as GenerateIconResponse;

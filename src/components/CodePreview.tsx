@@ -26,6 +26,11 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import JSZip from "jszip";
 import { isSvgMimeType, isVisualAsset, sanitizeAssetKey, type AppAsset } from "@/lib/app-assets";
+import {
+  blobToBase64,
+  ensureDraftAppAssets,
+  uploadDraftAppAsset,
+} from "@/lib/app-asset-drafts";
 import { savePreviewToIDB, requestPersistentStorage } from "@/lib/preview-idb";
 import { saveApp } from "@/lib/saved-apps-idb";
 import {
@@ -232,7 +237,7 @@ export default function CodePreview({
   const [savePreviewId, setSavePreviewId] = useState<string | null>(null);
   const [hasSaveIcon, setHasSaveIcon] = useState(false);
   const [generatedIconBase64, setGeneratedIconBase64] = useState<string | null>(null);
-  const [generatedIcon512Base64, setGeneratedIcon512Base64] = useState<string | null>(null);
+  const [, setGeneratedIcon512Base64] = useState<string | null>(null);
   const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
   const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
   const [assetUrlMap, setAssetUrlMap] = useState<Record<string, string>>({});
@@ -263,7 +268,7 @@ export default function CodePreview({
       assets
         .map(
           (asset, index) =>
-            `${asset.assetKey || `asset_${index + 1}`}|${asset.mimeType}|${asset.data?.length || 0}|${asset.url}|${asset.displayName || ""}|${asset.rolePrompt || ""}|${asset.svgText?.length || 0}`,
+            `${asset.assetKey || `asset_${index + 1}`}|${asset.mimeType}|${asset.data?.length || 0}|${asset.url}|${asset.storagePath || ""}|${asset.displayName || ""}|${asset.rolePrompt || ""}|${asset.svgText?.length || 0}`,
         )
         .join("||"),
     [assets],
@@ -297,6 +302,28 @@ export default function CodePreview({
     }
     return nextKey;
   }, []);
+
+  const ensureDraftId = useCallback(() => {
+    if (editSource === "apps" && existingAppId) return existingAppId;
+    if (savePreviewId) return savePreviewId;
+    const nextId = createPwaPreviewId();
+    setSavePreviewId(nextId);
+    return nextId;
+  }, [editSource, existingAppId, savePreviewId]);
+
+  const ensureAssetsOnDraft = useCallback(
+    async (targetId: string, opts?: { persist?: boolean }) => {
+      const nextAssets = await ensureDraftAppAssets(targetId, latestAssetsRef.current || []);
+      if (opts?.persist !== false) {
+        latestAssetsRef.current = nextAssets;
+        if (onAssetsChange) {
+          onAssetsChange(nextAssets);
+        }
+      }
+      return nextAssets;
+    },
+    [onAssetsChange],
+  );
 
   const resolveAssetPreviewUrl = useCallback(
     (asset: AppAsset, index: number) => {
@@ -447,27 +474,35 @@ export default function CodePreview({
     });
   }, []);
 
-  const blobToBase64 = useCallback((blob: Blob) => {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === "string") {
-          resolve(dataUrlToBase64(reader.result));
-          return;
-        }
-        reject(new Error("Unable to encode asset."));
-      };
-      reader.onerror = () => reject(reader.error || new Error("Unable to encode asset."));
-      reader.readAsDataURL(blob);
-    });
-  }, []);
-
   const updateAssets = useCallback(
     (updater: (current: AppAsset[]) => AppAsset[]) => {
       if (!onAssetsChange) return;
       onAssetsChange(updater(latestAssetsRef.current));
     },
     [onAssetsChange],
+  );
+
+  const syncAssetToDraft = useCallback(
+    async (asset: AppAsset) => {
+      try {
+        const uploadedAsset = await uploadDraftAppAsset(ensureDraftId(), asset);
+        updateAssets((current) =>
+          current.map((currentAsset, index) =>
+            (currentAsset.assetKey || `asset_${index + 1}`) === asset.assetKey
+              ? {
+                  ...currentAsset,
+                  ...uploadedAsset,
+                  assetKey: asset.assetKey,
+                }
+              : currentAsset,
+          ),
+        );
+        return uploadedAsset;
+      } catch {
+        return null;
+      }
+    },
+    [ensureDraftId, updateAssets],
   );
 
   const ensureInlineAsset = useCallback(
@@ -500,7 +535,7 @@ export default function CodePreview({
         svgText,
       };
     },
-    [blobToBase64, resolveAssetPreviewUrl],
+    [resolveAssetPreviewUrl],
   );
 
   const resetAddAssetModal = useCallback(() => {
@@ -582,17 +617,16 @@ export default function CodePreview({
         return;
       }
 
-      updateAssets((current) => [
-        ...current,
-        {
-          ...pendingUploadAsset,
-          assetKey,
-          displayName,
-          rolePrompt,
-          sourceType: "upload",
-        },
-      ]);
+      const nextAsset: AppAsset = {
+        ...pendingUploadAsset,
+        assetKey,
+        displayName,
+        rolePrompt,
+        sourceType: "upload",
+      };
+      updateAssets((current) => [...current, nextAsset]);
       resetAddAssetModal();
+      void syncAssetToDraft(nextAsset);
       return;
     }
 
@@ -619,20 +653,19 @@ export default function CodePreview({
         throw new Error(payload?.details || payload?.error || "Unable to generate asset.");
       }
 
-      updateAssets((current) => [
-        ...current,
-        {
-          assetKey,
-          displayName,
-          rolePrompt,
-          sourceType: "generated",
-          mimeType: payload.asset.mimeType || "image/png",
-          data: payload.asset.data,
-          url: payload.asset.url || "",
-          svgText: payload.asset.svgText,
-        },
-      ]);
+      const nextAsset: AppAsset = {
+        assetKey,
+        displayName,
+        rolePrompt,
+        sourceType: "generated",
+        mimeType: payload.asset.mimeType || "image/png",
+        data: payload.asset.data,
+        url: payload.asset.url || "",
+        svgText: payload.asset.svgText,
+      };
+      updateAssets((current) => [...current, nextAsset]);
       resetAddAssetModal();
+      void syncAssetToDraft(nextAsset);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unable to generate asset.";
       setAddAssetStatus(message);
@@ -649,6 +682,7 @@ export default function CodePreview({
     onAssetsChange,
     pendingUploadAsset,
     resetAddAssetModal,
+    syncAssetToDraft,
     updateAssets,
   ]);
 
@@ -716,23 +750,28 @@ export default function CodePreview({
     selectedAssetIndex,
   ]);
 
-  const handleKeepAssetCandidate = useCallback(() => {
+  const handleKeepAssetCandidate = useCallback(async () => {
     if (!assetCandidate || !selectedAssetKey) return;
+    const nextAsset: AppAsset = {
+      ...assetCandidate,
+      assetKey: selectedAssetKey,
+    };
     updateAssets((current) =>
       current.map((asset, index) =>
         (asset.assetKey || `asset_${index + 1}`) === selectedAssetKey
           ? {
               ...asset,
-              ...assetCandidate,
+              ...nextAsset,
               assetKey: selectedAssetKey,
-              displayName: assetCandidate.displayName || asset.displayName,
-              rolePrompt: assetCandidate.rolePrompt || asset.rolePrompt,
+              displayName: nextAsset.displayName || asset.displayName,
+              rolePrompt: nextAsset.rolePrompt || asset.rolePrompt,
             }
           : asset,
       ),
     );
     closeAssetModal();
-  }, [assetCandidate, closeAssetModal, selectedAssetKey, updateAssets]);
+    void syncAssetToDraft(nextAsset);
+  }, [assetCandidate, closeAssetModal, selectedAssetKey, syncAssetToDraft, updateAssets]);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(code);
@@ -1150,24 +1189,18 @@ export default function CodePreview({
 
   const handleSaveApp = useCallback(async () => {
     if (isSavingApp) return;
-    const id =
-      savePreviewId ||
-      (editSource === "apps" && existingAppId
-        ? existingAppId
-        : createPwaPreviewId());
+    const id = ensureDraftId();
     const name = saveName.trim() || "My App";
     const hasGeneratedIcon = hasSaveIcon;
     const effectiveLanguage = resolveEffectiveLanguage();
-    const icon192Base64 =
+    const localIconBase64 =
       localStorage.getItem(`pwa-preview-${id}-icon192-b64`) || generatedIconBase64 || undefined;
-    const icon512Base64 =
-      generatedIcon512Base64 ||
-      localStorage.getItem(`pwa-preview-${id}-icon512-b64`) ||
-      undefined;
 
     setIsSavingApp(true);
     setSaveStatus("Saving...");
     try {
+      const preparedAssets = await ensureAssetsOnDraft(id);
+
       localStorage.setItem(`pwa-preview-${id}-code`, code);
       localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
       localStorage.setItem(`pwa-preview-${id}-name`, name);
@@ -1181,7 +1214,7 @@ export default function CodePreview({
         localStorage.removeItem(`pwa-preview-${id}-icon-version`);
       }
 
-      await persistPwaPreviewAssets(id, latestAssetsRef.current);
+      await persistPwaPreviewAssets(id, preparedAssets);
       savePreviewToIDB({
         id,
         standaloneHTML: "",
@@ -1196,7 +1229,7 @@ export default function CodePreview({
       await saveApp({
         id,
         name,
-        iconBase64: generatedIconBase64 ?? undefined,
+        iconBase64: localIconBase64,
         hasIcon: hasGeneratedIcon,
         timestamp: Date.now(),
       });
@@ -1210,13 +1243,11 @@ export default function CodePreview({
           code,
           language: effectiveLanguage,
           hasGeneratedIcon,
-          icon192Base64,
-          icon512Base64,
-          assets: (latestAssetsRef.current || []).map((asset, index) => ({
+          assets: preparedAssets.map((asset, index) => ({
             assetKey: asset.assetKey || `asset_${index + 1}`,
             mimeType: asset.mimeType || "application/octet-stream",
-            data: asset.data,
             url: asset.url,
+            storagePath: asset.storagePath,
             displayName: asset.displayName,
             rolePrompt: asset.rolePrompt,
             sourceType: asset.sourceType,
@@ -1253,15 +1284,13 @@ export default function CodePreview({
     }
   }, [
     code,
-    editSource,
-    existingAppId,
+    ensureAssetsOnDraft,
+    ensureDraftId,
     generatedIconBase64,
-    generatedIcon512Base64,
     hasSaveIcon,
     isSavingApp,
     resolveEffectiveLanguage,
     saveName,
-    savePreviewId,
   ]);
 
   const handlePublishShare = useCallback(async () => {
@@ -1275,6 +1304,7 @@ export default function CodePreview({
       const id = createPwaPreviewId();
       const hasGeneratedIcon = false;
       const effectiveLanguage = resolveEffectiveLanguage();
+      const preparedAssets = await ensureDraftAppAssets(id, latestAssetsRef.current || []);
 
       localStorage.setItem(`pwa-preview-${id}-code`, code);
       localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
@@ -1283,7 +1313,7 @@ export default function CodePreview({
         localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
       }
 
-      await persistPwaPreviewAssets(id, latestAssetsRef.current);
+      await persistPwaPreviewAssets(id, preparedAssets);
       savePreviewToIDB({
         id,
         standaloneHTML: "",
@@ -1304,11 +1334,11 @@ export default function CodePreview({
           code,
           language: effectiveLanguage,
           hasGeneratedIcon,
-          assets: (latestAssetsRef.current || []).map((asset, index) => ({
+          assets: preparedAssets.map((asset, index) => ({
             assetKey: asset.assetKey || `asset_${index + 1}`,
             mimeType: asset.mimeType || "application/octet-stream",
-            data: asset.data,
             url: asset.url,
+            storagePath: asset.storagePath,
             displayName: asset.displayName,
             rolePrompt: asset.rolePrompt,
             sourceType: asset.sourceType,

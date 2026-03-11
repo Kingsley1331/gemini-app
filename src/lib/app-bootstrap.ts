@@ -17,6 +17,7 @@ type SharedPreviewResponse = {
   assets?: Array<{
     assetKey: string;
     mimeType: string;
+    storagePath?: string;
     displayName?: string;
     rolePrompt?: string;
     sourceType?: "upload" | "generated" | "edited";
@@ -119,6 +120,7 @@ async function fetchRemoteBootstrapData(id: string): Promise<AppBootstrapData | 
       assets: (shared.assets ?? []).map((asset) => ({
         assetKey: asset.assetKey,
         mimeType: asset.mimeType || "application/octet-stream",
+        storagePath: asset.storagePath,
         url: buildPreviewAssetUrl(id, asset.assetKey),
         displayName: asset.displayName,
         rolePrompt: asset.rolePrompt,

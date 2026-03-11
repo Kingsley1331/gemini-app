@@ -5,6 +5,7 @@ export type StoredPreviewAsset = {
   mimeType: string;
   data?: string;
   url?: string;
+  storagePath?: string;
   displayName?: string;
   rolePrompt?: string;
   sourceType?: "upload" | "generated" | "edited";
@@ -14,6 +15,7 @@ export type StoredPreviewAsset = {
 type StoredPreviewAssetRecord = {
   assetKey: string;
   mimeType: string;
+  storagePath?: string;
   displayName?: string;
   rolePrompt?: string;
   sourceType?: "upload" | "generated" | "edited";
@@ -25,6 +27,7 @@ type PreviewAssetInput = {
   mimeType?: string;
   data?: string;
   url?: string;
+  storagePath?: string;
   displayName?: string;
   rolePrompt?: string;
   sourceType?: "upload" | "generated" | "edited";
@@ -111,6 +114,7 @@ export async function persistPwaPreviewAssets(
     mimeType: asset.mimeType || "image/png",
     data: asset.data || "",
     url: asset.url || "",
+    storagePath: asset.storagePath || "",
     displayName: asset.displayName || "",
     rolePrompt: asset.rolePrompt || "",
     sourceType: asset.sourceType,
@@ -119,6 +123,7 @@ export async function persistPwaPreviewAssets(
   const lightweightRecords: StoredPreviewAssetRecord[] = normalized.map((asset) => ({
     assetKey: asset.assetKey,
     mimeType: asset.mimeType,
+    storagePath: asset.storagePath || undefined,
     displayName: asset.displayName || undefined,
     rolePrompt: asset.rolePrompt || undefined,
     sourceType: asset.sourceType,

@@ -8,6 +8,7 @@ export interface SharedAppAssetInput {
   mimeType: string;
   data?: string;
   url?: string;
+  storagePath?: string;
   displayName?: string;
   rolePrompt?: string;
   sourceType?: "upload" | "generated" | "edited";
@@ -35,6 +36,16 @@ export interface SharedAppAssetRef {
   svgText?: string;
 }
 
+export interface DraftAppAssetRef extends SharedAppAssetRef {
+  updatedAt: number;
+}
+
+export interface DraftAppDoc {
+  id: string;
+  assets: DraftAppAssetRef[];
+  updatedAt: number;
+}
+
 export interface SharedAppDoc {
   id: string;
   name: string;
@@ -58,6 +69,7 @@ export interface SharedAppReadPayload {
   assets: Array<{
     assetKey: string;
     mimeType: string;
+    storagePath?: string;
     displayName?: string;
     rolePrompt?: string;
     sourceType?: "upload" | "generated" | "edited";
@@ -77,8 +89,16 @@ export function getSharedAppDocPath(id: string): string {
   return `apps/${id}`;
 }
 
+export function getDraftAppDocPath(id: string): string {
+  return `draft-apps/${id}`;
+}
+
 export function getSharedAssetStoragePath(id: string, assetKey: string): string {
   return `shared-apps/${id}/assets/${assetKey}`;
+}
+
+export function getDraftAssetStoragePath(id: string, assetKey: string): string {
+  return `draft-apps/${id}/assets/${assetKey}`;
 }
 
 export function getSharedIconStoragePath(id: string, size: 192 | 512): string {

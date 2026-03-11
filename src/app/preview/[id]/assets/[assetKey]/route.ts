@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { getSharedAppDoc, getSharedAssetBytes } from "@/lib/shared-apps-store";
+import { getDraftAssetBytes, getSharedAppDoc, getSharedAssetBytes } from "@/lib/shared-apps-store";
 import { isShareableInstallsEnabled } from "@/lib/shared-apps";
 
 export const runtime = "nodejs";
@@ -19,6 +19,17 @@ export async function GET(
   }
 
   try {
+    const draftAsset = await getDraftAssetBytes(id, decodeURIComponent(assetKey));
+    if (draftAsset) {
+      return new NextResponse(Buffer.from(draftAsset.bytes), {
+        status: 200,
+        headers: {
+          "Content-Type": draftAsset.mimeType,
+          "Cache-Control": "public, max-age=300",
+        },
+      });
+    }
+
     const doc = await getSharedAppDoc(id);
     if (!doc) {
       return NextResponse.json({ error: "Shared app not found." }, { status: 404 });

@@ -5,6 +5,7 @@ export type AppAsset = {
   mimeType: string;
   url: string;
   data?: string;
+  storagePath?: string;
   displayName?: string;
   rolePrompt?: string;
   sourceType?: AppAssetSourceType;
