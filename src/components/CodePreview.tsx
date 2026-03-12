@@ -99,6 +99,12 @@ function ensureGeneratedAssetDisplayName(rawName: string, mimeType: string): str
   return `${trimmed}.${extension}`;
 }
 
+function requestsTransparentBackground(input: string): boolean {
+  return /\b(transparent background|transparent png|png with transparency|alpha transparency|alpha channel|no background|remove background|cut out|cutout|isolated sprite|isolated subject)\b/i.test(
+    input,
+  );
+}
+
 const EXTERNAL_IMPORT_BLOCKLIST = new Set([
   "fs",
   "path",
@@ -291,6 +297,7 @@ export default function CodePreview({
   const [deleteAssetStatus, setDeleteAssetStatus] = useState<string | null>(null);
   const [isDeletingAsset, setIsDeletingAsset] = useState(false);
   const [assetEditPrompt, setAssetEditPrompt] = useState("");
+  const [assetEditTransparentBackground, setAssetEditTransparentBackground] = useState(false);
   const [assetEditStatus, setAssetEditStatus] = useState<string | null>(null);
   const [assetCandidate, setAssetCandidate] = useState<AppAsset | null>(null);
   const [isGeneratingAssetCandidate, setIsGeneratingAssetCandidate] = useState(false);
@@ -627,6 +634,7 @@ export default function CodePreview({
   const closeAssetModal = useCallback(() => {
     setSelectedAssetKey(null);
     setAssetEditPrompt("");
+    setAssetEditTransparentBackground(false);
     setAssetEditStatus(null);
     setAssetCandidate(null);
   }, []);
@@ -634,6 +642,7 @@ export default function CodePreview({
   const openAssetModal = useCallback((assetKey: string) => {
     setSelectedAssetKey(assetKey);
     setAssetEditPrompt("");
+    setAssetEditTransparentBackground(false);
     setAssetEditStatus(null);
     setAssetCandidate(null);
   }, []);
@@ -929,6 +938,8 @@ export default function CodePreview({
     setAssetEditStatus("Generating candidate...");
     try {
       const preparedAsset = await ensureInlineAsset(selectedAsset, selectedAssetIndex);
+      const wantsTransparentBackground =
+        assetEditTransparentBackground || requestsTransparentBackground(assetEditPrompt);
       const endpoint = isSvgMimeType(preparedAsset.mimeType)
         ? "/api/assets/edit-svg"
         : "/api/assets/edit-image";
@@ -944,7 +955,8 @@ export default function CodePreview({
             rolePrompt: preparedAsset.rolePrompt,
             displayName: preparedAsset.displayName,
             mimeType: preparedAsset.mimeType,
-            outputMimeType: preparedAsset.mimeType,
+            outputMimeType: wantsTransparentBackground ? "image/png" : preparedAsset.mimeType,
+            backgroundMode: wantsTransparentBackground ? "transparent" : undefined,
             data: preparedAsset.data,
             pro: true,
           };
@@ -976,6 +988,7 @@ export default function CodePreview({
     }
   }, [
     assetEditPrompt,
+    assetEditTransparentBackground,
     ensureInlineAsset,
     isGeneratingAssetCandidate,
     selectedAsset,
@@ -2936,6 +2949,20 @@ export default function CodePreview({
                     placeholder="Describe the visual changes you want to make."
                   />
                 </div>
+
+                {!isSvgMimeType(selectedAsset.mimeType) ? (
+                  <label className="flex items-start gap-3 rounded-lg border border-zinc-200 bg-white px-3 py-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+                    <input
+                      type="checkbox"
+                      checked={assetEditTransparentBackground}
+                      onChange={(e) => setAssetEditTransparentBackground(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-700 dark:bg-zinc-900"
+                    />
+                    <span>
+                      Return a transparent PNG and remove the background.
+                    </span>
+                  </label>
+                ) : null}
 
                 {assetEditStatus ? (
                   <p className="text-xs text-zinc-600 dark:text-zinc-300">{assetEditStatus}</p>

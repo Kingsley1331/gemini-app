@@ -20,6 +20,17 @@ const PRESERVABLE_RASTER_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
+const TRANSPARENT_BACKGROUND_MIME_TYPE = "image/png";
+const DEFAULT_SOLID_BACKGROUND_COLOR = "#ffffff";
+
+export type RasterBackgroundMode = "transparent" | "original" | "solid";
+
+type RasterOutputOptions = {
+  outputMimeType?: string;
+  backgroundMode?: RasterBackgroundMode;
+  backgroundColor?: string;
+};
+
 function supportsTransparency(mimeType: string | null | undefined): boolean {
   return mimeType === "image/png" || mimeType === "image/webp";
 }
@@ -82,9 +93,28 @@ function normalizeRasterMimeType(mimeType: string | undefined): string | null {
   return PRESERVABLE_RASTER_MIME_TYPES.has(normalized) ? normalized : null;
 }
 
+function normalizeBackgroundMode(backgroundMode: string | undefined): RasterBackgroundMode {
+  switch ((backgroundMode || "").trim().toLowerCase()) {
+    case "transparent":
+      return "transparent";
+    case "solid":
+      return "solid";
+    default:
+      return "original";
+  }
+}
+
+function normalizeBackgroundColor(backgroundColor: string | undefined): string {
+  const normalized = (backgroundColor || "").trim();
+  return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(normalized)
+    ? normalized
+    : DEFAULT_SOLID_BACKGROUND_COLOR;
+}
+
 async function encodeRasterToTargetMimeType(
   base64Data: string,
   targetMimeType: string,
+  options?: { flattenBackgroundColor?: string },
 ): Promise<{ data: string; mimeType: string; imageUrl: string }> {
   const normalizedTargetMimeType = normalizeRasterMimeType(targetMimeType);
   if (!normalizedTargetMimeType) {
@@ -96,13 +126,21 @@ async function encodeRasterToTargetMimeType(
 
   switch (normalizedTargetMimeType) {
     case "image/png":
+      if (options?.flattenBackgroundColor) {
+        pipeline = pipeline.flatten({ background: options.flattenBackgroundColor });
+      }
       pipeline = pipeline.png();
       break;
     case "image/webp":
+      if (options?.flattenBackgroundColor) {
+        pipeline = pipeline.flatten({ background: options.flattenBackgroundColor });
+      }
       pipeline = pipeline.webp();
       break;
     case "image/jpeg":
-      pipeline = pipeline.flatten({ background: "#ffffff" }).jpeg({ quality: 92 });
+      pipeline = pipeline
+        .flatten({ background: options?.flattenBackgroundColor || DEFAULT_SOLID_BACKGROUND_COLOR })
+        .jpeg({ quality: 92 });
       break;
     default:
       throw new Error(`Unsupported raster output mime type: ${targetMimeType}`);
@@ -138,6 +176,62 @@ async function imageHasTransparentPixels(base64Data: string): Promise<boolean> {
   }
 
   return false;
+}
+
+function mimeTypeToExtension(mimeType: string): string {
+  switch (normalizeRasterMimeType(mimeType) || mimeType) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    default:
+      return "png";
+  }
+}
+
+async function removeBackgroundWithDedicatedService(
+  base64Data: string,
+  mimeType: string,
+): Promise<string> {
+  const apiKey = process.env.REMOVE_BG_API_KEY;
+  if (!apiKey) {
+    throw new Error("REMOVE_BG_API_KEY is not configured.");
+  }
+
+  console.log("[asset-generation] calling remove.bg background removal", {
+    mimeType,
+    inputBytes: Buffer.from(base64Data, "base64").length,
+  });
+
+  const typedInput = new Blob([Buffer.from(base64Data, "base64")], {
+    type: mimeType || TRANSPARENT_BACKGROUND_MIME_TYPE,
+  });
+  const formData = new FormData();
+  formData.set("size", "auto");
+  formData.set("format", "png");
+  formData.set(
+    "image_file",
+    typedInput,
+    `generated.${mimeTypeToExtension(mimeType || TRANSPARENT_BACKGROUND_MIME_TYPE)}`,
+  );
+
+  const response = await fetch("https://api.remove.bg/v1.0/removebg", {
+    method: "POST",
+    headers: {
+      "X-Api-Key": apiKey,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(
+      `remove.bg background removal failed (${response.status} ${response.statusText}): ${details}`,
+    );
+  }
+
+  const resultBuffer = Buffer.from(await response.arrayBuffer());
+  return resultBuffer.toString("base64");
 }
 
 async function restoreTransparentBackground(base64Data: string): Promise<string> {
@@ -240,6 +334,60 @@ async function restoreTransparentBackground(base64Data: string): Promise<string>
   return normalized.toString("base64");
 }
 
+async function ensureTransparentPng(
+  base64Data: string,
+  mimeType: string,
+): Promise<{
+  data: string;
+  mimeType: string;
+  imageUrl: string;
+}> {
+  if (await imageHasTransparentPixels(base64Data)) {
+    return encodeRasterToTargetMimeType(base64Data, TRANSPARENT_BACKGROUND_MIME_TYPE);
+  }
+
+  try {
+    const removed = await removeBackgroundWithDedicatedService(base64Data, mimeType);
+    if (await imageHasTransparentPixels(removed)) {
+      return encodeRasterToTargetMimeType(removed, TRANSPARENT_BACKGROUND_MIME_TYPE);
+    }
+  } catch (error) {
+    console.warn("[asset-generation] dedicated background removal failed, using fallback", error);
+  }
+
+  const heuristicResult = await restoreTransparentBackground(base64Data);
+  if (await imageHasTransparentPixels(heuristicResult)) {
+    return encodeRasterToTargetMimeType(heuristicResult, TRANSPARENT_BACKGROUND_MIME_TYPE);
+  }
+
+  throw new Error("Transparent PNG requested, but the generated image could not be isolated.");
+}
+
+async function finalizeRasterOutput(
+  source: { data: string; mimeType: string; imageUrl: string },
+  options: RasterOutputOptions,
+) {
+  const backgroundMode = normalizeBackgroundMode(options.backgroundMode);
+  const backgroundColor = normalizeBackgroundColor(options.backgroundColor);
+  const targetMimeType =
+    backgroundMode === "transparent"
+      ? TRANSPARENT_BACKGROUND_MIME_TYPE
+      : normalizeRasterMimeType(options.outputMimeType) ||
+        normalizeRasterMimeType(source.mimeType);
+
+  if (backgroundMode === "transparent") {
+    return ensureTransparentPng(source.data, source.mimeType);
+  }
+
+  if (!targetMimeType) {
+    return source;
+  }
+
+  return encodeRasterToTargetMimeType(source.data, targetMimeType, {
+    flattenBackgroundColor: backgroundMode === "solid" ? backgroundColor : undefined,
+  });
+}
+
 function getImageModelOrder(pro: boolean): string[] {
   return pro
     ? ["gemini-3-pro-image-preview", "gemini-2.5-flash-image"]
@@ -256,11 +404,26 @@ export async function generateRasterAsset(options: {
   rolePrompt?: string;
   pro?: boolean;
   outputMimeType?: string;
+  backgroundMode?: RasterBackgroundMode;
+  backgroundColor?: string;
 }) {
   const genAI = getGenAI(options.apiKey);
+  const backgroundMode = normalizeBackgroundMode(options.backgroundMode);
+  const requestedOutputMimeType =
+    backgroundMode === "transparent"
+      ? TRANSPARENT_BACKGROUND_MIME_TYPE
+      : normalizeRasterMimeType(options.outputMimeType) || undefined;
+  const backgroundColor = normalizeBackgroundColor(options.backgroundColor);
   const prompt = [
     "Create a polished application asset.",
     options.rolePrompt ? `Asset role in the app: ${options.rolePrompt}` : "",
+    requestedOutputMimeType ? `Return the final asset as ${requestedOutputMimeType}.` : "",
+    backgroundMode === "transparent"
+      ? "Use a single isolated subject on a simple clean background that can be removed precisely. Do not bake a checkerboard pattern into the image."
+      : "",
+    backgroundMode === "solid"
+      ? `Use a solid ${backgroundColor} background behind the subject.`
+      : "",
     options.prompt,
   ]
     .filter(Boolean)
@@ -270,14 +433,11 @@ export async function generateRasterAsset(options: {
   for (const modelName of getImageModelOrder(Boolean(options.pro))) {
     try {
       const generated = await generateImageWithParts(genAI, modelName, [{ text: prompt }]);
-      const targetMimeType =
-        normalizeRasterMimeType(options.outputMimeType) ||
-        normalizeRasterMimeType(generated.mimeType);
-      if (!targetMimeType) {
-        return generated;
-      }
-
-      const normalized = await encodeRasterToTargetMimeType(generated.data, targetMimeType);
+      const normalized = await finalizeRasterOutput(generated, {
+        outputMimeType: requestedOutputMimeType,
+        backgroundMode,
+        backgroundColor,
+      });
       return {
         ...normalized,
         model: generated.model,
@@ -299,14 +459,25 @@ export async function editRasterAsset(options: {
   displayName?: string;
   pro?: boolean;
   outputMimeType?: string;
+  backgroundMode?: RasterBackgroundMode;
+  backgroundColor?: string;
 }) {
   const genAI = getGenAI(options.apiKey);
+  const backgroundMode =
+    normalizeBackgroundMode(options.backgroundMode);
   const requestedOutputMimeType =
-    normalizeRasterMimeType(options.outputMimeType || options.mimeType) ||
-    normalizeRasterMimeType(options.mimeType);
+    backgroundMode === "transparent"
+      ? TRANSPARENT_BACKGROUND_MIME_TYPE
+      : normalizeRasterMimeType(options.outputMimeType || options.mimeType) ||
+        normalizeRasterMimeType(options.mimeType);
   const preserveTransparency =
     supportsTransparency(requestedOutputMimeType) &&
     (await imageHasTransparentPixels(options.data));
+  const effectiveBackgroundMode =
+    backgroundMode === "transparent" || preserveTransparency
+      ? "transparent"
+      : backgroundMode;
+  const backgroundColor = normalizeBackgroundColor(options.backgroundColor);
   const instruction = [
     "Edit this existing application asset based on the requested changes.",
     options.displayName ? `Asset name: ${options.displayName}` : "",
@@ -317,6 +488,9 @@ export async function editRasterAsset(options: {
       : "",
     preserveTransparency
       ? "Preserve the transparent background. Keep previously transparent regions transparent, and do not replace them with white or any solid-color matte."
+      : "",
+    effectiveBackgroundMode === "solid"
+      ? `Use a solid ${backgroundColor} background behind the subject.`
       : "",
     "Return only the updated image.",
   ]
@@ -347,7 +521,18 @@ export async function editRasterAsset(options: {
         normalizedSourceData = await restoreTransparentBackground(generated.data);
       }
 
-      const normalized = await encodeRasterToTargetMimeType(normalizedSourceData, targetMimeType);
+      const normalized = await finalizeRasterOutput(
+        {
+          data: normalizedSourceData,
+          mimeType: generated.mimeType,
+          imageUrl: generated.imageUrl,
+        },
+        {
+          outputMimeType: targetMimeType || undefined,
+          backgroundMode: effectiveBackgroundMode,
+          backgroundColor,
+        },
+      );
       return {
         ...normalized,
         model: generated.model,

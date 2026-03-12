@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { editRasterAsset } from "@/lib/server/asset-generation";
+import { editRasterAsset, type RasterBackgroundMode } from "@/lib/server/asset-generation";
 
 export const runtime = "nodejs";
 
@@ -19,6 +19,8 @@ export async function POST(req: Request) {
       displayName,
       mimeType,
       outputMimeType,
+      backgroundMode,
+      backgroundColor,
       data,
       pro = false,
     } = (await req.json()) as {
@@ -27,6 +29,8 @@ export async function POST(req: Request) {
       displayName?: string;
       mimeType?: string;
       outputMimeType?: string;
+      backgroundMode?: RasterBackgroundMode;
+      backgroundColor?: string;
       data?: string;
       pro?: boolean;
     };
@@ -49,6 +53,8 @@ export async function POST(req: Request) {
       rolePrompt: rolePrompt?.trim(),
       displayName: displayName?.trim(),
       outputMimeType: outputMimeType?.trim() || mimeType.trim(),
+      backgroundMode,
+      backgroundColor,
       pro,
     });
 

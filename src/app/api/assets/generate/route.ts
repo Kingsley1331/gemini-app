@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { createSvgAsset, generateRasterAsset } from "@/lib/server/asset-generation";
+import {
+  createSvgAsset,
+  generateRasterAsset,
+  type RasterBackgroundMode,
+} from "@/lib/server/asset-generation";
 
 export const runtime = "nodejs";
 
@@ -18,12 +22,16 @@ export async function POST(req: Request) {
       rolePrompt,
       outputType = "raster",
       outputMimeType,
+      backgroundMode,
+      backgroundColor,
       pro = false,
     } = (await req.json()) as {
       prompt?: string;
       rolePrompt?: string;
       outputType?: "raster" | "svg";
       outputMimeType?: "image/png" | "image/jpeg" | "image/webp";
+      backgroundMode?: RasterBackgroundMode;
+      backgroundColor?: string;
       pro?: boolean;
     };
 
@@ -43,6 +51,8 @@ export async function POST(req: Request) {
             prompt: prompt.trim(),
             rolePrompt: rolePrompt?.trim(),
             outputMimeType,
+            backgroundMode,
+            backgroundColor,
             pro,
           });
 

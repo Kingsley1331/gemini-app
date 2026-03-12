@@ -100,6 +100,12 @@ function hasVisualIntent(input: string): boolean {
   return VISUAL_INTENT_KEYWORDS.some((keyword) => normalized.includes(keyword));
 }
 
+function requestsTransparentBackground(input: string): boolean {
+  return /\b(transparent background|transparent png|png with transparency|alpha transparency|alpha channel|no background|remove background|cut out|cutout|isolated sprite|isolated subject)\b/i.test(
+    input,
+  );
+}
+
 type VisualAttachment = {
   url: string;
   mimeType: string;
@@ -1189,11 +1195,16 @@ export default function Chat() {
           const prompt = normalizedInput.toLowerCase().startsWith("/image ")
             ? messageInput.slice(7)
             : messageInput;
+          const wantsTransparentBackground = requestsTransparentBackground(prompt);
 
           const response = await fetch("/api/generate-image", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt }),
+            body: JSON.stringify({
+              prompt,
+              outputMimeType: wantsTransparentBackground ? "image/png" : undefined,
+              backgroundMode: wantsTransparentBackground ? "transparent" : "original",
+            }),
           });
 
           const data = await response.json();
@@ -1224,14 +1235,22 @@ export default function Chat() {
               ? (
                   await Promise.allSettled(
                     assetPlan.map(async (asset) => {
+                      const useTransparentBackground =
+                        asset.name !== "scene_background" &&
+                        (normalizedInput.toLowerCase().includes("game") ||
+                          normalizedInput.toLowerCase().includes("clone"));
                       const response = await fetch("/api/generate-image", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                           prompt: `${asset.prompt}\n\nUser request context: ${normalizedInput}`,
                           removeBackground:
-                            asset.name !== "scene_background" &&
+                            useTransparentBackground &&
                             normalizedInput.toLowerCase().includes("game"),
+                          outputMimeType: useTransparentBackground ? "image/png" : undefined,
+                          backgroundMode: useTransparentBackground
+                            ? "transparent"
+                            : "original",
                         }),
                       });
                       const data = await response.json();
