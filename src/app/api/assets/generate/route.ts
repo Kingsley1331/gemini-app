@@ -17,11 +17,13 @@ export async function POST(req: Request) {
       prompt,
       rolePrompt,
       outputType = "raster",
+      outputMimeType,
       pro = false,
     } = (await req.json()) as {
       prompt?: string;
       rolePrompt?: string;
       outputType?: "raster" | "svg";
+      outputMimeType?: "image/png" | "image/jpeg" | "image/webp";
       pro?: boolean;
     };
 
@@ -40,6 +42,7 @@ export async function POST(req: Request) {
             apiKey,
             prompt: prompt.trim(),
             rolePrompt: rolePrompt?.trim(),
+            outputMimeType,
             pro,
           });
 

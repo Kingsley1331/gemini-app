@@ -62,6 +62,13 @@ interface CodePreviewProps {
 const EMPTY_PREVIEW_ASSETS: AppAsset[] = [];
 const STUDIO_DRAFT_STORAGE_PREFIX = "studio-draft:";
 const ASSET_FILE_ACCEPT = "image/*,.svg";
+const RASTER_OUTPUT_OPTIONS = [
+  { mimeType: "image/png", label: "PNG", extension: "png" },
+  { mimeType: "image/jpeg", label: "JPEG", extension: "jpg" },
+  { mimeType: "image/webp", label: "WebP", extension: "webp" },
+] as const;
+
+type RasterOutputMimeType = (typeof RASTER_OUTPUT_OPTIONS)[number]["mimeType"];
 
 function normalizePreviewError(message: string): string {
   const invalidHookPattern =
@@ -74,6 +81,24 @@ function normalizePreviewError(message: string): string {
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
+
+function getFileExtensionForMimeType(mimeType: string): string {
+  if (mimeType === "image/svg+xml") return "svg";
+  const match = RASTER_OUTPUT_OPTIONS.find((option) => option.mimeType === mimeType);
+  return match?.extension || "png";
+}
+
+function ensureGeneratedAssetDisplayName(rawName: string, mimeType: string): string {
+  const trimmed = rawName.trim();
+  const extension = getFileExtensionForMimeType(mimeType);
+  if (!trimmed) return `app-asset.${extension}`;
+  if (/\.(png|jpe?g|webp|svg)$/i.test(trimmed)) {
+    return `${trimmed.replace(/\.(png|jpe?g|webp|svg)$/i, "")}.${extension}`;
+  }
+  if (/\.[a-z0-9]+$/i.test(trimmed)) return trimmed;
+  return `${trimmed}.${extension}`;
+}
+
 const EXTERNAL_IMPORT_BLOCKLIST = new Set([
   "fs",
   "path",
@@ -247,6 +272,8 @@ export default function CodePreview({
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [showAddAssetModal, setShowAddAssetModal] = useState(false);
   const [addAssetMode, setAddAssetMode] = useState<"upload" | "raster" | "svg">("upload");
+  const [addAssetOutputMimeType, setAddAssetOutputMimeType] =
+    useState<RasterOutputMimeType>("image/png");
   const [addAssetName, setAddAssetName] = useState("");
   const [addAssetRolePrompt, setAddAssetRolePrompt] = useState("");
   const [addAssetPrompt, setAddAssetPrompt] = useState("");
@@ -571,6 +598,7 @@ export default function CodePreview({
   const resetAddAssetModal = useCallback(() => {
     setShowAddAssetModal(false);
     setAddAssetMode("upload");
+    setAddAssetOutputMimeType("image/png");
     setAddAssetName("");
     setAddAssetRolePrompt("");
     setAddAssetPrompt("");
@@ -676,7 +704,13 @@ export default function CodePreview({
   const handleCreateAsset = useCallback(async () => {
     if (!onAssetsChange || isCreatingAsset) return;
 
-    const displayName = addAssetName.trim() || pendingUploadAsset?.displayName || "app-asset";
+    const displayName =
+      addAssetMode === "upload"
+        ? addAssetName.trim() || pendingUploadAsset?.displayName || "app-asset"
+        : ensureGeneratedAssetDisplayName(
+            addAssetName,
+            addAssetMode === "svg" ? "image/svg+xml" : addAssetOutputMimeType,
+          );
     const rolePrompt = addAssetRolePrompt.trim() || undefined;
     const assetKey = buildUniqueAssetKey(displayName);
 
@@ -714,6 +748,7 @@ export default function CodePreview({
           prompt: addAssetPrompt.trim(),
           rolePrompt,
           outputType: addAssetMode === "svg" ? "svg" : "raster",
+          outputMimeType: addAssetMode === "raster" ? addAssetOutputMimeType : undefined,
           pro: true,
         }),
       });
@@ -743,6 +778,7 @@ export default function CodePreview({
     }
   }, [
     addAssetMode,
+    addAssetOutputMimeType,
     addAssetName,
     addAssetPrompt,
     addAssetRolePrompt,
@@ -2580,7 +2616,11 @@ export default function CodePreview({
                     value={addAssetName}
                     onChange={(e) => setAddAssetName(e.target.value)}
                     className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                    placeholder="hero-image.png"
+                    placeholder={
+                      addAssetMode === "svg"
+                        ? "hero-image.svg"
+                        : `hero-image.${getFileExtensionForMimeType(addAssetOutputMimeType)}`
+                    }
                   />
                 </div>
 
@@ -2612,6 +2652,26 @@ export default function CodePreview({
                   </div>
                 ) : (
                   <div>
+                    {addAssetMode === "raster" ? (
+                      <div className="mb-4">
+                        <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                          Image File Type
+                        </label>
+                        <select
+                          value={addAssetOutputMimeType}
+                          onChange={(e) =>
+                            setAddAssetOutputMimeType(e.target.value as RasterOutputMimeType)
+                          }
+                          className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                        >
+                          {RASTER_OUTPUT_OPTIONS.map((option) => (
+                            <option key={option.mimeType} value={option.mimeType}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : null}
                     <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                       Generation Prompt
                     </label>
