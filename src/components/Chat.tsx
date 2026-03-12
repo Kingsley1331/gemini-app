@@ -24,6 +24,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import MessageItem, { Message } from "./MessageItem";
+import type { AppAsset } from "@/lib/app-assets";
 import { loadAppBootstrapData } from "@/lib/app-bootstrap";
 import {
   buildPreviewContextRequestMessage,
@@ -63,6 +64,13 @@ function cn(...inputs: ClassValue[]) {
 const SELECTED_MODEL_STORAGE_KEY = "selectedModel";
 const MAX_AUTO_ASSETS = 8;
 const ASSET_PLACEHOLDER_REGEX = /__ASSET_([a-zA-Z0-9_-]+)__/g;
+const PREVIEWABLE_LANGUAGES = new Set([
+  "html",
+  "jsx",
+  "tsx",
+  "javascript",
+  "typescript",
+]);
 const VISUAL_INTENT_KEYWORDS = [
   "gallery",
   "beautiful photographs",
@@ -108,6 +116,78 @@ type PlannedAsset = {
 type GeneratedAsset = PlannedAsset & {
   attachment: VisualAttachment;
 };
+
+type ExtractedPreviewCodeBlock = {
+  language: string;
+  code: string;
+};
+
+function extractLatestPreviewableCodeBlock(
+  content: string,
+): ExtractedPreviewCodeBlock | null {
+  const codeBlockRegex = /```([a-zA-Z0-9_-]+)[^\n]*\n([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  let latestMatch: ExtractedPreviewCodeBlock | null = null;
+
+  while ((match = codeBlockRegex.exec(content)) !== null) {
+    const language = (match[1] || "").toLowerCase();
+    if (!PREVIEWABLE_LANGUAGES.has(language)) continue;
+
+    latestMatch = {
+      language,
+      code: (match[2] || "").trim(),
+    };
+  }
+
+  return latestMatch;
+}
+
+function getPreviewAssetsFromAttachments(
+  attachments: Message["attachments"],
+): AppAsset[] {
+  return (
+    attachments?.flatMap((attachment) =>
+      typeof attachment.assetKey === "string"
+        ? [{
+            assetKey: attachment.assetKey,
+            mimeType: attachment.mimeType,
+            url: attachment.url,
+            data: attachment.data,
+          }]
+        : [],
+    ) || []
+  );
+}
+
+function getLatestAppsEditDraft(
+  messages: Message[],
+  appId: string,
+): (ExtractedPreviewCodeBlock & {
+  appName?: string;
+  assets: AppAsset[];
+}) | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (
+      message?.role !== "assistant" ||
+      message.previewContext?.source !== "apps" ||
+      message.previewContext.appId !== appId
+    ) {
+      continue;
+    }
+
+    const extractedCodeBlock = extractLatestPreviewableCodeBlock(message.content);
+    if (!extractedCodeBlock) continue;
+
+    return {
+      ...extractedCodeBlock,
+      appName: message.previewContext.appName,
+      assets: getPreviewAssetsFromAttachments(message.attachments),
+    };
+  }
+
+  return null;
+}
 
 function getLatestAppsEditContext(
   messages: Message[],
@@ -1245,13 +1325,53 @@ export default function Chat() {
             requestMessages.shift();
           }
           if (activeAppsEditContext?.appId) {
+            const latestDraft = getLatestAppsEditDraft(
+              messages,
+              activeAppsEditContext.appId,
+            );
             const loadedApp = await loadAppBootstrapData(activeAppsEditContext.appId);
-            if (loadedApp) {
+            const previewSeed =
+              latestDraft && loadedApp
+                ? {
+                    title:
+                      latestDraft.appName ||
+                      loadedApp.name ||
+                      activeAppsEditContext.appName ||
+                      "My App",
+                    code: latestDraft.code,
+                    language: latestDraft.language,
+                    assets: latestDraft.assets.length > 0
+                      ? latestDraft.assets
+                      : loadedApp.assets,
+                  }
+                : latestDraft
+                  ? {
+                      title:
+                        latestDraft.appName ||
+                        activeAppsEditContext.appName ||
+                        "My App",
+                      code: latestDraft.code,
+                      language: latestDraft.language,
+                      assets: latestDraft.assets,
+                    }
+                  : loadedApp
+                    ? {
+                        title:
+                          loadedApp.name ||
+                          activeAppsEditContext.appName ||
+                          "My App",
+                        code: loadedApp.code,
+                        language: loadedApp.language,
+                        assets: loadedApp.assets,
+                      }
+                    : null;
+
+            if (previewSeed) {
               const previewContextMessage = await buildPreviewContextRequestMessage({
-                title: loadedApp.name || activeAppsEditContext.appName || "My App",
-                code: loadedApp.code,
-                language: loadedApp.language,
-                assets: loadedApp.assets,
+                title: previewSeed.title,
+                code: previewSeed.code,
+                language: previewSeed.language,
+                assets: previewSeed.assets,
               });
               if (previewContextMessage) {
                 requestMessages.splice(requestMessages.length - 1, 0, previewContextMessage);
