@@ -11,6 +11,7 @@ import {
   Minimize2,
   RotateCcw,
   Copy,
+  Trash2,
   Check,
   Bug,
   Download,
@@ -258,6 +259,10 @@ export default function CodePreview({
   const [cloneAssetName, setCloneAssetName] = useState("");
   const [cloneAssetStatus, setCloneAssetStatus] = useState<string | null>(null);
   const [isCloningAsset, setIsCloningAsset] = useState(false);
+  const [showDeleteAssetModal, setShowDeleteAssetModal] = useState(false);
+  const [deleteTargetAssetKey, setDeleteTargetAssetKey] = useState<string | null>(null);
+  const [deleteAssetStatus, setDeleteAssetStatus] = useState<string | null>(null);
+  const [isDeletingAsset, setIsDeletingAsset] = useState(false);
   const [assetEditPrompt, setAssetEditPrompt] = useState("");
   const [assetEditStatus, setAssetEditStatus] = useState<string | null>(null);
   const [assetCandidate, setAssetCandidate] = useState<AppAsset | null>(null);
@@ -374,6 +379,16 @@ export default function CodePreview({
   );
   const cloneSourceAsset = cloneSourceEntry?.asset || null;
   const cloneSourceAssetIndex = cloneSourceEntry?.index ?? -1;
+  const deleteTargetEntry = useMemo(
+    () =>
+      visualAssets.find(
+        ({ asset, index }) =>
+          (asset.assetKey || `asset_${index + 1}`) === deleteTargetAssetKey,
+      ) || null,
+    [deleteTargetAssetKey, visualAssets],
+  );
+  const deleteTargetAsset = deleteTargetEntry?.asset || null;
+  const deleteTargetAssetIndex = deleteTargetEntry?.index ?? -1;
 
   useEffect(() => {
     const stableAssets = latestAssetsRef.current;
@@ -574,6 +589,13 @@ export default function CodePreview({
     setCloneAssetStatus(null);
   }, [isCloningAsset]);
 
+  const resetDeleteAssetModal = useCallback(() => {
+    if (isDeletingAsset) return;
+    setShowDeleteAssetModal(false);
+    setDeleteTargetAssetKey(null);
+    setDeleteAssetStatus(null);
+  }, [isDeletingAsset]);
+
   const closeAssetModal = useCallback(() => {
     setSelectedAssetKey(null);
     setAssetEditPrompt("");
@@ -605,6 +627,12 @@ export default function CodePreview({
     },
     [visualAssets],
   );
+
+  const openDeleteAssetModal = useCallback((assetKey: string) => {
+    setDeleteTargetAssetKey(assetKey);
+    setDeleteAssetStatus(null);
+    setShowDeleteAssetModal(true);
+  }, []);
 
   const handleAddAssetFileChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -778,6 +806,79 @@ export default function CodePreview({
     isCloningAsset,
     onAssetsChange,
     syncAssetToDraft,
+    updateAssets,
+  ]);
+
+  const handleDeleteAsset = useCallback(async () => {
+    if (!deleteTargetAsset || deleteTargetAssetIndex < 0 || isDeletingAsset) return;
+
+    const assetKey = deleteTargetAsset.assetKey || `asset_${deleteTargetAssetIndex + 1}`;
+    const preferredDraftId =
+      (editSource === "apps" && existingAppId ? existingAppId : savePreviewId) ||
+      (deleteTargetAsset.storagePath?.startsWith("draft-apps/")
+        ? deleteTargetAsset.storagePath.split("/")[1] || null
+        : null);
+
+    setIsDeletingAsset(true);
+    setDeleteAssetStatus("Deleting asset...");
+    updateAssets((current) =>
+      current.filter(
+        (asset, index) => (asset.assetKey || `asset_${index + 1}`) !== assetKey,
+      ),
+    );
+
+    if (selectedAssetKey === assetKey) {
+      closeAssetModal();
+    }
+    if (cloneSourceAssetKey === assetKey) {
+      setShowCloneAssetModal(false);
+      setCloneSourceAssetKey(null);
+      setCloneAssetName("");
+      setCloneAssetStatus(null);
+    }
+
+    try {
+      if (preferredDraftId) {
+        const response = await fetch(
+          `/api/apps/${encodeURIComponent(preferredDraftId)}/assets/${encodeURIComponent(assetKey)}`,
+          { method: "DELETE" },
+        );
+        const payload = (await response.json().catch(() => null)) as
+          | { details?: string; error?: string }
+          | null;
+        if (!response.ok) {
+          throw new Error(payload?.details || payload?.error || "Unable to delete asset.");
+        }
+      }
+
+      setShowDeleteAssetModal(false);
+      setDeleteTargetAssetKey(null);
+      setDeleteAssetStatus(null);
+    } catch (error: unknown) {
+      updateAssets((current) => {
+        const exists = current.some(
+          (asset, index) => (asset.assetKey || `asset_${index + 1}`) === assetKey,
+        );
+        if (exists) return current;
+        const nextAssets = [...current];
+        nextAssets.splice(deleteTargetAssetIndex, 0, deleteTargetAsset);
+        return nextAssets;
+      });
+      const message = error instanceof Error ? error.message : "Unable to delete asset.";
+      setDeleteAssetStatus(message);
+    } finally {
+      setIsDeletingAsset(false);
+    }
+  }, [
+    cloneSourceAssetKey,
+    closeAssetModal,
+    deleteTargetAsset,
+    deleteTargetAssetIndex,
+    editSource,
+    existingAppId,
+    isDeletingAsset,
+    savePreviewId,
+    selectedAssetKey,
     updateAssets,
   ]);
 
@@ -2392,16 +2493,28 @@ export default function CodePreview({
                             </span>
                           </div>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => openCloneAssetModal(assetKey)}
-                          disabled={!onAssetsChange}
-                          aria-label={`Clone ${getAssetDisplayName(asset, index)}`}
-                          className="absolute right-5 top-5 z-10 inline-flex items-center gap-1 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-zinc-700 shadow-sm transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-950/90 dark:text-zinc-200 dark:hover:bg-zinc-900"
-                        >
-                          <Copy className="h-3 w-3" />
-                          Clone
-                        </button>
+                        <div className="absolute right-5 top-5 z-10 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openCloneAssetModal(assetKey)}
+                            disabled={!onAssetsChange}
+                            aria-label={`Clone ${getAssetDisplayName(asset, index)}`}
+                            className="inline-flex items-center gap-1 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-zinc-700 shadow-sm transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-950/90 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                          >
+                            <Copy className="h-3 w-3" />
+                            Clone
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openDeleteAssetModal(assetKey)}
+                            disabled={!onAssetsChange}
+                            aria-label={`Delete ${getAssetDisplayName(asset, index)}`}
+                            className="inline-flex items-center gap-1 rounded-md bg-red-50/95 px-2 py-1 text-[11px] font-medium text-red-700 shadow-sm transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-red-950/80 dark:text-red-200 dark:hover:bg-red-950"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -2626,6 +2739,61 @@ export default function CodePreview({
                 className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
               >
                 {isCloningAsset ? "Cloning..." : "Clone Asset"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showDeleteAssetModal && deleteTargetAsset && deleteTargetAssetIndex >= 0 ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-4 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Delete Asset?
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  This will remove {getAssetDisplayName(deleteTargetAsset, deleteTargetAssetIndex)} from
+                  the Studio asset library.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={resetDeleteAssetModal}
+                disabled={isDeletingAsset}
+                className="text-xs text-zinc-500 hover:text-zinc-900 disabled:opacity-50 dark:hover:text-zinc-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/60 dark:bg-red-950/40">
+              <p className="text-xs text-red-700 dark:text-red-200">
+                This action cannot be undone.
+              </p>
+            </div>
+
+            {deleteAssetStatus ? (
+              <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-300">{deleteAssetStatus}</p>
+            ) : null}
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={resetDeleteAssetModal}
+                disabled={isDeletingAsset}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteAsset}
+                disabled={isDeletingAsset || !onAssetsChange}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+              >
+                {isDeletingAsset ? "Deleting..." : "Delete Asset"}
               </button>
             </div>
           </div>
