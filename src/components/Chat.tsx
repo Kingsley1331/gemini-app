@@ -64,6 +64,8 @@ function cn(...inputs: ClassValue[]) {
 const SELECTED_MODEL_STORAGE_KEY = "selectedModel";
 const MAX_AUTO_ASSETS = 8;
 const ASSET_PLACEHOLDER_REGEX = /__ASSET_([a-zA-Z0-9_-]+)__/g;
+const CHAT_REQUEST_TARGET_BYTES = 4_000_000;
+const CHAT_REQUEST_HISTORY_WINDOWS = [null, 12, 8, 4, 0] as const;
 const PREVIEWABLE_LANGUAGES = new Set([
   "html",
   "jsx",
@@ -121,6 +123,22 @@ type PlannedAsset = {
 
 type GeneratedAsset = PlannedAsset & {
   attachment: VisualAttachment;
+};
+
+type ChatRequestClientMeta = {
+  estimatedBytes: number;
+  trimmedHistory: boolean;
+  droppedHistoryCount: number;
+  historyWindow: number | null;
+  hasCurrentTurnAttachment: boolean;
+  hasPreviewContext: boolean;
+  hasAssetContext: boolean;
+};
+
+type ChatRequestPayload = {
+  model: string;
+  messages: ChatRequestMessage[];
+  clientMeta: ChatRequestClientMeta;
 };
 
 type ExtractedPreviewCodeBlock = {
@@ -453,10 +471,10 @@ function buildAssetContextMessage(
 
   return `Generated visual assets for the request: "${userPrompt}".
 
-These attachments are intended to be used directly in the generated app/game code as in-scene assets (sprites/backgrounds/UI images), not as separate outputs.
+These assets are intended to be used directly in the generated app/game code as in-scene assets (sprites/backgrounds/UI images), not as separate outputs.
 
 Requirements:
-- Use these attached images directly in the implementation.
+- Use the listed asset placeholders directly in the implementation.
 - Define a clear in-code asset map/object with descriptive keys.
 - Build the app/game so the generated assets appear inside the experience.
 - Do not ask for separate image generation.
@@ -470,6 +488,89 @@ ${assets
 
 Asset manifest:
 ${manifest}`;
+}
+
+function estimateJsonPayloadBytes(payload: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(payload)).length;
+}
+
+function trimHistoryMessages(
+  messages: ChatRequestMessage[],
+  historyWindow: number | null,
+): ChatRequestMessage[] {
+  if (historyWindow === null) return [...messages];
+  if (historyWindow <= 0) return [];
+  return messages.slice(-historyWindow);
+}
+
+function normalizeChatHistoryStart(
+  messages: ChatRequestMessage[],
+): ChatRequestMessage[] {
+  const normalized = [...messages];
+  while (normalized.length > 0 && normalized[0]?.role !== "user") {
+    normalized.shift();
+  }
+  return normalized;
+}
+
+function buildChatRequestPayload({
+  model,
+  historyMessages,
+  historyWindow,
+  previewContextMessage,
+  assetContextMessage,
+  latestUserMessage,
+}: {
+  model: string;
+  historyMessages: ChatRequestMessage[];
+  historyWindow: number | null;
+  previewContextMessage?: ChatRequestMessage | null;
+  assetContextMessage?: ChatRequestMessage | null;
+  latestUserMessage: ChatRequestMessage;
+}): ChatRequestPayload {
+  const trimmedHistory = trimHistoryMessages(historyMessages, historyWindow);
+  const composedMessages = normalizeChatHistoryStart([
+    ...trimmedHistory,
+    ...(previewContextMessage ? [previewContextMessage] : []),
+    ...(assetContextMessage ? [assetContextMessage] : []),
+    latestUserMessage,
+  ]);
+  const payloadBase = {
+    model,
+    messages: composedMessages,
+  };
+
+  return {
+    ...payloadBase,
+    clientMeta: {
+      estimatedBytes: estimateJsonPayloadBytes(payloadBase),
+      trimmedHistory: historyWindow !== null && trimmedHistory.length !== historyMessages.length,
+      droppedHistoryCount: Math.max(0, historyMessages.length - trimmedHistory.length),
+      historyWindow,
+      hasCurrentTurnAttachment: Boolean(latestUserMessage.attachments?.length),
+      hasPreviewContext: Boolean(previewContextMessage),
+      hasAssetContext: Boolean(assetContextMessage),
+    },
+  };
+}
+
+async function getResponseErrorMessage(response: Response): Promise<string> {
+  try {
+    const payload = await response.json();
+    if (payload && typeof payload === "object") {
+      const details =
+        typeof payload.details === "string"
+          ? payload.details
+          : typeof payload.error === "string"
+            ? payload.error
+            : null;
+      if (details) return details;
+    }
+  } catch {
+    // Fall back to status text below.
+  }
+
+  return response.statusText || "Failed to get response";
 }
 
 function extractGeneratedImage(
@@ -1306,28 +1407,11 @@ export default function Chat() {
           const activeAssets =
             generatedAssets.length > 0 ? generatedAssets : reusedAssets;
 
-          const requestMessages: ChatRequestMessage[] = messages.map((message) => ({
+          const historyMessages: ChatRequestMessage[] = messages.map((message) => ({
             role: message.role,
             content: message.content,
-            attachments:
-              message.role === "user"
-                ? message.attachments
-                    ?.filter(
-                      (
-                        attachment,
-                      ): attachment is {
-                        url: string;
-                        mimeType: string;
-                        data: string;
-                      } => Boolean(attachment.data),
-                    )
-                    .map((attachment) => ({
-                      mimeType: attachment.mimeType,
-                      data: attachment.data,
-                    }))
-                : undefined,
           }));
-          requestMessages.push({
+          const latestUserRequestMessage: ChatRequestMessage = {
             role: "user",
             content: userMessage.content,
             attachments: selectedImage
@@ -1338,11 +1422,8 @@ export default function Chat() {
                   },
                 ]
               : undefined,
-          });
-          // Some providers reject histories that do not start with a user turn.
-          while (requestMessages.length > 0 && requestMessages[0]?.role !== "user") {
-            requestMessages.shift();
-          }
+          };
+          let previewContextMessage: ChatRequestMessage | null = null;
           if (activeAppsEditContext?.appId) {
             const latestDraft = getLatestAppsEditDraft(
               messages,
@@ -1386,42 +1467,70 @@ export default function Chat() {
                     : null;
 
             if (previewSeed) {
-              const previewContextMessage = await buildPreviewContextRequestMessage({
+              previewContextMessage = await buildPreviewContextRequestMessage({
                 title: previewSeed.title,
                 code: previewSeed.code,
                 language: previewSeed.language,
                 assets: previewSeed.assets,
               });
-              if (previewContextMessage) {
-                requestMessages.splice(requestMessages.length - 1, 0, previewContextMessage);
+            }
+          }
+          const assetContextMessage: ChatRequestMessage | null =
+            activeAssets.length > 0
+              ? {
+                  role: "user",
+                  content: buildAssetContextMessage(
+                    normalizedInput,
+                    activeAssets,
+                  ),
+                }
+              : null;
+
+          let chatPayload = buildChatRequestPayload({
+            model: selectedModel,
+            historyMessages,
+            historyWindow: null,
+            previewContextMessage,
+            assetContextMessage,
+            latestUserMessage: latestUserRequestMessage,
+          });
+
+          if (chatPayload.clientMeta.estimatedBytes > CHAT_REQUEST_TARGET_BYTES) {
+            for (const historyWindow of CHAT_REQUEST_HISTORY_WINDOWS.slice(1)) {
+              const candidatePayload = buildChatRequestPayload({
+                model: selectedModel,
+                historyMessages,
+                historyWindow,
+                previewContextMessage,
+                assetContextMessage,
+                latestUserMessage: latestUserRequestMessage,
+              });
+              chatPayload = candidatePayload;
+              if (candidatePayload.clientMeta.estimatedBytes <= CHAT_REQUEST_TARGET_BYTES) {
+                break;
               }
             }
           }
-          if (activeAssets.length > 0) {
-            const syntheticAssetMessage: ChatRequestMessage = {
-              role: "user",
-              content: buildAssetContextMessage(
-                normalizedInput,
-                activeAssets,
-              ),
-              attachments: activeAssets.map((asset) => ({
-                mimeType: asset.attachment.mimeType,
-                data: asset.attachment.data,
-              })),
-            };
-            requestMessages.splice(requestMessages.length - 1, 0, syntheticAssetMessage);
+
+          if (chatPayload.clientMeta.estimatedBytes > CHAT_REQUEST_TARGET_BYTES) {
+            const attachmentGuidance = latestUserRequestMessage.attachments?.length
+              ? " Try again with a smaller image or resend the request without the current image attachment."
+              : "";
+            throw new Error(
+              "This chat request is still too large after trimming older history. Try shortening the current app context or sending a smaller edit request."
+                + attachmentGuidance,
+            );
           }
 
           const response = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: selectedModel,
-              messages: requestMessages,
-            }),
+            body: JSON.stringify(chatPayload),
           });
 
-          if (!response.ok) throw new Error("Failed to get response");
+          if (!response.ok) {
+            throw new Error(await getResponseErrorMessage(response));
+          }
           if (!response.body) throw new Error("No response body");
           const modelUsed = response.headers.get("x-model-used");
           if (

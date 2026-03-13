@@ -13,6 +13,25 @@ import { NextResponse } from "next/server";
 // ---------------------------------------------------------------------------
 
 type Provider = "gemini" | "openai" | "anthropic";
+const MAX_CHAT_REQUEST_SIZE_BYTES = 4_500_000;
+const LARGE_CHAT_REQUEST_WARNING_BYTES = 3_500_000;
+
+interface ChatRequestClientMeta {
+  estimatedBytes?: number;
+  trimmedHistory?: boolean;
+  droppedHistoryCount?: number;
+  historyWindow?: number | null;
+  hasCurrentTurnAttachment?: boolean;
+  hasPreviewContext?: boolean;
+  hasAssetContext?: boolean;
+}
+
+interface ChatRequestBody {
+  messages?: unknown;
+  model?: unknown;
+  systemInstruction?: unknown;
+  clientMeta?: ChatRequestClientMeta;
+}
 
 function getProvider(modelId: string): Provider {
   if (modelId.startsWith("gemini-")) return "gemini";
@@ -40,6 +59,24 @@ function isTransientUpstreamError(error: unknown): boolean {
   }
   if (!(error instanceof Error)) return false;
   return /high demand|try again later|temporar|rate limit/i.test(error.message);
+}
+
+function isPayloadTooLargeError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /payload too large|request entity too large|function_payload_too_large/i.test(
+    error.message,
+  );
+}
+
+function estimateRequestBodyBytes(payload: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(payload)).length;
+}
+
+function countInlineAttachments(messages: ChatMessage[]): number {
+  return messages.reduce(
+    (total, message) => total + (message.attachments?.length || 0),
+    0,
+  );
 }
 
 function getGeminiModelOrder(modelId: string): string[] {
@@ -572,26 +609,70 @@ async function streamAnthropic(
 
 export async function POST(req: Request) {
   try {
-    const {
-      messages,
-      model: userModel,
-      systemInstruction: customSystemInstruction,
-    } = await req.json();
-    const normalizedMessages = normalizeIncomingMessages(messages);
-    if (normalizedMessages.length === 0) {
+    const requestBody = (await req.json()) as ChatRequestBody;
+    if (!requestBody || typeof requestBody !== "object") {
       return NextResponse.json(
         {
           error: "Chat Error",
-          details: "No valid user message found in request history.",
+          details: "Invalid chat request body.",
         },
         { status: 400 },
       );
     }
 
-    const modelId = userModel || "gemini-3.1-pro-preview";
+    const {
+      messages,
+      model: userModel,
+      systemInstruction: customSystemInstruction,
+      clientMeta,
+    } = requestBody;
+    const estimatedBodyBytes = estimateRequestBodyBytes(requestBody);
+    if (estimatedBodyBytes > MAX_CHAT_REQUEST_SIZE_BYTES) {
+      return NextResponse.json(
+        {
+          error: "Chat Error",
+          details:
+            "The chat request was too large to process. Reduce attached images, trim the request context, or retry with a shorter edit request.",
+        },
+        { status: 413 },
+      );
+    }
+
+    const normalizedMessages = normalizeIncomingMessages(messages);
+    const inlineAttachmentCount = countInlineAttachments(normalizedMessages);
+    if (
+      estimatedBodyBytes >= LARGE_CHAT_REQUEST_WARNING_BYTES ||
+      inlineAttachmentCount > 0 ||
+      clientMeta?.trimmedHistory
+    ) {
+      console.warn("Large chat request received", {
+        estimatedBodyBytes,
+        normalizedMessageCount: normalizedMessages.length,
+        inlineAttachmentCount,
+        clientMeta,
+      });
+    }
+
+    if (normalizedMessages.length === 0) {
+      return NextResponse.json(
+        {
+          error: "Chat Error",
+          details:
+            "No valid user message found in request history after preprocessing. Retry with a shorter request or re-send the latest edit prompt.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const modelId =
+      typeof userModel === "string" && userModel
+        ? userModel
+        : "gemini-3.1-pro-preview";
     const provider = getProvider(modelId);
     const systemInstructionText =
-      customSystemInstruction || defaultSystemInstruction;
+      typeof customSystemInstruction === "string" && customSystemInstruction
+        ? customSystemInstruction
+        : defaultSystemInstruction;
 
     let streamResult: StreamResult;
 
@@ -628,11 +709,29 @@ export async function POST(req: Request) {
       },
     });
   } catch (error: unknown) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json(
+        {
+          error: "Chat Error",
+          details: "Invalid JSON in chat request body.",
+        },
+        { status: 400 },
+      );
+    }
+
     const message = error instanceof Error ? error.message : "Unknown error";
     const upstreamStatus = getUpstreamStatusCode(error);
-    const status = isTransientUpstreamError(error) ? 503 : upstreamStatus ?? 500;
+    const payloadTooLarge = isPayloadTooLargeError(error) || upstreamStatus === 413;
+    const status = payloadTooLarge
+      ? 413
+      : isTransientUpstreamError(error)
+        ? 503
+        : upstreamStatus ?? 500;
+    const details = payloadTooLarge
+      ? "The chat request was too large. Reduce attached images, shorten the edit request, or retry after trimming prior context."
+      : message;
     return NextResponse.json(
-      { error: "Chat Error", details: message },
+      { error: "Chat Error", details },
       { status },
     );
   }
