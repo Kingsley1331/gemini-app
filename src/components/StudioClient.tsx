@@ -790,6 +790,11 @@ export default function StudioClient({
     selectedModel,
   ]);
 
+  const handleKeepPreviewCode = useCallback((nextCode: string) => {
+    setPreviewCode(nextCode);
+    setStatusMessage("Applied your kept code changes to the preview.");
+  }, []);
+
   const selectedModelLabel =
     models.find((model) => model.id === selectedModel)?.name || "Select model";
 
@@ -815,6 +820,7 @@ export default function StudioClient({
           language={previewLanguage}
           title={previewTitle}
           assets={previewAssets}
+          onCodeKeep={handleKeepPreviewCode}
           editSource={appId ? "apps" : undefined}
           existingAppId={appId}
           onSnapshot={handlePreviewSnapshot}

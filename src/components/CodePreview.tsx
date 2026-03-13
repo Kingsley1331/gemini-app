@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent } from "react";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
@@ -46,6 +47,7 @@ interface CodePreviewProps {
   language: string;
   title?: string;
   assets?: AppAsset[];
+  onCodeKeep?: (nextCode: string) => void;
   onDebug?: (error: string, code: string, language: string) => void;
   onSnapshot?: (snapshot: {
     url: string;
@@ -62,6 +64,17 @@ interface CodePreviewProps {
 const EMPTY_PREVIEW_ASSETS: AppAsset[] = [];
 const STUDIO_DRAFT_STORAGE_PREFIX = "studio-draft:";
 const ASSET_FILE_ACCEPT = "image/*,.svg";
+const MonacoEditor = dynamic(
+  () => import("@monaco-editor/react").then((module) => module.default),
+  {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full min-h-[320px] items-center justify-center bg-[#1e1e1e] text-sm text-zinc-400 sm:min-h-[500px]">
+      Loading editor...
+    </div>
+  ),
+  },
+);
 const RASTER_OUTPUT_OPTIONS = [
   { mimeType: "image/png", label: "PNG", extension: "png" },
   { mimeType: "image/jpeg", label: "JPEG", extension: "jpg" },
@@ -76,6 +89,22 @@ function normalizePreviewError(message: string): string {
   if (!invalidHookPattern.test(message)) return message;
 
   return `${message}\n\nHint: This preview failed due to an invalid React hook context. This usually happens when code imports React UI libraries that bundle/use a different React runtime, or when a hook is called outside a React function component/custom hook. Try using plain React + Tailwind in a single file and keep all hooks inside App/custom hooks.`;
+}
+
+function getMonacoLanguage(language: string): string {
+  if (language === "tsx" || language === "typescript") return "typescript";
+  if (language === "jsx" || language === "javascript") return "javascript";
+  if (language === "html") return "html";
+  return "plaintext";
+}
+
+function getMonacoPath(language: string): string {
+  if (language === "tsx") return "preview.tsx";
+  if (language === "typescript") return "preview.ts";
+  if (language === "jsx") return "preview.jsx";
+  if (language === "javascript") return "preview.js";
+  if (language === "html") return "preview.html";
+  return "preview.txt";
 }
 
 function sleep(ms: number) {
@@ -242,6 +271,7 @@ export default function CodePreview({
   language,
   title = "Preview",
   assets = EMPTY_PREVIEW_ASSETS,
+  onCodeKeep,
   onAssetsChange,
   editSource,
   existingAppId,
@@ -301,9 +331,13 @@ export default function CodePreview({
   const [assetEditStatus, setAssetEditStatus] = useState<string | null>(null);
   const [assetCandidate, setAssetCandidate] = useState<AppAsset | null>(null);
   const [isGeneratingAssetCandidate, setIsGeneratingAssetCandidate] = useState(false);
+  const [draftCode, setDraftCode] = useState(code);
+  const [codeDraftStatus, setCodeDraftStatus] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const addAssetInputRef = useRef<HTMLInputElement>(null);
   const latestAssetsRef = useRef(assets);
+  const isCodeEditable = isStudioPage && typeof onCodeKeep === "function";
+  const isCodeDirty = isCodeEditable && draftCode !== code;
   const shareInstallsEnabled =
     process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "1" ||
     process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "true";
@@ -321,6 +355,11 @@ export default function CodePreview({
   useEffect(() => {
     latestAssetsRef.current = assets;
   }, [assets]);
+
+  useEffect(() => {
+    setDraftCode(code);
+    setCodeDraftStatus(null);
+  }, [code]);
 
   useEffect(() => {
     if (!isStudioPage && activeTab === "assets") {
@@ -1019,10 +1058,27 @@ export default function CodePreview({
   }, [assetCandidate, closeAssetModal, selectedAssetKey, syncAssetToDraft, updateAssets]);
 
   const copyToClipboard = () => {
-    navigator.clipboard.writeText(code);
+    const clipboardCode = isCodeEditable && activeTab === "code" ? draftCode : code;
+    navigator.clipboard.writeText(clipboardCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const handleCodeDraftChange = useCallback((value: string | undefined) => {
+    setDraftCode(value ?? "");
+    setCodeDraftStatus(null);
+  }, []);
+
+  const handleKeepCodeDraft = useCallback(() => {
+    if (!isCodeEditable || draftCode === code) return;
+    onCodeKeep?.(draftCode);
+    setCodeDraftStatus("Changes kept. The preview now uses this code.");
+  }, [code, draftCode, isCodeEditable, onCodeKeep]);
+
+  const handleResetCodeDraft = useCallback(() => {
+    setDraftCode(code);
+    setCodeDraftStatus("Draft reset to the current preview code.");
+  }, [code]);
 
   const handleOpenInStudio = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -2438,36 +2494,92 @@ export default function CodePreview({
             title="Code Preview"
           />
         ) : activeTab === "code" || !isStudioPage ? (
-          <div className="h-full max-h-[55vh] overflow-auto bg-[#1e1e1e] sm:max-h-[600px]">
-            <SyntaxHighlighter
-              language={language}
-              style={vscDarkPlus}
-              showLineNumbers={true}
-              wrapLines={true}
-              className="gemini-code-block"
-              lineNumberStyle={{
-                color: "#6e7681",
-                minWidth: "2em",
-                paddingRight: "1em",
-                userSelect: "none",
-              }}
-              customStyle={{
-                margin: 0,
-                padding: "1.5rem",
-                fontSize: "0.875rem",
-                lineHeight: "1.5",
-                backgroundColor: "transparent",
-              }}
-              codeTagProps={{
-                style: {
-                  fontFamily:
-                    "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                },
-              }}
-            >
-              {code}
-            </SyntaxHighlighter>
-          </div>
+          isCodeEditable && activeTab === "code" ? (
+            <div className="flex h-full min-h-[320px] flex-col bg-[#1e1e1e] sm:min-h-[500px]">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-100">
+                    {isCodeDirty ? "Unsaved Studio edits" : "Studio preview source"}
+                  </p>
+                  <p className="text-xs text-zinc-400">
+                    {isCodeDirty
+                      ? "Edits are staged here until you click Keep."
+                      : codeDraftStatus || "Edit the code here, then click Keep to refresh the preview."}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleResetCodeDraft}
+                    disabled={!isCodeDirty}
+                    className="rounded-lg border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleKeepCodeDraft}
+                    disabled={!isCodeDirty}
+                    className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-blue-500/50"
+                  >
+                    Keep
+                  </button>
+                </div>
+              </div>
+              <div className="h-[55vh] min-h-[320px] overflow-hidden sm:h-[600px]">
+                <MonacoEditor
+                  height="100%"
+                  language={getMonacoLanguage(language)}
+                  path={getMonacoPath(language)}
+                  defaultValue={code}
+                  value={draftCode}
+                  onChange={handleCodeDraftChange}
+                  theme="vs-dark"
+                  options={{
+                    automaticLayout: true,
+                    minimap: { enabled: false },
+                    fontSize: 14,
+                    lineNumbersMinChars: 3,
+                    padding: { top: 16, bottom: 16 },
+                    scrollBeyondLastLine: false,
+                    tabSize: 2,
+                    wordWrap: "on",
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="h-full max-h-[55vh] overflow-auto bg-[#1e1e1e] sm:max-h-[600px]">
+              <SyntaxHighlighter
+                language={language}
+                style={vscDarkPlus}
+                showLineNumbers={true}
+                wrapLines={true}
+                className="gemini-code-block"
+                lineNumberStyle={{
+                  color: "#6e7681",
+                  minWidth: "2em",
+                  paddingRight: "1em",
+                  userSelect: "none",
+                }}
+                customStyle={{
+                  margin: 0,
+                  padding: "1.5rem",
+                  fontSize: "0.875rem",
+                  lineHeight: "1.5",
+                  backgroundColor: "transparent",
+                }}
+                codeTagProps={{
+                  style: {
+                    fontFamily:
+                      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                  },
+                }}
+              >
+                {code}
+              </SyntaxHighlighter>
+            </div>
+          )
         ) : (
           <div className="flex h-full min-h-[320px] flex-col sm:min-h-[500px]">
             <div className="flex items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
