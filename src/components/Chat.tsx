@@ -31,6 +31,10 @@ import {
   type ChatRequestMessage,
 } from "@/lib/preview-chat-context";
 import {
+  extractLatestPreviewableCodeBlock,
+  parsePreviewEditResponse,
+} from "@/lib/preview-edit-response";
+import {
   getChatSessionState,
   resetChatSessionState,
   setChatSessionState,
@@ -66,13 +70,6 @@ const MAX_AUTO_ASSETS = 8;
 const ASSET_PLACEHOLDER_REGEX = /__ASSET_([a-zA-Z0-9_-]+)__/g;
 const CHAT_REQUEST_TARGET_BYTES = 4_000_000;
 const CHAT_REQUEST_HISTORY_WINDOWS = [null, 12, 8, 4, 0] as const;
-const PREVIEWABLE_LANGUAGES = new Set([
-  "html",
-  "jsx",
-  "tsx",
-  "javascript",
-  "typescript",
-]);
 const VISUAL_INTENT_KEYWORDS = [
   "gallery",
   "beautiful photographs",
@@ -138,33 +135,9 @@ type ChatRequestClientMeta = {
 type ChatRequestPayload = {
   model: string;
   messages: ChatRequestMessage[];
+  responseMode?: "preview_edit_compact";
   clientMeta: ChatRequestClientMeta;
 };
-
-type ExtractedPreviewCodeBlock = {
-  language: string;
-  code: string;
-};
-
-function extractLatestPreviewableCodeBlock(
-  content: string,
-): ExtractedPreviewCodeBlock | null {
-  const codeBlockRegex = /```([a-zA-Z0-9_-]+)[^\n]*\n([\s\S]*?)```/g;
-  let match: RegExpExecArray | null;
-  let latestMatch: ExtractedPreviewCodeBlock | null = null;
-
-  while ((match = codeBlockRegex.exec(content)) !== null) {
-    const language = (match[1] || "").toLowerCase();
-    if (!PREVIEWABLE_LANGUAGES.has(language)) continue;
-
-    latestMatch = {
-      language,
-      code: (match[2] || "").trim(),
-    };
-  }
-
-  return latestMatch;
-}
 
 function getPreviewAssetsFromAttachments(
   attachments: Message["attachments"],
@@ -186,7 +159,10 @@ function getPreviewAssetsFromAttachments(
 function getLatestAppsEditDraft(
   messages: Message[],
   appId: string,
-): (ExtractedPreviewCodeBlock & {
+): ({
+  language: string;
+  code: string;
+} & {
   appName?: string;
   assets: AppAsset[];
 }) | null {
@@ -200,7 +176,7 @@ function getLatestAppsEditDraft(
       continue;
     }
 
-    const extractedCodeBlock = extractLatestPreviewableCodeBlock(message.content);
+    const extractedCodeBlock = message.previewArtifact || extractLatestPreviewableCodeBlock(message.content);
     if (!extractedCodeBlock) continue;
 
     return {
@@ -520,6 +496,7 @@ function buildChatRequestPayload({
   previewContextMessage,
   assetContextMessage,
   latestUserMessage,
+  responseMode,
 }: {
   model: string;
   historyMessages: ChatRequestMessage[];
@@ -527,6 +504,7 @@ function buildChatRequestPayload({
   previewContextMessage?: ChatRequestMessage | null;
   assetContextMessage?: ChatRequestMessage | null;
   latestUserMessage: ChatRequestMessage;
+  responseMode?: "preview_edit_compact";
 }): ChatRequestPayload {
   const trimmedHistory = trimHistoryMessages(historyMessages, historyWindow);
   const composedMessages = normalizeChatHistoryStart([
@@ -538,6 +516,7 @@ function buildChatRequestPayload({
   const payloadBase = {
     model,
     messages: composedMessages,
+    ...(responseMode ? { responseMode } : {}),
   };
 
   return {
@@ -1485,6 +1464,9 @@ export default function Chat() {
                   ),
                 }
               : null;
+          const responseMode = previewContextMessage
+            ? "preview_edit_compact" as const
+            : undefined;
 
           let chatPayload = buildChatRequestPayload({
             model: selectedModel,
@@ -1493,6 +1475,7 @@ export default function Chat() {
             previewContextMessage,
             assetContextMessage,
             latestUserMessage: latestUserRequestMessage,
+            responseMode,
           });
 
           if (chatPayload.clientMeta.estimatedBytes > CHAT_REQUEST_TARGET_BYTES) {
@@ -1504,6 +1487,7 @@ export default function Chat() {
                 previewContextMessage,
                 assetContextMessage,
                 latestUserMessage: latestUserRequestMessage,
+                responseMode,
               });
               chatPayload = candidatePayload;
               if (candidatePayload.clientMeta.estimatedBytes <= CHAT_REQUEST_TARGET_BYTES) {
@@ -1549,7 +1533,7 @@ export default function Chat() {
           const assistantMessage: Message = {
             id: assistantMessageId,
             role: "assistant",
-            content: "",
+            content: responseMode ? "Updating preview..." : "",
             type: "text",
             previewContext: activeAppsEditContext,
           };
@@ -1562,17 +1546,39 @@ export default function Chat() {
 
             const chunk = decoder.decode(value, { stream: true });
             assistantContent += chunk;
-
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === assistantMessageId
-                  ? { ...msg, content: assistantContent }
-                  : msg,
-              ),
-            );
+            if (!responseMode) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, content: assistantContent }
+                    : msg,
+                ),
+              );
+            }
           }
+          assistantContent += decoder.decode();
 
-          const responseAssetKeys = extractAssetKeysFromText(assistantContent);
+          const parsedPreviewEditResponse =
+            responseMode ? parsePreviewEditResponse(assistantContent) : null;
+          const previewArtifact = parsedPreviewEditResponse?.previewCodeBlock;
+          const visibleAssistantContent =
+            parsedPreviewEditResponse?.chatContent || assistantContent;
+
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId
+                ? {
+                    ...msg,
+                    content: visibleAssistantContent,
+                    ...(previewArtifact ? { previewArtifact } : {}),
+                  }
+                : msg,
+            ),
+          );
+
+          const responseAssetKeys = extractAssetKeysFromText(
+            previewArtifact?.code || assistantContent,
+          );
           const responseAssets: GeneratedAsset[] =
             activeAssets.length > 0
               ? activeAssets

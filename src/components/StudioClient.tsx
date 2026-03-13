@@ -27,20 +27,17 @@ import {
   buildPreviewContextRequestMessage,
   type ChatRequestMessage,
 } from "@/lib/preview-chat-context";
+import {
+  extractLatestPreviewableCodeBlock,
+  normalizePreviewLanguage,
+  parsePreviewEditResponse,
+} from "@/lib/preview-edit-response";
 import CodePreview from "@/components/CodePreview";
 import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 import PromptAssistant from "./PromptAssistant";
 
 const SELECTED_MODEL_STORAGE_KEY = "selectedModel";
 const STUDIO_DRAFT_STORAGE_PREFIX = "studio-draft:";
-const PREVIEWABLE_LANGUAGES = new Set([
-  "html",
-  "jsx",
-  "tsx",
-  "javascript",
-  "typescript",
-]);
-
 type StudioClientProps = {
   initialCode: string;
   initialLanguage: string;
@@ -56,11 +53,6 @@ type StudioModel = {
   name: string;
   description: string;
   provider: "gemini" | "openai" | "anthropic";
-};
-
-type ExtractedCodeBlock = {
-  code: string;
-  language: string;
 };
 
 type SelectedImage = {
@@ -105,32 +97,6 @@ interface SpeechRecognition extends EventTarget {
   onend: () => void;
   start: () => void;
   stop: () => void;
-}
-
-function normalizePreviewLanguage(language: string): string {
-  if (language === "javascript") return "jsx";
-  if (language === "typescript") return "tsx";
-  return language;
-}
-
-function extractLatestPreviewableCodeBlock(
-  content: string,
-): ExtractedCodeBlock | null {
-  const codeBlockRegex = /```([a-zA-Z0-9_-]+)[^\n]*\n([\s\S]*?)```/g;
-  let match: RegExpExecArray | null;
-  let latestMatch: ExtractedCodeBlock | null = null;
-
-  while ((match = codeBlockRegex.exec(content)) !== null) {
-    const language = (match[1] || "").toLowerCase();
-    if (!PREVIEWABLE_LANGUAGES.has(language)) continue;
-
-    latestMatch = {
-      language,
-      code: (match[2] || "").trim(),
-    };
-  }
-
-  return latestMatch;
 }
 
 export default function StudioClient({
@@ -677,7 +643,7 @@ export default function StudioClient({
       {
         id: assistantMessageId,
         role: "assistant",
-        content: "",
+        content: "Updating preview...",
       },
     ]);
 
@@ -736,6 +702,7 @@ export default function StudioClient({
         body: JSON.stringify({
           model: selectedModel,
           messages: requestMessages,
+          responseMode: "preview_edit_compact",
         }),
       });
 
@@ -763,25 +730,22 @@ export default function StudioClient({
         const { done, value } = await reader.read();
         if (done) break;
         assistantContent += decoder.decode(value, { stream: true });
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessageId
-              ? { ...message, content: assistantContent }
-              : message,
-          ),
-        );
       }
 
       assistantContent += decoder.decode();
+      const parsedPreviewEditResponse = parsePreviewEditResponse(assistantContent);
+      const visibleAssistantContent =
+        parsedPreviewEditResponse?.chatContent || assistantContent;
       setMessages((prev) =>
         prev.map((message) =>
           message.id === assistantMessageId
-            ? { ...message, content: assistantContent }
+            ? { ...message, content: visibleAssistantContent }
             : message,
         ),
       );
 
       const extractedCodeBlock =
+        parsedPreviewEditResponse?.previewCodeBlock ||
         extractLatestPreviewableCodeBlock(assistantContent);
 
       if (!extractedCodeBlock) {
@@ -815,6 +779,7 @@ export default function StudioClient({
     input,
     isLoading,
     isRichText,
+    messages,
     models,
     previewAssets,
     previewCode,

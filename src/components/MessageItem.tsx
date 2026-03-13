@@ -22,6 +22,10 @@ export type Message = {
   content: string;
   type: "text" | "image";
   imageUrl?: string;
+  previewArtifact?: {
+    code: string;
+    language: string;
+  };
   attachments?: {
     url: string;
     mimeType: string;
@@ -107,6 +111,20 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug,
           )}
         {m.type === "text" ? (
           <div className="space-y-3">
+            {m.role === "assistant" && m.previewArtifact ? (
+              <CodePreview
+                code={m.previewArtifact.code}
+                language={m.previewArtifact.language}
+                title={`${m.previewArtifact.language.toUpperCase()} Artifact`}
+                assets={getPreviewAssets(m.attachments)}
+                editSource={m.previewContext?.source}
+                existingAppId={m.previewContext?.appId}
+                initialAppName={m.previewContext?.appName}
+                initialHasGeneratedIcon={m.previewContext?.hasGeneratedIcon}
+                onDebug={onDebug}
+                onSnapshot={onSnapshot}
+              />
+            ) : null}
             <div className="prose prose-sm max-w-none break-words dark:prose-invert">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
@@ -134,7 +152,7 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug,
                     "typescript",
                   ].includes(language);
 
-                  if (!inline && isPreviewable) {
+                  if (!inline && isPreviewable && !m.previewArtifact) {
                     return (
                       <CodePreview
                         code={code}
@@ -209,6 +227,7 @@ const MessageItem = memo(({ m, isSpeaking, isGeneratingSpeech, onSpeak, onDebug,
             {m.role === "assistant" &&
               m.attachments &&
               m.attachments.length > 0 &&
+              !m.previewArtifact &&
               !assistantHasCodeBlock && (
                 <div className="grid gap-3 sm:grid-cols-2">
                   {m.attachments.map((attachment, idx) => (

@@ -7,6 +7,7 @@ import {
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
+import { previewEditResponseFormatInstruction } from "@/lib/preview-edit-response";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,8 +31,11 @@ interface ChatRequestBody {
   messages?: unknown;
   model?: unknown;
   systemInstruction?: unknown;
+  responseMode?: unknown;
   clientMeta?: ChatRequestClientMeta;
 }
+
+type ChatResponseMode = "default" | "preview_edit_compact";
 
 function getProvider(modelId: string): Provider {
   if (modelId.startsWith("gemini-")) return "gemini";
@@ -250,6 +254,14 @@ Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS insid
    - For canvas games, preload images and only call drawImage after each asset has finished loading.
 
 When writing mathematical formulas in regular chat (not code), use LaTeX notation with single dollar signs for inline math (e.g. $E=mc^2$) and double dollar signs for block math (e.g. $$a^2 + b^2 = c^2$$). You may receive input transcribed from voice; if so, maintain a helpful and conversational tone.`;
+
+function getSystemInstructionForMode(responseMode: ChatResponseMode): string {
+  if (responseMode === "preview_edit_compact") {
+    return `${defaultSystemInstruction}\n\n${previewEditResponseFormatInstruction}`;
+  }
+
+  return defaultSystemInstruction;
+}
 
 // ---------------------------------------------------------------------------
 // Provider-specific streaming handlers
@@ -624,6 +636,7 @@ export async function POST(req: Request) {
       messages,
       model: userModel,
       systemInstruction: customSystemInstruction,
+      responseMode,
       clientMeta,
     } = requestBody;
     const estimatedBodyBytes = estimateRequestBodyBytes(requestBody);
@@ -669,10 +682,12 @@ export async function POST(req: Request) {
         ? userModel
         : "gemini-3.1-pro-preview";
     const provider = getProvider(modelId);
+    const effectiveResponseMode: ChatResponseMode =
+      responseMode === "preview_edit_compact" ? "preview_edit_compact" : "default";
     const systemInstructionText =
       typeof customSystemInstruction === "string" && customSystemInstruction
         ? customSystemInstruction
-        : defaultSystemInstruction;
+        : getSystemInstructionForMode(effectiveResponseMode);
 
     let streamResult: StreamResult;
 
