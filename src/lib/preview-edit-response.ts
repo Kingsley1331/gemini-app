@@ -12,23 +12,32 @@ export type ExtractedPreviewCodeBlock = {
 };
 
 export type ParsedPreviewEditResponse = {
+  chatSummary: string;
+  chatDiff: string;
   chatContent: string;
   previewCodeBlock: ExtractedPreviewCodeBlock;
 };
 
 export const previewEditResponseFormatInstruction = `
 13. COMPACT PREVIEW EDIT OUTPUT FORMAT (MANDATORY FOR THIS REQUEST):
-   - Return exactly two sections in this exact order using these markers:
+   - Return exactly three sections in this exact order using these markers:
+     <<CHAT_SUMMARY>>
+     <a short 1-2 sentence plain-English summary of what changed>
+     <<END_CHAT_SUMMARY>>
      <<CHAT_DIFF>>
-     <brief user-facing response with only the changed section, minimal snippet, or patch>
+     <a concise unified diff in a single \`\`\`diff fenced block showing only the changed lines>
      <<END_CHAT_DIFF>>
      <<FULL_UPDATED_CODE>>
      <one single previewable fenced code block containing the complete updated runnable app>
      <<END_FULL_UPDATED_CODE>>
    - The code inside <<FULL_UPDATED_CODE>> must be the complete updated runnable app.
+   - <<CHAT_SUMMARY>> must always be present and should briefly explain what was changed and why, if relevant.
+   - Keep <<CHAT_SUMMARY>> short and do not include code fences inside it.
    - Do NOT include the full app code anywhere inside <<CHAT_DIFF>>.
-   - Keep <<CHAT_DIFF>> concise. If the requested edit is small, show only the changed area there.
-   - Use the same language as the app for both sections when you include code.
+   - <<CHAT_DIFF>> must be a real unified diff using \`-\` for removed lines and \`+\` for added lines.
+   - Keep <<CHAT_DIFF>> concise and include only the minimal surrounding context needed to understand the change.
+   - Do not include explanatory prose before or after the diff inside <<CHAT_DIFF>>.
+   - Use \`\`\`diff for <<CHAT_DIFF>> and the app's actual language for <<FULL_UPDATED_CODE>>.
 `;
 
 export function normalizePreviewLanguage(language: string): string {
@@ -60,6 +69,9 @@ export function extractLatestPreviewableCodeBlock(
 export function parsePreviewEditResponse(
   rawResponse: string,
 ): ParsedPreviewEditResponse | null {
+  const chatSummaryMatch = rawResponse.match(
+    /<<CHAT_SUMMARY>>\s*([\s\S]*?)\s*<<END_CHAT_SUMMARY>>/i,
+  );
   const chatDiffMatch = rawResponse.match(
     /<<CHAT_DIFF>>\s*([\s\S]*?)\s*<<END_CHAT_DIFF>>/i,
   );
@@ -72,9 +84,13 @@ export function parsePreviewEditResponse(
   const previewCodeBlock = extractLatestPreviewableCodeBlock(fullUpdatedCodeMatch[1] || "");
   if (!previewCodeBlock) return null;
 
-  const chatContent = chatDiffMatch?.[1]?.trim() || "Updated the preview.";
+  const chatSummary = chatSummaryMatch?.[1]?.trim() || "Updated the preview.";
+  const chatDiff = chatDiffMatch?.[1]?.trim() || "";
+  const chatContent = [chatSummary, chatDiff].filter(Boolean).join("\n\n");
 
   return {
+    chatSummary,
+    chatDiff,
     chatContent,
     previewCodeBlock,
   };
