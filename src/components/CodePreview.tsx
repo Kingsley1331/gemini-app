@@ -55,6 +55,10 @@ import {
   persistPwaPreviewAssets,
 } from "@/lib/pwa-preview";
 import { getPreviewDiffSemanticsText } from "@/lib/preview-edit-response";
+import {
+  areStudioCodePreviewUiStatesEqual,
+  type StudioCodePreviewUiState,
+} from "@/lib/studio-session-store";
 
 interface CodePreviewProps {
   code: string;
@@ -76,6 +80,8 @@ interface CodePreviewProps {
   existingAppId?: string;
   initialAppName?: string;
   initialHasGeneratedIcon?: boolean;
+  persistedUiState?: StudioCodePreviewUiState | null;
+  onPersistedUiStateChange?: (state: StudioCodePreviewUiState) => void;
 }
 
 const EMPTY_PREVIEW_ASSETS: AppAsset[] = [];
@@ -133,6 +139,36 @@ function getMonacoPath(language: string): string {
   if (language === "javascript") return "preview.js";
   if (language === "html") return "preview.html";
   return "preview.txt";
+}
+
+function getDefaultActiveTab(language: string): "preview" | "code" {
+  return language === "html" || language === "jsx" || language === "tsx"
+    ? "preview"
+    : "code";
+}
+
+function getSafeActiveTab(
+  activeTab: StudioCodePreviewUiState["activeTab"] | undefined,
+  isStudioPage: boolean,
+  language: string,
+): StudioCodePreviewUiState["activeTab"] {
+  if (activeTab === "assets" && !isStudioPage) {
+    return getDefaultActiveTab(language);
+  }
+
+  if (activeTab === "preview" || activeTab === "code" || activeTab === "assets") {
+    return activeTab;
+  }
+
+  return getDefaultActiveTab(language);
+}
+
+function getRestoredDraftCode(
+  persistedUiState: StudioCodePreviewUiState | null | undefined,
+  code: string,
+): string {
+  if (!persistedUiState) return code;
+  return persistedUiState.sourceCode === code ? persistedUiState.draftCode : code;
 }
 
 function sleep(ms: number) {
@@ -316,15 +352,15 @@ export default function CodePreview({
   existingAppId,
   initialAppName,
   initialHasGeneratedIcon,
+  persistedUiState,
+  onPersistedUiStateChange,
   onDebug,
   onSnapshot,
 }: CodePreviewProps) {
   const pathname = usePathname();
   const isStudioPage = pathname === "/studio";
   const [activeTab, setActiveTab] = useState<"preview" | "code" | "assets">(
-    language === "html" || language === "jsx" || language === "tsx"
-      ? "preview"
-      : "code",
+    getSafeActiveTab(persistedUiState?.activeTab, isStudioPage, language),
   );
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -386,15 +422,21 @@ export default function CodePreview({
   const [assetCandidate, setAssetCandidate] = useState<AppAsset | null>(null);
   const [isGeneratingAssetCandidate, setIsGeneratingAssetCandidate] =
     useState(false);
-  const [draftCode, setDraftCode] = useState(code);
+  const [draftCode, setDraftCode] = useState(
+    getRestoredDraftCode(persistedUiState, code),
+  );
   const [codeDraftStatus, setCodeDraftStatus] = useState<string | null>(null);
   const [diffViewMode, setDiffViewMode] = useState<"split" | "combined">(
-    "combined",
+    persistedUiState?.diffViewMode ?? "combined",
   );
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const addAssetInputRef = useRef<HTMLInputElement>(null);
   const latestAssetsRef = useRef(assets);
   const codeEditorSubscriptionRef = useRef<IDisposable | null>(null);
+  const lastPublishedUiStateRef = useRef<StudioCodePreviewUiState | null>(
+    persistedUiState ?? null,
+  );
+  const isHydratingPersistedUiStateRef = useRef(false);
   const isCodeEditable = isStudioPage && typeof onCodeKeep === "function";
   const isCodeDirty = isCodeEditable && draftCode !== code;
   const hasComparisonDiff =
@@ -408,6 +450,15 @@ export default function CodePreview({
   const monacoLanguage = getMonacoLanguage(language);
   const monacoPath = getMonacoPath(language);
   const diffSemanticsText = getPreviewDiffSemanticsText();
+  const normalizedUiState = useMemo<StudioCodePreviewUiState>(
+    () => ({
+      activeTab: getSafeActiveTab(activeTab, isStudioPage, language),
+      draftCode,
+      sourceCode: code,
+      diffViewMode,
+    }),
+    [activeTab, code, diffViewMode, draftCode, isStudioPage, language],
+  );
   const shareInstallsEnabled =
     process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "1" ||
     process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "true";
@@ -438,14 +489,61 @@ export default function CodePreview({
   }, [code]);
 
   useEffect(() => {
+    if (!persistedUiState) return;
+    if (
+      areStudioCodePreviewUiStatesEqual(
+        persistedUiState,
+        lastPublishedUiStateRef.current,
+      )
+    ) {
+      return;
+    }
+
+    const nextActiveTab = getSafeActiveTab(
+      persistedUiState.activeTab,
+      isStudioPage,
+      language,
+    );
+    const nextDraftCode = getRestoredDraftCode(persistedUiState, code);
+    const nextDiffViewMode = persistedUiState.diffViewMode;
+    isHydratingPersistedUiStateRef.current = true;
+
+    setActiveTab((current) =>
+      current === nextActiveTab ? current : nextActiveTab,
+    );
+    setDraftCode((current) =>
+      current === nextDraftCode ? current : nextDraftCode,
+    );
+    setDiffViewMode((current) =>
+      current === nextDiffViewMode ? current : nextDiffViewMode,
+    );
+  }, [
+    code,
+    isStudioPage,
+    language,
+    persistedUiState,
+  ]);
+
+  useEffect(() => {
     if (!isStudioPage && activeTab === "assets") {
-      setActiveTab(
-        language === "html" || language === "jsx" || language === "tsx"
-          ? "preview"
-          : "code",
-      );
+      setActiveTab(getDefaultActiveTab(language));
     }
   }, [activeTab, isStudioPage, language]);
+
+  useEffect(() => {
+    if (!onPersistedUiStateChange) return;
+    if (isHydratingPersistedUiStateRef.current) {
+      isHydratingPersistedUiStateRef.current = false;
+      lastPublishedUiStateRef.current = normalizedUiState;
+      return;
+    }
+    if (areStudioCodePreviewUiStatesEqual(normalizedUiState, persistedUiState)) {
+      return;
+    }
+
+    lastPublishedUiStateRef.current = normalizedUiState;
+    onPersistedUiStateChange(normalizedUiState);
+  }, [normalizedUiState, onPersistedUiStateChange, persistedUiState]);
 
   const buildUniqueAssetKey = useCallback((rawName: string) => {
     const fallback = `asset_${latestAssetsRef.current.length + 1}`;

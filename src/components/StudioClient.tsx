@@ -32,6 +32,16 @@ import {
   normalizePreviewLanguage,
   parsePreviewEditResponse,
 } from "@/lib/preview-edit-response";
+import {
+  areStudioCodePreviewUiStatesEqual,
+  getStudioSessionKey,
+  loadStudioSession,
+  saveStudioSession,
+  type StudioCodePreviewUiState,
+  type StudioSessionImage,
+  type StudioSessionMessage,
+  type StudioSessionState,
+} from "@/lib/studio-session-store";
 import CodePreview from "@/components/CodePreview";
 import RichTextEditor, { RichTextEditorRef } from "./RichTextEditor";
 import PromptAssistant from "./PromptAssistant";
@@ -55,22 +65,8 @@ type StudioModel = {
   provider: "gemini" | "openai" | "anthropic";
 };
 
-type SelectedImage = {
-  url: string;
-  mimeType: string;
-  data: string;
-};
-
-type StudioMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  attachments?: Array<{
-    url: string;
-    mimeType: string;
-    data?: string;
-  }>;
-};
+type SelectedImage = StudioSessionImage;
+type StudioMessage = StudioSessionMessage;
 
 type StudioDraftPayload = {
   code: string;
@@ -107,6 +103,10 @@ export default function StudioClient({
   draftId,
 }: StudioClientProps) {
   const hasBootstrapTarget = Boolean(appId || draftId);
+  const sessionKey = useMemo(
+    () => getStudioSessionKey(appId, draftId),
+    [appId, draftId],
+  );
   const [input, setInput] = useState("");
   const [isRichText, setIsRichText] = useState(false);
   const [richTextContent, setRichTextContent] = useState("");
@@ -126,8 +126,11 @@ export default function StudioClient({
   const [previewAssets, setPreviewAssets] = useState<StudioPreviewAsset[]>([]);
   const [isPreviewBootstrapping, setIsPreviewBootstrapping] =
     useState(hasBootstrapTarget);
+  const [codePreviewUiState, setCodePreviewUiState] =
+    useState<StudioCodePreviewUiState | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [lastPrompt, setLastPrompt] = useState<string | null>(null);
+  const [activeSessionKey, setActiveSessionKey] = useState<string | null>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeFileInputRef = useRef<HTMLInputElement>(null);
@@ -221,6 +224,45 @@ export default function StudioClient({
     openai: "OpenAI",
     anthropic: "Anthropic",
   };
+
+  const resetTransientStudioState = useCallback(() => {
+    setInput("");
+    setIsRichText(false);
+    setRichTextContent("");
+    setSelectedImage(null);
+    setIsConversationOpen(false);
+    setMessages([]);
+    setCodePreviewUiState(null);
+    setLastPrompt(null);
+  }, []);
+
+  const applyPersistedSession = useCallback((session: StudioSessionState) => {
+    setInput(session.input);
+    setIsRichText(session.isRichText);
+    setRichTextContent(session.richTextContent);
+    setSelectedImage(session.selectedImage);
+    setIsConversationOpen(session.isConversationOpen);
+    setMessages(session.messages);
+    setPreviewCode(session.previewCode);
+    setPreviewComparisonCode(session.previewComparisonCode);
+    setPreviewLanguage(session.previewLanguage);
+    setPreviewTitle(session.previewTitle);
+    setPreviewAssets(session.previewAssets);
+    setCodePreviewUiState(session.codePreviewUi);
+  }, []);
+
+  const handleCodePreviewUiStateChange = useCallback(
+    (nextState: StudioCodePreviewUiState) => {
+      setCodePreviewUiState((currentState) => {
+        if (areStudioCodePreviewUiStatesEqual(currentState, nextState)) {
+          return currentState;
+        }
+
+        return nextState;
+      });
+    },
+    [],
+  );
 
   const groupedModels = useMemo(
     () =>
@@ -351,22 +393,63 @@ export default function StudioClient({
   }, [isLoading, messages]);
 
   useEffect(() => {
-    const nextBootstrapKey = draftId
-      ? `draft:${draftId}`
-      : appId
-        ? `app:${appId}`
-        : "default";
+    if (isPreviewBootstrapping || activeSessionKey !== sessionKey) return;
+
+    saveStudioSession(sessionKey, {
+      input,
+      isRichText,
+      richTextContent,
+      selectedImage,
+      isConversationOpen,
+      messages,
+      previewCode,
+      previewComparisonCode,
+      previewLanguage,
+      previewTitle,
+      previewAssets,
+      codePreviewUi: codePreviewUiState,
+    });
+  }, [
+    activeSessionKey,
+    codePreviewUiState,
+    input,
+    isConversationOpen,
+    isPreviewBootstrapping,
+    isRichText,
+    messages,
+    previewAssets,
+    previewCode,
+    previewComparisonCode,
+    previewLanguage,
+    previewTitle,
+    richTextContent,
+    selectedImage,
+    sessionKey,
+  ]);
+
+  useEffect(() => {
+    const nextBootstrapKey = sessionKey;
+
+    const restorePersistedSession = () => {
+      const storedSession = loadStudioSession(nextBootstrapKey);
+      if (!storedSession) return false;
+      applyPersistedSession(storedSession);
+      return true;
+    };
 
     if (resolvedBootstrapKeyRef.current === nextBootstrapKey) {
       setIsPreviewBootstrapping(false);
+      setActiveSessionKey(nextBootstrapKey);
       return;
     }
 
+    setActiveSessionKey(null);
     activeBootstrapRequestRef.current += 1;
     const requestId = activeBootstrapRequestRef.current;
     const isActiveRequest = () => activeBootstrapRequestRef.current === requestId;
 
     if (!draftId && !appId) {
+      resetTransientStudioState();
       resolvedBootstrapKeyRef.current = nextBootstrapKey;
       setIsPreviewBootstrapping(false);
       setPreviewCode(initialCode);
@@ -374,6 +457,9 @@ export default function StudioClient({
       setPreviewLanguage(initialLanguage);
       setPreviewTitle(initialTitle);
       setPreviewAssets([]);
+      setStatusMessage(null);
+      restorePersistedSession();
+      setActiveSessionKey(nextBootstrapKey);
       return () => {
         if (activeBootstrapRequestRef.current === requestId) {
           activeBootstrapRequestRef.current += 1;
@@ -387,6 +473,7 @@ export default function StudioClient({
       if (typeof window === "undefined") return;
 
       try {
+        resetTransientStudioState();
         const cachedDraft = cachedDraftsRef.current[draftId];
         let parsedDraft = cachedDraft;
 
@@ -432,8 +519,10 @@ export default function StudioClient({
             content: "Loaded a preview draft into Studio.",
           },
         ]);
+        restorePersistedSession();
         resolvedBootstrapKeyRef.current = nextBootstrapKey;
         setIsPreviewBootstrapping(false);
+        setActiveSessionKey(nextBootstrapKey);
       } catch (error) {
         if (!isActiveRequest()) {
           return;
@@ -452,6 +541,7 @@ export default function StudioClient({
     if (!appId) return;
 
     void (async () => {
+      resetTransientStudioState();
       const loaded = await loadAppBootstrapData(appId);
       if (!isActiveRequest()) return;
       if (!loaded) {
@@ -474,8 +564,10 @@ export default function StudioClient({
           content: `Loaded \`${loaded.name}\` from My Apps into Studio.`,
         },
       ]);
+      restorePersistedSession();
       resolvedBootstrapKeyRef.current = nextBootstrapKey;
       setIsPreviewBootstrapping(false);
+      setActiveSessionKey(nextBootstrapKey);
     })();
 
     return () => {
@@ -483,7 +575,16 @@ export default function StudioClient({
         activeBootstrapRequestRef.current += 1;
       }
     };
-  }, [appId, draftId, initialCode, initialLanguage, initialTitle]);
+  }, [
+    appId,
+    applyPersistedSession,
+    draftId,
+    initialCode,
+    initialLanguage,
+    initialTitle,
+    resetTransientStudioState,
+    sessionKey,
+  ]);
 
   const handleImageSelect = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -848,6 +949,8 @@ export default function StudioClient({
           existingAppId={appId}
           onSnapshot={handlePreviewSnapshot}
           onAssetsChange={setPreviewAssets}
+          persistedUiState={codePreviewUiState}
+          onPersistedUiStateChange={handleCodePreviewUiStateChange}
         />
       )}
 
