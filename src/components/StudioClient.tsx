@@ -7,6 +7,7 @@ import {
   Loader2,
   Mic,
   Paperclip,
+  RotateCcw,
   Send,
   Sparkles,
   Type,
@@ -36,6 +37,7 @@ import {
   areStudioCodePreviewUiStatesEqual,
   getStudioSessionKey,
   loadStudioSession,
+  removeStudioSession,
   saveStudioSession,
   type StudioCodePreviewUiState,
   type StudioSessionImage,
@@ -73,6 +75,13 @@ type StudioDraftPayload = {
   language: string;
   title?: string;
   assets?: StudioPreviewAsset[];
+};
+
+type StudioRouteBaseline = {
+  code: string;
+  language: string;
+  title: string;
+  assets: StudioPreviewAsset[];
 };
 
 interface SpeechRecognitionEvent extends Event {
@@ -131,6 +140,8 @@ export default function StudioClient({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [lastPrompt, setLastPrompt] = useState<string | null>(null);
   const [activeSessionKey, setActiveSessionKey] = useState<string | null>(null);
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [isResettingStudio, setIsResettingStudio] = useState(false);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeFileInputRef = useRef<HTMLInputElement>(null);
@@ -140,6 +151,12 @@ export default function StudioClient({
   const activeBootstrapRequestRef = useRef(0);
   const resolvedBootstrapKeyRef = useRef<string | null>(null);
   const cachedDraftsRef = useRef<Record<string, StudioDraftPayload>>({});
+  const routeBaselineRef = useRef<StudioRouteBaseline>({
+    code: initialCode,
+    language: initialLanguage,
+    title: initialTitle,
+    assets: [],
+  });
 
   const models = useMemo<StudioModel[]>(
     () => [
@@ -249,6 +266,25 @@ export default function StudioClient({
     setPreviewTitle(session.previewTitle);
     setPreviewAssets(session.previewAssets);
     setCodePreviewUiState(session.codePreviewUi);
+  }, []);
+
+  const setRouteBaseline = useCallback((baseline: StudioRouteBaseline) => {
+    routeBaselineRef.current = {
+      code: baseline.code,
+      language: baseline.language,
+      title: baseline.title,
+      assets: [...baseline.assets],
+    };
+  }, []);
+
+  const restoreRouteBaseline = useCallback(() => {
+    const baseline = routeBaselineRef.current;
+    setPreviewCode(baseline.code);
+    setPreviewComparisonCode(null);
+    setPreviewLanguage(baseline.language);
+    setPreviewTitle(baseline.title);
+    setPreviewAssets([...baseline.assets]);
+    setCodePreviewUiState(null);
   }, []);
 
   const handleCodePreviewUiStateChange = useCallback(
@@ -449,14 +485,16 @@ export default function StudioClient({
     const isActiveRequest = () => activeBootstrapRequestRef.current === requestId;
 
     if (!draftId && !appId) {
+      setRouteBaseline({
+        code: initialCode,
+        language: initialLanguage,
+        title: initialTitle,
+        assets: [],
+      });
       resetTransientStudioState();
       resolvedBootstrapKeyRef.current = nextBootstrapKey;
       setIsPreviewBootstrapping(false);
-      setPreviewCode(initialCode);
-      setPreviewComparisonCode(null);
-      setPreviewLanguage(initialLanguage);
-      setPreviewTitle(initialTitle);
-      setPreviewAssets([]);
+      restoreRouteBaseline();
       setStatusMessage(null);
       restorePersistedSession();
       setActiveSessionKey(nextBootstrapKey);
@@ -505,11 +543,13 @@ export default function StudioClient({
           return;
         }
 
-        setPreviewCode(parsedDraft.code || initialCode);
-        setPreviewComparisonCode(null);
-        setPreviewLanguage(parsedDraft.language || initialLanguage);
-        setPreviewTitle(parsedDraft.title || "Studio Draft");
-        setPreviewAssets(Array.isArray(parsedDraft.assets) ? parsedDraft.assets : []);
+        setRouteBaseline({
+          code: parsedDraft.code || initialCode,
+          language: parsedDraft.language || initialLanguage,
+          title: parsedDraft.title || "Studio Draft",
+          assets: Array.isArray(parsedDraft.assets) ? parsedDraft.assets : [],
+        });
+        restoreRouteBaseline();
         setStatusMessage("Loaded preview into Studio.");
         setMessages((prev) => [
           ...prev,
@@ -550,11 +590,13 @@ export default function StudioClient({
         return;
       }
 
-      setPreviewCode(loaded.code);
-      setPreviewComparisonCode(null);
-      setPreviewLanguage(loaded.language || "tsx");
-      setPreviewTitle(loaded.name || "Studio App");
-      setPreviewAssets(loaded.assets);
+      setRouteBaseline({
+        code: loaded.code,
+        language: loaded.language || "tsx",
+        title: loaded.name || "Studio App",
+        assets: loaded.assets,
+      });
+      restoreRouteBaseline();
       setStatusMessage(`Loaded "${loaded.name}" into Studio.`);
       setMessages((prev) => [
         ...prev,
@@ -582,8 +624,10 @@ export default function StudioClient({
     initialCode,
     initialLanguage,
     initialTitle,
+    restoreRouteBaseline,
     resetTransientStudioState,
     sessionKey,
+    setRouteBaseline,
   ]);
 
   const handleImageSelect = useCallback(
@@ -915,6 +959,26 @@ export default function StudioClient({
     setPreviewComparisonCode(null);
     setStatusMessage("Kept the latest generated code changes.");
   }, []);
+
+  const closeResetStudioModal = useCallback(() => {
+    if (isResettingStudio) return;
+    setIsResetModalOpen(false);
+  }, [isResettingStudio]);
+
+  const handleResetStudio = useCallback(() => {
+    setIsResettingStudio(true);
+    setIsModelDropdownOpen(false);
+    setIsPromptAssistantOpen(false);
+    setActiveSessionKey(null);
+    removeStudioSession(sessionKey);
+    resetTransientStudioState();
+    restoreRouteBaseline();
+    setStatusMessage(null);
+    setIsResetModalOpen(false);
+    resolvedBootstrapKeyRef.current = sessionKey;
+    setActiveSessionKey(sessionKey);
+    setIsResettingStudio(false);
+  }, [resetTransientStudioState, restoreRouteBaseline, sessionKey]);
 
   const selectedModelLabel =
     models.find((model) => model.id === selectedModel)?.name || "Select model";
@@ -1370,6 +1434,18 @@ export default function StudioClient({
               ) : null}
             </div>
           ) : null}
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setIsResetModalOpen(true)}
+              disabled={isLoading || isPreviewBootstrapping || isResettingStudio}
+              className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-200 dark:hover:bg-red-950/40"
+            >
+              <RotateCcw className="h-4 w-4" />
+              <span>Reset Studio</span>
+            </button>
+          </div>
         </div>
       </section>
 
@@ -1379,6 +1455,56 @@ export default function StudioClient({
         onKeep={handleKeepDraft}
         selectedModel={selectedModel}
       />
+
+      {isResetModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-4 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Reset Studio?
+                </h3>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  This will restore the current Studio page to its original preview and clear the conversation, prompt draft, preview edits, and assets.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeResetStudioModal}
+                disabled={isResettingStudio}
+                className="text-xs text-zinc-500 hover:text-zinc-900 disabled:opacity-50 dark:hover:text-zinc-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/60 dark:bg-red-950/40">
+              <p className="text-xs text-red-700 dark:text-red-200">
+                This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeResetStudioModal}
+                disabled={isResettingStudio}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleResetStudio}
+                disabled={isResettingStudio}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+              >
+                {isResettingStudio ? "Resetting..." : "Reset Studio"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

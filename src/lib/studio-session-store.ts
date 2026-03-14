@@ -278,3 +278,15 @@ export function saveStudioSession(sessionKey: string, state: StudioSessionState)
     console.warn("Failed to persist Studio session:", error);
   }
 }
+
+export function removeStudioSession(sessionKey: string) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.removeItem(
+      `${STUDIO_SESSION_STORAGE_PREFIX}${sessionKey}`,
+    );
+  } catch (error) {
+    console.warn("Failed to clear Studio session:", error);
+  }
+}
