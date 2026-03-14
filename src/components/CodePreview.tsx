@@ -401,8 +401,9 @@ export default function CodePreview({
     isCodeEditable &&
     typeof comparisonCode === "string" &&
     comparisonCode !== code;
-  const isShowingCodeDiff = isCodeDirty || hasComparisonDiff;
-  const diffOriginalCode = hasComparisonDiff ? comparisonCode : code;
+  const hasManualPendingChanges = isCodeDirty && !hasComparisonDiff;
+  const isShowingCodeDiff = hasComparisonDiff;
+  const diffOriginalCode = comparisonCode ?? code;
   const diffModifiedCode = isCodeDirty ? draftCode : code;
   const monacoLanguage = getMonacoLanguage(language);
   const monacoPath = getMonacoPath(language);
@@ -1232,7 +1233,12 @@ export default function CodePreview({
 
   const handleKeepCodeDraft = useCallback(() => {
     if (!isCodeEditable) return;
-    if (isCodeDirty) {
+    if (hasManualPendingChanges) {
+      onCodeKeep?.(draftCode);
+      setCodeDraftStatus("Applied your manual code changes to the preview.");
+      return;
+    }
+    if (hasComparisonDiff && isCodeDirty) {
       onCodeKeep?.(draftCode);
       return;
     }
@@ -1243,6 +1249,7 @@ export default function CodePreview({
   }, [
     draftCode,
     hasComparisonDiff,
+    hasManualPendingChanges,
     isCodeDirty,
     isCodeEditable,
     onCodeDiffResolved,
@@ -2708,58 +2715,70 @@ export default function CodePreview({
                   <p className="text-xs font-semibold uppercase tracking-wide text-zinc-100">
                     {isShowingCodeDiff
                       ? "Studio code diff"
-                      : "Studio preview source"}
+                      : hasManualPendingChanges
+                        ? "Manual Studio edits"
+                        : "Studio preview source"}
                   </p>
                   <p className="text-xs text-zinc-400">
                     {isShowingCodeDiff
                       ? `${diffSemanticsText} Use Undo to discard or Keep All to apply the staged changes.`
+                      : hasManualPendingChanges
+                        ? "Your manual edits are local until you click Keep Changes."
                       : codeDraftStatus ||
-                        "Edit the code here. When you make changes, the editor switches into diff mode so you can review them before Undo or Keep All."}
+                        "Edit the code here, then click Keep Changes to apply your manual updates to the preview."}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                  <div className="flex items-center rounded-lg border border-zinc-700 p-1">
+                  {isShowingCodeDiff ? (
+                    <>
+                      <div className="flex items-center rounded-lg border border-zinc-700 p-1">
+                        <button
+                          type="button"
+                          onClick={() => setDiffViewMode("split")}
+                          className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                            diffViewMode === "split"
+                              ? "bg-zinc-100 text-zinc-950"
+                              : "text-zinc-300 hover:bg-zinc-800"
+                          }`}
+                        >
+                          Split View
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDiffViewMode("combined")}
+                          className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                            diffViewMode === "combined"
+                              ? "bg-zinc-100 text-zinc-950"
+                              : "text-zinc-300 hover:bg-zinc-800"
+                          }`}
+                        >
+                          Combined View
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleResetCodeDraft}
+                        className="rounded-lg border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+                      >
+                        Undo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleKeepCodeDraft}
+                        className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-400"
+                      >
+                        Keep All
+                      </button>
+                    </>
+                  ) : hasManualPendingChanges ? (
                     <button
                       type="button"
-                      onClick={() => setDiffViewMode("split")}
-                      disabled={!isShowingCodeDiff}
-                      className={`rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                        diffViewMode === "split"
-                          ? "bg-zinc-100 text-zinc-950"
-                          : "text-zinc-300 hover:bg-zinc-800"
-                      }`}
+                      onClick={handleKeepCodeDraft}
+                      className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-400"
                     >
-                      Split View
+                      Keep Changes
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setDiffViewMode("combined")}
-                      disabled={!isShowingCodeDiff}
-                      className={`rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                        diffViewMode === "combined"
-                          ? "bg-zinc-100 text-zinc-950"
-                          : "text-zinc-300 hover:bg-zinc-800"
-                      }`}
-                    >
-                      Combined View
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleResetCodeDraft}
-                    disabled={!isShowingCodeDiff}
-                    className="rounded-lg border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Undo All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleKeepCodeDraft}
-                    disabled={!isShowingCodeDiff}
-                    className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-blue-500/50"
-                  >
-                    Keep All
-                  </button>
+                  ) : null}
                 </div>
               </div>
               <div className="h-[55vh] min-h-[320px] overflow-hidden sm:h-[600px]">
