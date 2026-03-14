@@ -530,6 +530,34 @@ export default function CodePreview({
     }
   }, [activeTab, isStudioPage, language]);
 
+  const publishPersistedUiState = useCallback(
+    (nextState: StudioCodePreviewUiState) => {
+      if (!onPersistedUiStateChange) return;
+      if (isHydratingPersistedUiStateRef.current) return;
+      if (areStudioCodePreviewUiStatesEqual(nextState, lastPublishedUiStateRef.current)) {
+        return;
+      }
+
+      lastPublishedUiStateRef.current = nextState;
+      onPersistedUiStateChange(nextState);
+    },
+    [onPersistedUiStateChange],
+  );
+
+  const handleTabChange = useCallback(
+    (nextTab: StudioCodePreviewUiState["activeTab"]) => {
+      const safeTab = getSafeActiveTab(nextTab, isStudioPage, language);
+      setActiveTab(safeTab);
+      publishPersistedUiState({
+        activeTab: safeTab,
+        draftCode,
+        sourceCode: code,
+        diffViewMode,
+      });
+    },
+    [code, diffViewMode, draftCode, isStudioPage, language, publishPersistedUiState],
+  );
+
   useEffect(() => {
     if (!onPersistedUiStateChange) return;
     if (isHydratingPersistedUiStateRef.current) {
@@ -540,10 +568,13 @@ export default function CodePreview({
     if (areStudioCodePreviewUiStatesEqual(normalizedUiState, persistedUiState)) {
       return;
     }
-
-    lastPublishedUiStateRef.current = normalizedUiState;
-    onPersistedUiStateChange(normalizedUiState);
-  }, [normalizedUiState, onPersistedUiStateChange, persistedUiState]);
+    publishPersistedUiState(normalizedUiState);
+  }, [
+    normalizedUiState,
+    onPersistedUiStateChange,
+    persistedUiState,
+    publishPersistedUiState,
+  ]);
 
   const buildUniqueAssetKey = useCallback((rawName: string) => {
     const fallback = `asset_${latestAssetsRef.current.length + 1}`;
@@ -2646,7 +2677,7 @@ export default function CodePreview({
           </span>
           <div className="flex bg-zinc-200 dark:bg-zinc-800 p-0.5 rounded-lg">
             <button
-              onClick={() => setActiveTab("preview")}
+              onClick={() => handleTabChange("preview")}
               className={`rounded-md px-3 py-1 text-xs transition-all ${
                 activeTab === "preview"
                   ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm"
@@ -2656,7 +2687,7 @@ export default function CodePreview({
               <Play className="w-3 h-3 inline-block mr-1" /> Preview
             </button>
             <button
-              onClick={() => setActiveTab("code")}
+              onClick={() => handleTabChange("code")}
               className={`rounded-md px-3 py-1 text-xs transition-all ${
                 activeTab === "code"
                   ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm"
@@ -2667,7 +2698,7 @@ export default function CodePreview({
             </button>
             {isStudioPage ? (
               <button
-                onClick={() => setActiveTab("assets")}
+                onClick={() => handleTabChange("assets")}
                 className={`rounded-md px-3 py-1 text-xs transition-all ${
                   activeTab === "assets"
                     ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm"
