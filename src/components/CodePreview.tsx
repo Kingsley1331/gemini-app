@@ -2,7 +2,14 @@
 
 import dynamic from "next/dynamic";
 import type { IDisposable, editor as MonacoEditorApi } from "monaco-editor";
-import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  type ChangeEvent,
+} from "react";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
@@ -28,7 +35,12 @@ import {
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import JSZip from "jszip";
-import { isSvgMimeType, isVisualAsset, sanitizeAssetKey, type AppAsset } from "@/lib/app-assets";
+import {
+  isSvgMimeType,
+  isVisualAsset,
+  sanitizeAssetKey,
+  type AppAsset,
+} from "@/lib/app-assets";
 import {
   blobToBase64,
   ensureDraftAppAssets,
@@ -129,11 +141,16 @@ function sleep(ms: number) {
 
 function getFileExtensionForMimeType(mimeType: string): string {
   if (mimeType === "image/svg+xml") return "svg";
-  const match = RASTER_OUTPUT_OPTIONS.find((option) => option.mimeType === mimeType);
+  const match = RASTER_OUTPUT_OPTIONS.find(
+    (option) => option.mimeType === mimeType,
+  );
   return match?.extension || "png";
 }
 
-function ensureGeneratedAssetDisplayName(rawName: string, mimeType: string): string {
+function ensureGeneratedAssetDisplayName(
+  rawName: string,
+  mimeType: string,
+): string {
   const trimmed = rawName.trim();
   const extension = getFileExtensionForMimeType(mimeType);
   if (!trimmed) return `app-asset.${extension}`;
@@ -176,7 +193,8 @@ const EXTERNAL_IMPORT_BLOCKLIST = new Set([
 ]);
 
 function buildExternalImportPreamble(sourceCode: string): string {
-  const importFromRegex = /(^|\n)\s*import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]\s*;?/g;
+  const importFromRegex =
+    /(^|\n)\s*import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]\s*;?/g;
   const sideEffectRegex = /(^|\n)\s*import\s+['"]([^'"]+)['"]\s*;?/g;
   const lines: string[] = [];
   let moduleCount = 0;
@@ -254,7 +272,9 @@ function buildExternalImportPreamble(sourceCode: string): string {
     }
 
     if (defaultOnlyImport) {
-      lines.push(`const ${defaultOnlyImport[1]} = ${modVar}.default ?? ${modVar};`);
+      lines.push(
+        `const ${defaultOnlyImport[1]} = ${modVar}.default ?? ${modVar};`,
+      );
     }
   }
 
@@ -317,42 +337,60 @@ export default function CodePreview({
   const [isSavingApp, setIsSavingApp] = useState(false);
   const [savePreviewId, setSavePreviewId] = useState<string | null>(null);
   const [hasSaveIcon, setHasSaveIcon] = useState(false);
-  const [generatedIconBase64, setGeneratedIconBase64] = useState<string | null>(null);
+  const [generatedIconBase64, setGeneratedIconBase64] = useState<string | null>(
+    null,
+  );
   const [, setGeneratedIcon512Base64] = useState<string | null>(null);
-  const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<string | null>(null);
+  const [generatedIconPreviewUrl, setGeneratedIconPreviewUrl] = useState<
+    string | null
+  >(null);
   const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
   const [assetUrlMap, setAssetUrlMap] = useState<Record<string, string>>({});
   const [isPublishingShare, setIsPublishingShare] = useState(false);
   const [shareStatus, setShareStatus] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [showAddAssetModal, setShowAddAssetModal] = useState(false);
-  const [addAssetMode, setAddAssetMode] = useState<"upload" | "raster" | "svg">("upload");
+  const [addAssetMode, setAddAssetMode] = useState<"upload" | "raster" | "svg">(
+    "upload",
+  );
   const [addAssetOutputMimeType, setAddAssetOutputMimeType] =
     useState<RasterOutputMimeType>("image/png");
   const [addAssetName, setAddAssetName] = useState("");
   const [addAssetRolePrompt, setAddAssetRolePrompt] = useState("");
   const [addAssetPrompt, setAddAssetPrompt] = useState("");
   const [addAssetStatus, setAddAssetStatus] = useState<string | null>(null);
-  const [pendingUploadAsset, setPendingUploadAsset] = useState<AppAsset | null>(null);
+  const [pendingUploadAsset, setPendingUploadAsset] = useState<AppAsset | null>(
+    null,
+  );
   const [isCreatingAsset, setIsCreatingAsset] = useState(false);
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | null>(null);
   const [showCloneAssetModal, setShowCloneAssetModal] = useState(false);
-  const [cloneSourceAssetKey, setCloneSourceAssetKey] = useState<string | null>(null);
+  const [cloneSourceAssetKey, setCloneSourceAssetKey] = useState<string | null>(
+    null,
+  );
   const [cloneAssetName, setCloneAssetName] = useState("");
   const [cloneAssetStatus, setCloneAssetStatus] = useState<string | null>(null);
   const [isCloningAsset, setIsCloningAsset] = useState(false);
   const [showDeleteAssetModal, setShowDeleteAssetModal] = useState(false);
-  const [deleteTargetAssetKey, setDeleteTargetAssetKey] = useState<string | null>(null);
-  const [deleteAssetStatus, setDeleteAssetStatus] = useState<string | null>(null);
+  const [deleteTargetAssetKey, setDeleteTargetAssetKey] = useState<
+    string | null
+  >(null);
+  const [deleteAssetStatus, setDeleteAssetStatus] = useState<string | null>(
+    null,
+  );
   const [isDeletingAsset, setIsDeletingAsset] = useState(false);
   const [assetEditPrompt, setAssetEditPrompt] = useState("");
-  const [assetEditTransparentBackground, setAssetEditTransparentBackground] = useState(false);
+  const [assetEditTransparentBackground, setAssetEditTransparentBackground] =
+    useState(false);
   const [assetEditStatus, setAssetEditStatus] = useState<string | null>(null);
   const [assetCandidate, setAssetCandidate] = useState<AppAsset | null>(null);
-  const [isGeneratingAssetCandidate, setIsGeneratingAssetCandidate] = useState(false);
+  const [isGeneratingAssetCandidate, setIsGeneratingAssetCandidate] =
+    useState(false);
   const [draftCode, setDraftCode] = useState(code);
   const [codeDraftStatus, setCodeDraftStatus] = useState<string | null>(null);
-  const [diffViewMode, setDiffViewMode] = useState<"split" | "combined">("split");
+  const [diffViewMode, setDiffViewMode] = useState<"split" | "combined">(
+    "combined",
+  );
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const addAssetInputRef = useRef<HTMLInputElement>(null);
   const latestAssetsRef = useRef(assets);
@@ -412,7 +450,9 @@ export default function CodePreview({
     const fallback = `asset_${latestAssetsRef.current.length + 1}`;
     const baseKey = sanitizeAssetKey(rawName, fallback);
     const usedKeys = new Set(
-      latestAssetsRef.current.map((asset, index) => asset.assetKey || `asset_${index + 1}`),
+      latestAssetsRef.current.map(
+        (asset, index) => asset.assetKey || `asset_${index + 1}`,
+      ),
     );
     let nextKey = baseKey;
     let suffix = 2;
@@ -433,7 +473,10 @@ export default function CodePreview({
 
   const ensureAssetsOnDraft = useCallback(
     async (targetId: string, opts?: { persist?: boolean }) => {
-      const nextAssets = await ensureDraftAppAssets(targetId, latestAssetsRef.current || []);
+      const nextAssets = await ensureDraftAppAssets(
+        targetId,
+        latestAssetsRef.current || [],
+      );
       if (opts?.persist !== false) {
         latestAssetsRef.current = nextAssets;
         if (onAssetsChange) {
@@ -503,9 +546,7 @@ export default function CodePreview({
   useEffect(() => {
     const stableAssets = latestAssetsRef.current;
     if (!stableAssets.length) {
-      setAssetUrlMap((prev) =>
-        Object.keys(prev).length === 0 ? prev : {},
-      );
+      setAssetUrlMap((prev) => (Object.keys(prev).length === 0 ? prev : {}));
       return;
     }
 
@@ -571,7 +612,9 @@ export default function CodePreview({
         const prevKeys = Object.keys(prev);
         const nextKeys = Object.keys(nextMap);
         if (prevKeys.length === nextKeys.length) {
-          const unchanged = nextKeys.every((mapKey) => prev[mapKey] === nextMap[mapKey]);
+          const unchanged = nextKeys.every(
+            (mapKey) => prev[mapKey] === nextMap[mapKey],
+          );
           if (unchanged) {
             return prev;
           }
@@ -609,7 +652,8 @@ export default function CodePreview({
         }
         reject(new Error("Unable to read file."));
       };
-      reader.onerror = () => reject(reader.error || new Error("Unable to read file."));
+      reader.onerror = () =>
+        reject(reader.error || new Error("Unable to read file."));
       reader.readAsDataURL(file);
     });
   }, []);
@@ -752,16 +796,20 @@ export default function CodePreview({
       const file = event.target.files?.[0];
       if (!file) return;
 
-      if (!file.type.startsWith("image/") && !file.name.toLowerCase().endsWith(".svg")) {
+      if (
+        !file.type.startsWith("image/") &&
+        !file.name.toLowerCase().endsWith(".svg")
+      ) {
         setAddAssetStatus("Please choose an image or SVG file.");
         return;
       }
 
       try {
         const dataUrl = await readFileAsDataUrl(file);
-        const svgText = file.type.includes("svg") || file.name.toLowerCase().endsWith(".svg")
-          ? await file.text()
-          : undefined;
+        const svgText =
+          file.type.includes("svg") || file.name.toLowerCase().endsWith(".svg")
+            ? await file.text()
+            : undefined;
         const displayName = file.name;
         const assetKey = buildUniqueAssetKey(displayName);
         setPendingUploadAsset({
@@ -779,7 +827,8 @@ export default function CodePreview({
         }
         setAddAssetStatus("Asset ready to add.");
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : "Unable to read asset.";
+        const message =
+          error instanceof Error ? error.message : "Unable to read asset.";
         setAddAssetStatus(message);
       }
     },
@@ -833,13 +882,16 @@ export default function CodePreview({
           prompt: addAssetPrompt.trim(),
           rolePrompt,
           outputType: addAssetMode === "svg" ? "svg" : "raster",
-          outputMimeType: addAssetMode === "raster" ? addAssetOutputMimeType : undefined,
+          outputMimeType:
+            addAssetMode === "raster" ? addAssetOutputMimeType : undefined,
           pro: true,
         }),
       });
       const payload = await response.json();
       if (!response.ok || !payload?.asset) {
-        throw new Error(payload?.details || payload?.error || "Unable to generate asset.");
+        throw new Error(
+          payload?.details || payload?.error || "Unable to generate asset.",
+        );
       }
 
       const nextAsset: AppAsset = {
@@ -856,7 +908,8 @@ export default function CodePreview({
       resetAddAssetModal();
       void syncAssetToDraft(nextAsset);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Unable to generate asset.";
+      const message =
+        error instanceof Error ? error.message : "Unable to generate asset.";
       setAddAssetStatus(message);
     } finally {
       setIsCreatingAsset(false);
@@ -877,7 +930,13 @@ export default function CodePreview({
   ]);
 
   const handleCloneAsset = useCallback(async () => {
-    if (!onAssetsChange || isCloningAsset || !cloneSourceAsset || cloneSourceAssetIndex < 0) return;
+    if (
+      !onAssetsChange ||
+      isCloningAsset ||
+      !cloneSourceAsset ||
+      cloneSourceAssetIndex < 0
+    )
+      return;
 
     const displayName = cloneAssetName.trim();
     if (!displayName) {
@@ -888,7 +947,10 @@ export default function CodePreview({
     setIsCloningAsset(true);
     setCloneAssetStatus("Cloning asset...");
     try {
-      const preparedAsset = await ensureInlineAsset(cloneSourceAsset, cloneSourceAssetIndex);
+      const preparedAsset = await ensureInlineAsset(
+        cloneSourceAsset,
+        cloneSourceAssetIndex,
+      );
       const assetKey = buildUniqueAssetKey(displayName);
       const clonedAsset: AppAsset = {
         ...preparedAsset,
@@ -902,7 +964,8 @@ export default function CodePreview({
       if (!uploadedAsset) {
         updateAssets((current) =>
           current.filter(
-            (asset, index) => (asset.assetKey || `asset_${index + 1}`) !== assetKey,
+            (asset, index) =>
+              (asset.assetKey || `asset_${index + 1}`) !== assetKey,
           ),
         );
         throw new Error("Unable to save cloned asset.");
@@ -913,7 +976,8 @@ export default function CodePreview({
       setCloneAssetName("");
       setCloneAssetStatus(null);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Unable to clone asset.";
+      const message =
+        error instanceof Error ? error.message : "Unable to clone asset.";
       setCloneAssetStatus(message);
     } finally {
       setIsCloningAsset(false);
@@ -931,11 +995,15 @@ export default function CodePreview({
   ]);
 
   const handleDeleteAsset = useCallback(async () => {
-    if (!deleteTargetAsset || deleteTargetAssetIndex < 0 || isDeletingAsset) return;
+    if (!deleteTargetAsset || deleteTargetAssetIndex < 0 || isDeletingAsset)
+      return;
 
-    const assetKey = deleteTargetAsset.assetKey || `asset_${deleteTargetAssetIndex + 1}`;
+    const assetKey =
+      deleteTargetAsset.assetKey || `asset_${deleteTargetAssetIndex + 1}`;
     const preferredDraftId =
-      (editSource === "apps" && existingAppId ? existingAppId : savePreviewId) ||
+      (editSource === "apps" && existingAppId
+        ? existingAppId
+        : savePreviewId) ||
       (deleteTargetAsset.storagePath?.startsWith("draft-apps/")
         ? deleteTargetAsset.storagePath.split("/")[1] || null
         : null);
@@ -964,11 +1032,14 @@ export default function CodePreview({
           `/api/apps/${encodeURIComponent(preferredDraftId)}/assets/${encodeURIComponent(assetKey)}`,
           { method: "DELETE" },
         );
-        const payload = (await response.json().catch(() => null)) as
-          | { details?: string; error?: string }
-          | null;
+        const payload = (await response.json().catch(() => null)) as {
+          details?: string;
+          error?: string;
+        } | null;
         if (!response.ok) {
-          throw new Error(payload?.details || payload?.error || "Unable to delete asset.");
+          throw new Error(
+            payload?.details || payload?.error || "Unable to delete asset.",
+          );
         }
       }
 
@@ -978,14 +1049,16 @@ export default function CodePreview({
     } catch (error: unknown) {
       updateAssets((current) => {
         const exists = current.some(
-          (asset, index) => (asset.assetKey || `asset_${index + 1}`) === assetKey,
+          (asset, index) =>
+            (asset.assetKey || `asset_${index + 1}`) === assetKey,
         );
         if (exists) return current;
         const nextAssets = [...current];
         nextAssets.splice(deleteTargetAssetIndex, 0, deleteTargetAsset);
         return nextAssets;
       });
-      const message = error instanceof Error ? error.message : "Unable to delete asset.";
+      const message =
+        error instanceof Error ? error.message : "Unable to delete asset.";
       setDeleteAssetStatus(message);
     } finally {
       setIsDeletingAsset(false);
@@ -1004,7 +1077,8 @@ export default function CodePreview({
   ]);
 
   const handleGenerateAssetCandidate = useCallback(async () => {
-    if (!selectedAsset || selectedAssetIndex < 0 || isGeneratingAssetCandidate) return;
+    if (!selectedAsset || selectedAssetIndex < 0 || isGeneratingAssetCandidate)
+      return;
     if (!assetEditPrompt.trim()) {
       setAssetEditStatus("Describe the changes you want to make first.");
       return;
@@ -1013,9 +1087,13 @@ export default function CodePreview({
     setIsGeneratingAssetCandidate(true);
     setAssetEditStatus("Generating candidate...");
     try {
-      const preparedAsset = await ensureInlineAsset(selectedAsset, selectedAssetIndex);
+      const preparedAsset = await ensureInlineAsset(
+        selectedAsset,
+        selectedAssetIndex,
+      );
       const wantsTransparentBackground =
-        assetEditTransparentBackground || requestsTransparentBackground(assetEditPrompt);
+        assetEditTransparentBackground ||
+        requestsTransparentBackground(assetEditPrompt);
       const endpoint = isSvgMimeType(preparedAsset.mimeType)
         ? "/api/assets/edit-svg"
         : "/api/assets/edit-image";
@@ -1031,8 +1109,12 @@ export default function CodePreview({
             rolePrompt: preparedAsset.rolePrompt,
             displayName: preparedAsset.displayName,
             mimeType: preparedAsset.mimeType,
-            outputMimeType: wantsTransparentBackground ? "image/png" : preparedAsset.mimeType,
-            backgroundMode: wantsTransparentBackground ? "transparent" : undefined,
+            outputMimeType: wantsTransparentBackground
+              ? "image/png"
+              : preparedAsset.mimeType,
+            backgroundMode: wantsTransparentBackground
+              ? "transparent"
+              : undefined,
             data: preparedAsset.data,
             pro: true,
           };
@@ -1044,7 +1126,9 @@ export default function CodePreview({
       });
       const payload = await response.json();
       if (!response.ok || !payload?.asset) {
-        throw new Error(payload?.details || payload?.error || "Unable to generate candidate.");
+        throw new Error(
+          payload?.details || payload?.error || "Unable to generate candidate.",
+        );
       }
 
       setAssetCandidate({
@@ -1057,7 +1141,8 @@ export default function CodePreview({
       });
       setAssetEditStatus("Candidate ready. Review it, then click Keep.");
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Unable to edit asset.";
+      const message =
+        error instanceof Error ? error.message : "Unable to edit asset.";
       setAssetEditStatus(message);
     } finally {
       setIsGeneratingAssetCandidate(false);
@@ -1092,10 +1177,17 @@ export default function CodePreview({
     );
     closeAssetModal();
     void syncAssetToDraft(nextAsset);
-  }, [assetCandidate, closeAssetModal, selectedAssetKey, syncAssetToDraft, updateAssets]);
+  }, [
+    assetCandidate,
+    closeAssetModal,
+    selectedAssetKey,
+    syncAssetToDraft,
+    updateAssets,
+  ]);
 
   const copyToClipboard = () => {
-    const clipboardCode = isCodeEditable && activeTab === "code" ? draftCode : code;
+    const clipboardCode =
+      isCodeEditable && activeTab === "code" ? draftCode : code;
     navigator.clipboard.writeText(clipboardCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -1108,7 +1200,9 @@ export default function CodePreview({
       if (!model) return;
       codeEditorSubscriptionRef.current = model.onDidChangeContent(() => {
         const nextValue = model.getValue();
-        setDraftCode((current) => (current === nextValue ? current : nextValue));
+        setDraftCode((current) =>
+          current === nextValue ? current : nextValue,
+        );
         setCodeDraftStatus(null);
       });
     },
@@ -1448,7 +1542,8 @@ export default function CodePreview({
       ? localStorage.getItem(`pwa-preview-${targetId}-name`)
       : null;
     const existingIconFromStorage = targetId
-      ? localStorage.getItem(`pwa-preview-${targetId}-has-generated-icon`) === "1"
+      ? localStorage.getItem(`pwa-preview-${targetId}-has-generated-icon`) ===
+        "1"
       : false;
     const existingIcon192 = targetId
       ? localStorage.getItem(`pwa-preview-${targetId}-icon192-b64`)
@@ -1481,7 +1576,13 @@ export default function CodePreview({
       setGeneratedIconPreviewUrl(null);
     }
     setShowSaveModal(true);
-  }, [editSource, existingAppId, initialAppName, initialHasGeneratedIcon, title]);
+  }, [
+    editSource,
+    existingAppId,
+    initialAppName,
+    initialHasGeneratedIcon,
+    title,
+  ]);
 
   const closeSaveModal = useCallback(() => {
     setShowSaveModal(false);
@@ -1533,18 +1634,22 @@ export default function CodePreview({
           const retryNumber = attempt + 1;
           const retryTotal = retryDelaysMs.length;
           setSaveStatus(
-            `Model is busy, retrying icon generation (${retryNumber}/${retryTotal})...`
+            `Model is busy, retrying icon generation (${retryNumber}/${retryTotal})...`,
           );
           await sleep(retryDelaysMs[attempt] ?? 0);
           continue;
         }
 
-        throw new Error(data?.details || data?.error || "Icon generation failed");
+        throw new Error(
+          data?.details || data?.error || "Icon generation failed",
+        );
       }
       if (!success) throw new Error("Icon generation failed");
 
-      const icon192b64 = data?.iconDataUrls?.icon192?.replace(/^data:[^,]+,/, "") || null;
-      const icon512b64 = data?.iconDataUrls?.icon512?.replace(/^data:[^,]+,/, "") || null;
+      const icon192b64 =
+        data?.iconDataUrls?.icon192?.replace(/^data:[^,]+,/, "") || null;
+      const icon512b64 =
+        data?.iconDataUrls?.icon512?.replace(/^data:[^,]+,/, "") || null;
       const iconVersion = Date.now();
       if (icon192b64) {
         localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
@@ -1553,12 +1658,20 @@ export default function CodePreview({
       setGeneratedIcon512Base64(icon512b64);
       localStorage.removeItem(`pwa-preview-${id}-icon512-b64`);
       localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-      localStorage.setItem(`pwa-preview-${id}-icon-version`, String(iconVersion));
-      await cacheGeneratedPreviewIcons(id, { icon192b64, icon512b64, version: iconVersion });
+      localStorage.setItem(
+        `pwa-preview-${id}-icon-version`,
+        String(iconVersion),
+      );
+      await cacheGeneratedPreviewIcons(id, {
+        icon192b64,
+        icon512b64,
+        version: iconVersion,
+      });
       setHasSaveIcon(true);
 
       const cacheBust = Date.now();
-      const baseIconUrl = data?.icons?.icon192 || `/api/preview/${id}/generate-icon?size=192`;
+      const baseIconUrl =
+        data?.icons?.icon192 || `/api/preview/${id}/generate-icon?size=192`;
       const separator = baseIconUrl.includes("?") ? "&" : "?";
       setGeneratedIconPreviewUrl(`${baseIconUrl}${separator}v=${cacheBust}`);
       setSaveStatus("Icon ready! Click Save to finish.");
@@ -1580,7 +1693,9 @@ export default function CodePreview({
     const hasGeneratedIcon = hasSaveIcon;
     const effectiveLanguage = resolveEffectiveLanguage();
     const localIconBase64 =
-      localStorage.getItem(`pwa-preview-${id}-icon192-b64`) || generatedIconBase64 || undefined;
+      localStorage.getItem(`pwa-preview-${id}-icon192-b64`) ||
+      generatedIconBase64 ||
+      undefined;
 
     setIsSavingApp(true);
     setSaveStatus("Saving...");
@@ -1593,7 +1708,10 @@ export default function CodePreview({
       if (hasGeneratedIcon) {
         localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
         if (!localStorage.getItem(`pwa-preview-${id}-icon-version`)) {
-          localStorage.setItem(`pwa-preview-${id}-icon-version`, String(Date.now()));
+          localStorage.setItem(
+            `pwa-preview-${id}-icon-version`,
+            String(Date.now()),
+          );
         }
       } else {
         localStorage.removeItem(`pwa-preview-${id}-has-generated-icon`);
@@ -1686,11 +1804,16 @@ export default function CodePreview({
     setShareUrl(null);
 
     try {
-      const name = window.prompt("Enter a name for your shared app:", "My App") || "My App";
+      const name =
+        window.prompt("Enter a name for your shared app:", "My App") ||
+        "My App";
       const id = createPwaPreviewId();
       const hasGeneratedIcon = false;
       const effectiveLanguage = resolveEffectiveLanguage();
-      const preparedAssets = await ensureDraftAppAssets(id, latestAssetsRef.current || []);
+      const preparedAssets = await ensureDraftAppAssets(
+        id,
+        latestAssetsRef.current || [],
+      );
 
       localStorage.setItem(`pwa-preview-${id}-code`, code);
       localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
@@ -1747,7 +1870,10 @@ export default function CodePreview({
         // clipboard write is best-effort
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Unable to publish shared app.";
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unable to publish shared app.";
       setShareStatus(message);
     } finally {
       setIsPublishingShare(false);
@@ -1794,10 +1920,7 @@ export default function CodePreview({
     // renderer with properly inlined computed styles, so the output
     // is pixel-perfect (flexbox, text baselines, etc. all match).
     const dtiKey = "domtoimage";
-    if (
-      typeof iframeWin[dtiKey] !== "object" ||
-      iframeWin[dtiKey] === null
-    ) {
+    if (typeof iframeWin[dtiKey] !== "object" || iframeWin[dtiKey] === null) {
       await new Promise<void>((resolve, reject) => {
         const script = iframeDoc!.createElement("script");
         script.src =
@@ -1816,10 +1939,7 @@ export default function CodePreview({
     }
 
     const domToImage = iframeWin[dtiKey] as {
-      toPng: (
-        node: Node,
-        options?: Record<string, unknown>,
-      ) => Promise<string>;
+      toPng: (node: Node, options?: Record<string, unknown>) => Promise<string>;
     };
 
     if (typeof domToImage?.toPng !== "function") {
@@ -1849,7 +1969,9 @@ export default function CodePreview({
       iframeWindow.getComputedStyle(iframeDoc.body).backgroundColor ||
       iframeWindow.getComputedStyle(iframeDoc.documentElement).backgroundColor;
     const bg =
-      computedBg && computedBg !== "rgba(0, 0, 0, 0)" && computedBg !== "transparent"
+      computedBg &&
+      computedBg !== "rgba(0, 0, 0, 0)" &&
+      computedBg !== "transparent"
         ? computedBg
         : null;
 
@@ -1908,7 +2030,9 @@ export default function CodePreview({
       onSnapshot({ url: blobUrl, mimeType, data: base64 });
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Failed to capture preview snapshot.";
+        err instanceof Error
+          ? err.message
+          : "Failed to capture preview snapshot.";
       window.alert(message);
     } finally {
       setIsCapturingSnapshot(false);
@@ -1921,11 +2045,7 @@ export default function CodePreview({
       "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
     const inferAssetCategory = (assetKey: string): string => {
       const key = assetKey.toLowerCase();
-      if (
-        key.includes("background") ||
-        key.includes("scene") ||
-        key === "bg"
-      ) {
+      if (key.includes("background") || key.includes("scene") || key === "bg") {
         return "background";
       }
       if (
@@ -2515,7 +2635,9 @@ export default function CodePreview({
           ) : null}
           <button
             onClick={handleSnapshot}
-            disabled={activeTab !== "preview" || !onSnapshot || isCapturingSnapshot}
+            disabled={
+              activeTab !== "preview" || !onSnapshot || isCapturingSnapshot
+            }
             className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             title={
               activeTab === "preview"
@@ -2584,7 +2706,9 @@ export default function CodePreview({
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950 px-4 py-3">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-wide text-zinc-100">
-                    {isShowingCodeDiff ? "Studio code diff" : "Studio preview source"}
+                    {isShowingCodeDiff
+                      ? "Studio code diff"
+                      : "Studio preview source"}
                   </p>
                   <p className="text-xs text-zinc-400">
                     {isShowingCodeDiff
@@ -2626,7 +2750,7 @@ export default function CodePreview({
                     disabled={!isShowingCodeDiff}
                     className="rounded-lg border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Undo
+                    Undo All
                   </button>
                   <button
                     type="button"
@@ -2746,7 +2870,8 @@ export default function CodePreview({
                     No visual assets yet
                   </h4>
                   <p className="mt-1 max-w-md text-sm text-zinc-500 dark:text-zinc-400">
-                    Add an image or SVG, or generate one from a prompt, and it will show up here.
+                    Add an image or SVG, or generate one from a prompt, and it
+                    will show up here.
                   </p>
                 </div>
               ) : (
@@ -2922,12 +3047,17 @@ export default function CodePreview({
                         <select
                           value={addAssetOutputMimeType}
                           onChange={(e) =>
-                            setAddAssetOutputMimeType(e.target.value as RasterOutputMimeType)
+                            setAddAssetOutputMimeType(
+                              e.target.value as RasterOutputMimeType,
+                            )
                           }
                           className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                         >
                           {RASTER_OUTPUT_OPTIONS.map((option) => (
-                            <option key={option.mimeType} value={option.mimeType}>
+                            <option
+                              key={option.mimeType}
+                              value={option.mimeType}
+                            >
                               {option.label}
                             </option>
                           ))}
@@ -2984,7 +3114,9 @@ export default function CodePreview({
             </div>
 
             {addAssetStatus ? (
-              <p className="mt-4 text-xs text-zinc-600 dark:text-zinc-300">{addAssetStatus}</p>
+              <p className="mt-4 text-xs text-zinc-600 dark:text-zinc-300">
+                {addAssetStatus}
+              </p>
             ) : null}
 
             <div className="mt-4 flex items-center justify-end gap-2">
@@ -3001,7 +3133,11 @@ export default function CodePreview({
                 disabled={isCreatingAsset || !onAssetsChange}
                 className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
               >
-                {isCreatingAsset ? "Generating..." : addAssetMode === "upload" ? "Add Asset" : "Generate Asset"}
+                {isCreatingAsset
+                  ? "Generating..."
+                  : addAssetMode === "upload"
+                    ? "Add Asset"
+                    : "Generate Asset"}
               </button>
             </div>
           </div>
@@ -3018,7 +3154,8 @@ export default function CodePreview({
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   Choose a name for the cloned version of{" "}
-                  {getAssetDisplayName(cloneSourceAsset, cloneSourceAssetIndex)}.
+                  {getAssetDisplayName(cloneSourceAsset, cloneSourceAssetIndex)}
+                  .
                 </p>
               </div>
               <button
@@ -3042,7 +3179,9 @@ export default function CodePreview({
             />
 
             {cloneAssetStatus ? (
-              <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-300">{cloneAssetStatus}</p>
+              <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-300">
+                {cloneAssetStatus}
+              </p>
             ) : null}
 
             <div className="mt-4 flex items-center justify-end gap-2">
@@ -3067,7 +3206,9 @@ export default function CodePreview({
         </div>
       ) : null}
 
-      {showDeleteAssetModal && deleteTargetAsset && deleteTargetAssetIndex >= 0 ? (
+      {showDeleteAssetModal &&
+      deleteTargetAsset &&
+      deleteTargetAssetIndex >= 0 ? (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-4 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
             <div className="mb-4 flex items-center justify-between">
@@ -3076,8 +3217,12 @@ export default function CodePreview({
                   Delete Asset?
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  This will remove {getAssetDisplayName(deleteTargetAsset, deleteTargetAssetIndex)} from
-                  the Studio asset library.
+                  This will remove{" "}
+                  {getAssetDisplayName(
+                    deleteTargetAsset,
+                    deleteTargetAssetIndex,
+                  )}{" "}
+                  from the Studio asset library.
                 </p>
               </div>
               <button
@@ -3097,7 +3242,9 @@ export default function CodePreview({
             </div>
 
             {deleteAssetStatus ? (
-              <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-300">{deleteAssetStatus}</p>
+              <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-300">
+                {deleteAssetStatus}
+              </p>
             ) : null}
 
             <div className="mt-4 flex items-center justify-end gap-2">
@@ -3128,7 +3275,9 @@ export default function CodePreview({
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                  {selectedAsset.displayName || selectedAsset.assetKey || "Asset"}
+                  {selectedAsset.displayName ||
+                    selectedAsset.assetKey ||
+                    "Asset"}
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   {selectedAsset.rolePrompt || "No role prompt saved yet."}
@@ -3204,7 +3353,9 @@ export default function CodePreview({
                     <input
                       type="checkbox"
                       checked={assetEditTransparentBackground}
-                      onChange={(e) => setAssetEditTransparentBackground(e.target.checked)}
+                      onChange={(e) =>
+                        setAssetEditTransparentBackground(e.target.checked)
+                      }
                       className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-700 dark:bg-zinc-900"
                     />
                     <span>
@@ -3214,7 +3365,9 @@ export default function CodePreview({
                 ) : null}
 
                 {assetEditStatus ? (
-                  <p className="text-xs text-zinc-600 dark:text-zinc-300">{assetEditStatus}</p>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-300">
+                    {assetEditStatus}
+                  </p>
                 ) : null}
 
                 <div className="flex items-center justify-end gap-2">
@@ -3284,7 +3437,9 @@ export default function CodePreview({
             />
 
             {saveStatus ? (
-              <p className="mb-3 text-xs text-zinc-600 dark:text-zinc-300">{saveStatus}</p>
+              <p className="mb-3 text-xs text-zinc-600 dark:text-zinc-300">
+                {saveStatus}
+              </p>
             ) : null}
 
             {generatedIconPreviewUrl ? (
