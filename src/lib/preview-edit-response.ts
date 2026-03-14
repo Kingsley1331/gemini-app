@@ -18,6 +18,11 @@ export type ParsedPreviewEditResponse = {
   previewCodeBlock: ExtractedPreviewCodeBlock;
 };
 
+export const PREVIEW_DIFF_LINE_MARKERS = {
+  removed: "-",
+  added: "+",
+} as const;
+
 export const previewEditResponseFormatInstruction = `
 13. COMPACT PREVIEW EDIT OUTPUT FORMAT (MANDATORY FOR THIS REQUEST):
    - Return exactly three sections in this exact order using these markers:
@@ -44,6 +49,10 @@ export function normalizePreviewLanguage(language: string): string {
   if (language === "javascript") return "jsx";
   if (language === "typescript") return "tsx";
   return language;
+}
+
+export function getPreviewDiffSemanticsText(): string {
+  return `New code appears with ${PREVIEW_DIFF_LINE_MARKERS.added} additions while the current preview code appears with ${PREVIEW_DIFF_LINE_MARKERS.removed} deletions.`;
 }
 
 export function extractLatestPreviewableCodeBlock(

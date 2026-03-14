@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import type { IDisposable, editor as MonacoEditorApi } from "monaco-editor";
 import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent } from "react";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
@@ -41,13 +42,17 @@ import {
   createPwaPreviewId,
   persistPwaPreviewAssets,
 } from "@/lib/pwa-preview";
+import { getPreviewDiffSemanticsText } from "@/lib/preview-edit-response";
 
 interface CodePreviewProps {
   code: string;
+  comparisonCode?: string | null;
   language: string;
   title?: string;
   assets?: AppAsset[];
   onCodeKeep?: (nextCode: string) => void;
+  onCodeUndo?: (nextCode: string) => void;
+  onCodeDiffResolved?: () => void;
   onDebug?: (error: string, code: string, language: string) => void;
   onSnapshot?: (snapshot: {
     url: string;
@@ -67,12 +72,23 @@ const ASSET_FILE_ACCEPT = "image/*,.svg";
 const MonacoEditor = dynamic(
   () => import("@monaco-editor/react").then((module) => module.default),
   {
-  ssr: false,
-  loading: () => (
-    <div className="flex h-full min-h-[320px] items-center justify-center bg-[#1e1e1e] text-sm text-zinc-400 sm:min-h-[500px]">
-      Loading editor...
-    </div>
-  ),
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full min-h-[320px] items-center justify-center bg-[#1e1e1e] text-sm text-zinc-400 sm:min-h-[500px]">
+        Loading editor...
+      </div>
+    ),
+  },
+);
+const MonacoDiffEditor = dynamic(
+  () => import("@monaco-editor/react").then((module) => module.DiffEditor),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full min-h-[320px] items-center justify-center bg-[#1e1e1e] text-sm text-zinc-400 sm:min-h-[500px]">
+        Loading diff editor...
+      </div>
+    ),
   },
 );
 const RASTER_OUTPUT_OPTIONS = [
@@ -268,10 +284,13 @@ function dataUrlToBase64(dataUrl: string): string {
 
 export default function CodePreview({
   code,
+  comparisonCode = null,
   language,
   title = "Preview",
   assets = EMPTY_PREVIEW_ASSETS,
   onCodeKeep,
+  onCodeUndo,
+  onCodeDiffResolved,
   onAssetsChange,
   editSource,
   existingAppId,
@@ -333,11 +352,23 @@ export default function CodePreview({
   const [isGeneratingAssetCandidate, setIsGeneratingAssetCandidate] = useState(false);
   const [draftCode, setDraftCode] = useState(code);
   const [codeDraftStatus, setCodeDraftStatus] = useState<string | null>(null);
+  const [diffViewMode, setDiffViewMode] = useState<"split" | "combined">("split");
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const addAssetInputRef = useRef<HTMLInputElement>(null);
   const latestAssetsRef = useRef(assets);
+  const codeEditorSubscriptionRef = useRef<IDisposable | null>(null);
   const isCodeEditable = isStudioPage && typeof onCodeKeep === "function";
   const isCodeDirty = isCodeEditable && draftCode !== code;
+  const hasComparisonDiff =
+    isCodeEditable &&
+    typeof comparisonCode === "string" &&
+    comparisonCode !== code;
+  const isShowingCodeDiff = isCodeDirty || hasComparisonDiff;
+  const diffOriginalCode = hasComparisonDiff ? comparisonCode : code;
+  const diffModifiedCode = isCodeDirty ? draftCode : code;
+  const monacoLanguage = getMonacoLanguage(language);
+  const monacoPath = getMonacoPath(language);
+  const diffSemanticsText = getPreviewDiffSemanticsText();
   const shareInstallsEnabled =
     process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "1" ||
     process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "true";
@@ -355,6 +386,12 @@ export default function CodePreview({
   useEffect(() => {
     latestAssetsRef.current = assets;
   }, [assets]);
+
+  useEffect(() => {
+    return () => {
+      codeEditorSubscriptionRef.current?.dispose();
+    };
+  }, []);
 
   useEffect(() => {
     setDraftCode(code);
@@ -1064,21 +1101,69 @@ export default function CodePreview({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const bindEditorModel = useCallback(
+    (getModel: () => MonacoEditorApi.ITextModel | null) => {
+      codeEditorSubscriptionRef.current?.dispose();
+      const model = getModel();
+      if (!model) return;
+      codeEditorSubscriptionRef.current = model.onDidChangeContent(() => {
+        const nextValue = model.getValue();
+        setDraftCode((current) => (current === nextValue ? current : nextValue));
+        setCodeDraftStatus(null);
+      });
+    },
+    [],
+  );
+
   const handleCodeDraftChange = useCallback((value: string | undefined) => {
     setDraftCode(value ?? "");
     setCodeDraftStatus(null);
   }, []);
 
+  const handleEditorMount = useCallback(
+    (editor: MonacoEditorApi.IStandaloneCodeEditor) => {
+      bindEditorModel(() => editor.getModel());
+      editor.focus();
+    },
+    [bindEditorModel],
+  );
+
+  const handleDiffEditorMount = useCallback(
+    (editor: MonacoEditorApi.IStandaloneDiffEditor) => {
+      bindEditorModel(() => editor.getModifiedEditor().getModel());
+      editor.getModifiedEditor().focus();
+    },
+    [bindEditorModel],
+  );
+
   const handleKeepCodeDraft = useCallback(() => {
-    if (!isCodeEditable || draftCode === code) return;
-    onCodeKeep?.(draftCode);
-    setCodeDraftStatus("Changes kept. The preview now uses this code.");
-  }, [code, draftCode, isCodeEditable, onCodeKeep]);
+    if (!isCodeEditable) return;
+    if (isCodeDirty) {
+      onCodeKeep?.(draftCode);
+      return;
+    }
+    if (hasComparisonDiff) {
+      onCodeDiffResolved?.();
+      setCodeDraftStatus("Showing the current preview code.");
+    }
+  }, [
+    draftCode,
+    hasComparisonDiff,
+    isCodeDirty,
+    isCodeEditable,
+    onCodeDiffResolved,
+    onCodeKeep,
+  ]);
 
   const handleResetCodeDraft = useCallback(() => {
+    if (hasComparisonDiff && comparisonCode) {
+      setDraftCode(comparisonCode);
+      onCodeUndo?.(comparisonCode);
+      return;
+    }
     setDraftCode(code);
-    setCodeDraftStatus("Draft reset to the current preview code.");
-  }, [code]);
+    setCodeDraftStatus("Showing the current preview code.");
+  }, [code, comparisonCode, hasComparisonDiff, onCodeUndo]);
 
   const handleOpenInStudio = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -2499,53 +2584,105 @@ export default function CodePreview({
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950 px-4 py-3">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-wide text-zinc-100">
-                    {isCodeDirty ? "Unsaved Studio edits" : "Studio preview source"}
+                    {isShowingCodeDiff ? "Studio code diff" : "Studio preview source"}
                   </p>
                   <p className="text-xs text-zinc-400">
-                    {isCodeDirty
-                      ? "Edits are staged here until you click Keep."
-                      : codeDraftStatus || "Edit the code here, then click Keep to refresh the preview."}
+                    {isShowingCodeDiff
+                      ? `${diffSemanticsText} Use Undo to discard or Keep All to apply the staged changes.`
+                      : codeDraftStatus ||
+                        "Edit the code here. When you make changes, the editor switches into diff mode so you can review them before Undo or Keep All."}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <div className="flex items-center rounded-lg border border-zinc-700 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setDiffViewMode("split")}
+                      disabled={!isShowingCodeDiff}
+                      className={`rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                        diffViewMode === "split"
+                          ? "bg-zinc-100 text-zinc-950"
+                          : "text-zinc-300 hover:bg-zinc-800"
+                      }`}
+                    >
+                      Split View
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDiffViewMode("combined")}
+                      disabled={!isShowingCodeDiff}
+                      className={`rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                        diffViewMode === "combined"
+                          ? "bg-zinc-100 text-zinc-950"
+                          : "text-zinc-300 hover:bg-zinc-800"
+                      }`}
+                    >
+                      Combined View
+                    </button>
+                  </div>
                   <button
                     type="button"
                     onClick={handleResetCodeDraft}
-                    disabled={!isCodeDirty}
+                    disabled={!isShowingCodeDiff}
                     className="rounded-lg border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Reset
+                    Undo
                   </button>
                   <button
                     type="button"
                     onClick={handleKeepCodeDraft}
-                    disabled={!isCodeDirty}
+                    disabled={!isShowingCodeDiff}
                     className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-blue-500/50"
                   >
-                    Keep
+                    Keep All
                   </button>
                 </div>
               </div>
               <div className="h-[55vh] min-h-[320px] overflow-hidden sm:h-[600px]">
-                <MonacoEditor
-                  height="100%"
-                  language={getMonacoLanguage(language)}
-                  path={getMonacoPath(language)}
-                  defaultValue={code}
-                  value={draftCode}
-                  onChange={handleCodeDraftChange}
-                  theme="vs-dark"
-                  options={{
-                    automaticLayout: true,
-                    minimap: { enabled: false },
-                    fontSize: 14,
-                    lineNumbersMinChars: 3,
-                    padding: { top: 16, bottom: 16 },
-                    scrollBeyondLastLine: false,
-                    tabSize: 2,
-                    wordWrap: "on",
-                  }}
-                />
+                {isShowingCodeDiff ? (
+                  <MonacoDiffEditor
+                    height="100%"
+                    language={monacoLanguage}
+                    original={diffOriginalCode}
+                    modified={diffModifiedCode}
+                    originalModelPath={`${monacoPath}.original`}
+                    modifiedModelPath={`${monacoPath}.modified`}
+                    onMount={handleDiffEditorMount}
+                    theme="vs-dark"
+                    options={{
+                      automaticLayout: true,
+                      fontSize: 14,
+                      lineNumbersMinChars: 3,
+                      minimap: { enabled: false },
+                      originalEditable: false,
+                      renderMarginRevertIcon: false,
+                      renderSideBySide: diffViewMode === "split",
+                      scrollBeyondLastLine: false,
+                      wordWrap: "on",
+                    }}
+                  />
+                ) : (
+                  <MonacoEditor
+                    height="100%"
+                    language={monacoLanguage}
+                    path={monacoPath}
+                    defaultValue={code}
+                    value={draftCode}
+                    onMount={handleEditorMount}
+                    onChange={handleCodeDraftChange}
+                    theme="vs-dark"
+                    options={{
+                      automaticLayout: true,
+                      minimap: { enabled: false },
+                      fontSize: 14,
+                      lineNumbersMinChars: 3,
+                      padding: { top: 16, bottom: 16 },
+                      scrollBeyondLastLine: false,
+                      tabSize: 2,
+                      wordWrap: "on",
+                    }}
+                  />
+                )}
               </div>
             </div>
           ) : (

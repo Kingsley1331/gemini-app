@@ -120,6 +120,7 @@ export default function StudioClient({
   const [isConversationOpen, setIsConversationOpen] = useState(false);
   const [messages, setMessages] = useState<StudioMessage[]>([]);
   const [previewCode, setPreviewCode] = useState(initialCode);
+  const [previewComparisonCode, setPreviewComparisonCode] = useState<string | null>(null);
   const [previewLanguage, setPreviewLanguage] = useState(initialLanguage);
   const [previewTitle, setPreviewTitle] = useState(initialTitle);
   const [previewAssets, setPreviewAssets] = useState<StudioPreviewAsset[]>([]);
@@ -369,6 +370,7 @@ export default function StudioClient({
       resolvedBootstrapKeyRef.current = nextBootstrapKey;
       setIsPreviewBootstrapping(false);
       setPreviewCode(initialCode);
+      setPreviewComparisonCode(null);
       setPreviewLanguage(initialLanguage);
       setPreviewTitle(initialTitle);
       setPreviewAssets([]);
@@ -417,6 +419,7 @@ export default function StudioClient({
         }
 
         setPreviewCode(parsedDraft.code || initialCode);
+        setPreviewComparisonCode(null);
         setPreviewLanguage(parsedDraft.language || initialLanguage);
         setPreviewTitle(parsedDraft.title || "Studio Draft");
         setPreviewAssets(Array.isArray(parsedDraft.assets) ? parsedDraft.assets : []);
@@ -458,6 +461,7 @@ export default function StudioClient({
       }
 
       setPreviewCode(loaded.code);
+      setPreviewComparisonCode(null);
       setPreviewLanguage(loaded.language || "tsx");
       setPreviewTitle(loaded.name || "Studio App");
       setPreviewAssets(loaded.assets);
@@ -532,6 +536,7 @@ export default function StudioClient({
         if (typeof content !== "string") return;
 
         setPreviewCode(content);
+        setPreviewComparisonCode(null);
         setPreviewLanguage(getLanguageFromFileName(file.name));
         setPreviewTitle(file.name);
         setPreviewAssets([]);
@@ -755,6 +760,9 @@ export default function StudioClient({
         return;
       }
 
+      setPreviewComparisonCode(
+        extractedCodeBlock.code !== previewCode ? previewCode : null,
+      );
       setPreviewCode(extractedCodeBlock.code);
       setPreviewLanguage(
         normalizePreviewLanguage(extractedCodeBlock.language),
@@ -791,8 +799,20 @@ export default function StudioClient({
   ]);
 
   const handleKeepPreviewCode = useCallback((nextCode: string) => {
+    setPreviewComparisonCode(null);
     setPreviewCode(nextCode);
-    setStatusMessage("Applied your kept code changes to the preview.");
+    setStatusMessage("Kept all staged code changes and updated the preview.");
+  }, []);
+
+  const handleUndoPreviewCode = useCallback((nextCode: string) => {
+    setPreviewComparisonCode(null);
+    setPreviewCode(nextCode);
+    setStatusMessage("Reverted to the previous preview code.");
+  }, []);
+
+  const handleResolvePreviewDiff = useCallback(() => {
+    setPreviewComparisonCode(null);
+    setStatusMessage("Kept the latest generated code changes.");
   }, []);
 
   const selectedModelLabel =
@@ -817,10 +837,13 @@ export default function StudioClient({
       ) : (
         <CodePreview
           code={previewCode}
+          comparisonCode={previewComparisonCode}
           language={previewLanguage}
           title={previewTitle}
           assets={previewAssets}
           onCodeKeep={handleKeepPreviewCode}
+          onCodeUndo={handleUndoPreviewCode}
+          onCodeDiffResolved={handleResolvePreviewDiff}
           editSource={appId ? "apps" : undefined}
           existingAppId={appId}
           onSnapshot={handlePreviewSnapshot}
