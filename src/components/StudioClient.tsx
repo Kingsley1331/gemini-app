@@ -41,6 +41,7 @@ import {
   removeStudioSession,
   saveStudioSession,
   setActiveStudioSessionKey,
+  type StudioSessionBaseline,
   type StudioCodePreviewUiState,
   type StudioSessionImage,
   type StudioSessionMessage,
@@ -79,12 +80,7 @@ type StudioDraftPayload = {
   assets?: StudioPreviewAsset[];
 };
 
-type StudioRouteBaseline = {
-  code: string;
-  language: string;
-  title: string;
-  assets: StudioPreviewAsset[];
-};
+type StudioRouteBaseline = StudioSessionBaseline;
 
 interface SpeechRecognitionEvent extends Event {
   resultIndex: number;
@@ -255,7 +251,17 @@ export default function StudioClient({
     setLastPrompt(null);
   }, []);
 
+  const setRouteBaseline = useCallback((baseline: StudioRouteBaseline) => {
+    routeBaselineRef.current = {
+      code: baseline.code,
+      language: baseline.language,
+      title: baseline.title,
+      assets: [...baseline.assets],
+    };
+  }, []);
+
   const applyPersistedSession = useCallback((session: StudioSessionState) => {
+    setRouteBaseline(session.routeBaseline);
     setInput(session.input);
     setIsRichText(session.isRichText);
     setRichTextContent(session.richTextContent);
@@ -268,16 +274,7 @@ export default function StudioClient({
     setPreviewTitle(session.previewTitle);
     setPreviewAssets(session.previewAssets);
     setCodePreviewUiState(session.codePreviewUi);
-  }, []);
-
-  const setRouteBaseline = useCallback((baseline: StudioRouteBaseline) => {
-    routeBaselineRef.current = {
-      code: baseline.code,
-      language: baseline.language,
-      title: baseline.title,
-      assets: [...baseline.assets],
-    };
-  }, []);
+  }, [setRouteBaseline]);
 
   const restoreRouteBaseline = useCallback(() => {
     const baseline = routeBaselineRef.current;
@@ -446,6 +443,7 @@ export default function StudioClient({
       previewTitle,
       previewAssets,
       codePreviewUi: codePreviewUiState,
+      routeBaseline: routeBaselineRef.current,
     });
     setActiveStudioSessionKey(activeSessionKey);
   }, [

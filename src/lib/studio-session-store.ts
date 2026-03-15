@@ -32,6 +32,13 @@ export type StudioCodePreviewUiState = {
   diffViewMode: "split" | "combined";
 };
 
+export type StudioSessionBaseline = {
+  code: string;
+  language: string;
+  title: string;
+  assets: AppAsset[];
+};
+
 export type StudioSessionState = {
   input: string;
   isRichText: boolean;
@@ -45,6 +52,7 @@ export type StudioSessionState = {
   previewTitle: string;
   previewAssets: AppAsset[];
   codePreviewUi: StudioCodePreviewUiState | null;
+  routeBaseline: StudioSessionBaseline;
 };
 
 export function areStudioCodePreviewUiStatesEqual(
@@ -221,6 +229,21 @@ function normalizeCodePreviewUi(value: unknown): StudioCodePreviewUiState | null
   };
 }
 
+function normalizeRouteBaseline(
+  value: unknown,
+  fallback: StudioSessionBaseline,
+): StudioSessionBaseline {
+  if (!isRecord(value)) return fallback;
+
+  return {
+    code: typeof value.code === "string" ? value.code : fallback.code,
+    language:
+      typeof value.language === "string" ? value.language : fallback.language,
+    title: typeof value.title === "string" ? value.title : fallback.title,
+    assets: normalizePreviewAssets(value.assets ?? fallback.assets),
+  };
+}
+
 export function getStudioSessionKey(appId?: string, draftId?: string): string {
   if (draftId) return `draft:${draftId}`;
   if (appId) return `app:${appId}`;
@@ -268,6 +291,14 @@ export function loadStudioSession(sessionKey: string): StudioSessionState | null
 
     const state = parsed.state;
 
+    const previewCode =
+      typeof state.previewCode === "string" ? state.previewCode : "";
+    const previewLanguage =
+      typeof state.previewLanguage === "string" ? state.previewLanguage : "tsx";
+    const previewTitle =
+      typeof state.previewTitle === "string" ? state.previewTitle : "Studio Preview";
+    const previewAssets = normalizePreviewAssets(state.previewAssets);
+
     return {
       input: typeof state.input === "string" ? state.input : "",
       isRichText: state.isRichText === true,
@@ -275,13 +306,19 @@ export function loadStudioSession(sessionKey: string): StudioSessionState | null
       selectedImage: normalizeImage(state.selectedImage),
       isConversationOpen: state.isConversationOpen === true,
       messages: normalizeMessages(state.messages),
-      previewCode: typeof state.previewCode === "string" ? state.previewCode : "",
+      previewCode,
       previewComparisonCode:
         typeof state.previewComparisonCode === "string" ? state.previewComparisonCode : null,
-      previewLanguage: typeof state.previewLanguage === "string" ? state.previewLanguage : "tsx",
-      previewTitle: typeof state.previewTitle === "string" ? state.previewTitle : "Studio Preview",
-      previewAssets: normalizePreviewAssets(state.previewAssets),
+      previewLanguage,
+      previewTitle,
+      previewAssets,
       codePreviewUi: normalizeCodePreviewUi(state.codePreviewUi),
+      routeBaseline: normalizeRouteBaseline(state.routeBaseline, {
+        code: previewCode,
+        language: previewLanguage,
+        title: previewTitle,
+        assets: previewAssets,
+      }),
     };
   } catch (error) {
     console.warn("Failed to restore Studio session:", error);
