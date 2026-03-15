@@ -521,6 +521,12 @@ export default function StudioClient({
           );
           if (!rawDraft) {
             if (!isActiveRequest()) return;
+            if (restorePersistedSession()) {
+              resolvedBootstrapKeyRef.current = nextBootstrapKey;
+              setIsPreviewBootstrapping(false);
+              setActiveSessionKey(nextBootstrapKey);
+              return;
+            }
             setStatusMessage("That Studio draft is no longer available.");
             setIsPreviewBootstrapping(false);
             return;
@@ -538,6 +544,12 @@ export default function StudioClient({
         }
 
         if (!parsedDraft) {
+          if (restorePersistedSession()) {
+            resolvedBootstrapKeyRef.current = nextBootstrapKey;
+            setIsPreviewBootstrapping(false);
+            setActiveSessionKey(nextBootstrapKey);
+            return;
+          }
           setStatusMessage("That Studio draft is no longer available.");
           setIsPreviewBootstrapping(false);
           return;
