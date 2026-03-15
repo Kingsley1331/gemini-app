@@ -114,6 +114,15 @@ export default function StudioClient({
     () => getStudioSessionKey(appId, draftId),
     [appId, draftId],
   );
+  const starterBaseline = useMemo<StudioRouteBaseline>(
+    () => ({
+      code: initialCode,
+      language: initialLanguage,
+      title: initialTitle,
+      assets: [],
+    }),
+    [initialCode, initialLanguage, initialTitle],
+  );
   const [input, setInput] = useState("");
   const [isRichText, setIsRichText] = useState(false);
   const [richTextContent, setRichTextContent] = useState("");
@@ -149,12 +158,7 @@ export default function StudioClient({
   const activeBootstrapRequestRef = useRef(0);
   const resolvedBootstrapKeyRef = useRef<string | null>(null);
   const cachedDraftsRef = useRef<Record<string, StudioDraftPayload>>({});
-  const routeBaselineRef = useRef<StudioRouteBaseline>({
-    code: initialCode,
-    language: initialLanguage,
-    title: initialTitle,
-    assets: [],
-  });
+  const routeBaselineRef = useRef<StudioRouteBaseline>(starterBaseline);
 
   const models = useMemo<StudioModel[]>(
     () => [
@@ -276,8 +280,7 @@ export default function StudioClient({
     setCodePreviewUiState(session.codePreviewUi);
   }, [setRouteBaseline]);
 
-  const restoreRouteBaseline = useCallback(() => {
-    const baseline = routeBaselineRef.current;
+  const applyPreviewBaseline = useCallback((baseline: StudioRouteBaseline) => {
     setPreviewCode(baseline.code);
     setPreviewComparisonCode(null);
     setPreviewLanguage(baseline.language);
@@ -285,6 +288,10 @@ export default function StudioClient({
     setPreviewAssets([...baseline.assets]);
     setCodePreviewUiState(null);
   }, []);
+
+  const restoreRouteBaseline = useCallback(() => {
+    applyPreviewBaseline(routeBaselineRef.current);
+  }, [applyPreviewBaseline]);
 
   const handleCodePreviewUiStateChange = useCallback(
     (nextState: StudioCodePreviewUiState) => {
@@ -984,21 +991,34 @@ export default function StudioClient({
     setIsResetModalOpen(false);
   }, [isResettingStudio]);
 
-  const handleResetStudio = useCallback(() => {
+  const resetStudioToBaseline = useCallback((baseline: StudioRouteBaseline) => {
     setIsResettingStudio(true);
     setIsModelDropdownOpen(false);
     setIsPromptAssistantOpen(false);
     setActiveSessionKey(null);
     removeStudioSession(activeSessionKey ?? sessionKey);
     resetTransientStudioState();
-    restoreRouteBaseline();
+    applyPreviewBaseline(baseline);
     setStatusMessage(null);
     setIsResetModalOpen(false);
     resolvedBootstrapKeyRef.current = sessionKey;
     setActiveSessionKey(sessionKey);
     setActiveStudioSessionKey(sessionKey);
     setIsResettingStudio(false);
-  }, [activeSessionKey, resetTransientStudioState, restoreRouteBaseline, sessionKey]);
+  }, [
+    activeSessionKey,
+    applyPreviewBaseline,
+    resetTransientStudioState,
+    sessionKey,
+  ]);
+
+  const handleResetStudio = useCallback(() => {
+    resetStudioToBaseline(routeBaselineRef.current);
+  }, [resetStudioToBaseline]);
+
+  const handleResetToStarterApp = useCallback(() => {
+    resetStudioToBaseline(starterBaseline);
+  }, [resetStudioToBaseline, starterBaseline]);
 
   const selectedModelLabel =
     models.find((model) => model.id === selectedModel)?.name || "Select model";
@@ -1485,7 +1505,7 @@ export default function StudioClient({
                   Reset Studio?
                 </h3>
                 <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  This will restore the current Studio page to its original preview and clear the conversation, prompt draft, preview edits, and assets.
+                  This will restore the current Studio page to its original preview and clear the conversation, prompt draft, preview edits, and assets. Choose Starter App to load the built-in Studio starter instead.
                 </p>
               </div>
               <button
@@ -1512,6 +1532,14 @@ export default function StudioClient({
                 className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
               >
                 Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleResetToStarterApp}
+                disabled={isResettingStudio}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+              >
+                Starter App
               </button>
               <button
                 type="button"
