@@ -35,10 +35,12 @@ import {
 } from "@/lib/preview-edit-response";
 import {
   areStudioCodePreviewUiStatesEqual,
+  getActiveStudioSessionKey,
   getStudioSessionKey,
   loadStudioSession,
   removeStudioSession,
   saveStudioSession,
+  setActiveStudioSessionKey,
   type StudioCodePreviewUiState,
   type StudioSessionImage,
   type StudioSessionMessage,
@@ -429,9 +431,9 @@ export default function StudioClient({
   }, [isLoading, messages]);
 
   useEffect(() => {
-    if (isPreviewBootstrapping || activeSessionKey !== sessionKey) return;
+    if (isPreviewBootstrapping || !activeSessionKey) return;
 
-    saveStudioSession(sessionKey, {
+    saveStudioSession(activeSessionKey, {
       input,
       isRichText,
       richTextContent,
@@ -445,6 +447,7 @@ export default function StudioClient({
       previewAssets,
       codePreviewUi: codePreviewUiState,
     });
+    setActiveStudioSessionKey(activeSessionKey);
   }, [
     activeSessionKey,
     codePreviewUiState,
@@ -460,14 +463,13 @@ export default function StudioClient({
     previewTitle,
     richTextContent,
     selectedImage,
-    sessionKey,
   ]);
 
   useEffect(() => {
     const nextBootstrapKey = sessionKey;
 
-    const restorePersistedSession = () => {
-      const storedSession = loadStudioSession(nextBootstrapKey);
+    const restorePersistedSession = (targetSessionKey = nextBootstrapKey) => {
+      const storedSession = loadStudioSession(targetSessionKey);
       if (!storedSession) return false;
       applyPersistedSession(storedSession);
       return true;
@@ -475,7 +477,7 @@ export default function StudioClient({
 
     if (resolvedBootstrapKeyRef.current === nextBootstrapKey) {
       setIsPreviewBootstrapping(false);
-      setActiveSessionKey(nextBootstrapKey);
+      setActiveSessionKey((current) => current ?? nextBootstrapKey);
       return;
     }
 
@@ -485,6 +487,7 @@ export default function StudioClient({
     const isActiveRequest = () => activeBootstrapRequestRef.current === requestId;
 
     if (!draftId && !appId) {
+      const activeStudioSessionKey = getActiveStudioSessionKey();
       setRouteBaseline({
         code: initialCode,
         language: initialLanguage,
@@ -496,8 +499,17 @@ export default function StudioClient({
       setIsPreviewBootstrapping(false);
       restoreRouteBaseline();
       setStatusMessage(null);
-      restorePersistedSession();
-      setActiveSessionKey(nextBootstrapKey);
+      if (
+        activeStudioSessionKey &&
+        activeStudioSessionKey !== nextBootstrapKey &&
+        restorePersistedSession(activeStudioSessionKey)
+      ) {
+        setActiveSessionKey(activeStudioSessionKey);
+      } else if (restorePersistedSession()) {
+        setActiveSessionKey(nextBootstrapKey);
+      } else {
+        setActiveSessionKey(nextBootstrapKey);
+      }
       return () => {
         if (activeBootstrapRequestRef.current === requestId) {
           activeBootstrapRequestRef.current += 1;
@@ -534,9 +546,6 @@ export default function StudioClient({
 
           parsedDraft = JSON.parse(rawDraft) as StudioDraftPayload;
           cachedDraftsRef.current[draftId] = parsedDraft;
-          window.sessionStorage.removeItem(
-            `${STUDIO_DRAFT_STORAGE_PREFIX}${draftId}`,
-          );
         }
 
         if (!isActiveRequest()) {
@@ -982,15 +991,16 @@ export default function StudioClient({
     setIsModelDropdownOpen(false);
     setIsPromptAssistantOpen(false);
     setActiveSessionKey(null);
-    removeStudioSession(sessionKey);
+    removeStudioSession(activeSessionKey ?? sessionKey);
     resetTransientStudioState();
     restoreRouteBaseline();
     setStatusMessage(null);
     setIsResetModalOpen(false);
     resolvedBootstrapKeyRef.current = sessionKey;
     setActiveSessionKey(sessionKey);
+    setActiveStudioSessionKey(sessionKey);
     setIsResettingStudio(false);
-  }, [resetTransientStudioState, restoreRouteBaseline, sessionKey]);
+  }, [activeSessionKey, resetTransientStudioState, restoreRouteBaseline, sessionKey]);
 
   const selectedModelLabel =
     models.find((model) => model.id === selectedModel)?.name || "Select model";

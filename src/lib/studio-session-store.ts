@@ -4,6 +4,7 @@ import type { AppAsset } from "@/lib/app-assets";
 
 const STUDIO_SESSION_STORAGE_PREFIX = "studio-session:";
 const STUDIO_SESSION_VERSION = 1;
+const STUDIO_ACTIVE_SESSION_STORAGE_KEY = "studio-active-session";
 
 export type StudioSessionImage = {
   url: string;
@@ -226,6 +227,31 @@ export function getStudioSessionKey(appId?: string, draftId?: string): string {
   return "default";
 }
 
+export function getActiveStudioSessionKey(): string | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    return window.sessionStorage.getItem(STUDIO_ACTIVE_SESSION_STORAGE_KEY);
+  } catch (error) {
+    console.warn("Failed to read active Studio session:", error);
+    return null;
+  }
+}
+
+export function setActiveStudioSessionKey(sessionKey: string | null) {
+  if (typeof window === "undefined") return;
+
+  try {
+    if (sessionKey) {
+      window.sessionStorage.setItem(STUDIO_ACTIVE_SESSION_STORAGE_KEY, sessionKey);
+    } else {
+      window.sessionStorage.removeItem(STUDIO_ACTIVE_SESSION_STORAGE_KEY);
+    }
+  } catch (error) {
+    console.warn("Failed to persist active Studio session:", error);
+  }
+}
+
 export function loadStudioSession(sessionKey: string): StudioSessionState | null {
   if (typeof window === "undefined") return null;
 
@@ -286,6 +312,9 @@ export function removeStudioSession(sessionKey: string) {
     window.sessionStorage.removeItem(
       `${STUDIO_SESSION_STORAGE_PREFIX}${sessionKey}`,
     );
+    if (window.sessionStorage.getItem(STUDIO_ACTIVE_SESSION_STORAGE_KEY) === sessionKey) {
+      window.sessionStorage.removeItem(STUDIO_ACTIVE_SESSION_STORAGE_KEY);
+    }
   } catch (error) {
     console.warn("Failed to clear Studio session:", error);
   }

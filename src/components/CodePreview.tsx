@@ -11,7 +11,7 @@ import {
   type ChangeEvent,
 } from "react";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   Play,
   Code,
@@ -358,6 +358,7 @@ export default function CodePreview({
   onSnapshot,
 }: CodePreviewProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const isStudioPage = pathname === "/studio";
   const [activeTab, setActiveTab] = useState<"preview" | "code" | "assets">(
     getSafeActiveTab(persistedUiState?.activeTab, isStudioPage, language),
@@ -1412,8 +1413,8 @@ export default function CodePreview({
         assets,
       }),
     );
-    window.location.assign(`/studio?draft=${encodeURIComponent(draftId)}`);
-  }, [assets, code, language, title]);
+    router.push(`/studio?draft=${encodeURIComponent(draftId)}`);
+  }, [assets, code, language, router, title]);
 
   const handleDownload = useCallback(async () => {
     const name =
