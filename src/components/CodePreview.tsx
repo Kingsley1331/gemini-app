@@ -487,6 +487,7 @@ export default function CodePreview({
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const addAssetInputRef = useRef<HTMLInputElement>(null);
   const latestAssetsRef = useRef(assets);
+  const latestEditUiRef = useRef(editUi);
   const codeEditorSubscriptionRef = useRef<IDisposable | null>(null);
   const lastPublishedUiStateRef = useRef<StudioCodePreviewUiState | null>(
     persistedUiState ?? null,
@@ -533,6 +534,10 @@ export default function CodePreview({
   useEffect(() => {
     latestAssetsRef.current = assets;
   }, [assets]);
+
+  useEffect(() => {
+    latestEditUiRef.current = editUi;
+  }, [editUi]);
 
   useEffect(() => {
     return () => {
@@ -2765,9 +2770,9 @@ export default function CodePreview({
       })),
     );
     const studioEditBootstrap = JSON.stringify({
-      enabled: false,
-      paused: false,
-      selectedTargetId: null,
+      enabled: latestEditUiRef.current.isEnabled,
+      paused: latestEditUiRef.current.isPaused,
+      selectedTargetId: latestEditUiRef.current.selectedTarget?.id ?? null,
     });
     const studioPreviewPauseBootstrapScript = `
       <script>
@@ -3761,10 +3766,7 @@ export default function CodePreview({
 
   useEffect(() => {
     if (activeTab !== "preview") return;
-    const timer = window.setTimeout(() => {
-      postPreviewBridgeControl();
-    }, 60);
-    return () => window.clearTimeout(timer);
+    postPreviewBridgeControl();
   }, [
     activeTab,
     editUi.isEnabled,
