@@ -2990,9 +2990,449 @@ export default function CodePreview({
         }
       </style>
     `;
+    const studioPreviewHtmlEditBridgeScript = `
+      <script>
+        (function() {
+          var __studioPreviewState = window.__studioPreviewState || (window.__studioPreviewState = {});
+          __studioPreviewState.hoveredTarget = __studioPreviewState.hoveredTarget || null;
+          __studioPreviewState.selectedTarget = __studioPreviewState.selectedTarget || null;
+          __studioPreviewState.enabled = ${studioEditBootstrap}.enabled;
+          __studioPreviewState.paused = ${studioEditBootstrap}.paused;
+          __studioPreviewState.selectedTargetId = ${studioEditBootstrap}.selectedTargetId;
+
+          function __studioNormalizeRect(rect) {
+            if (!rect) return null;
+            return {
+              left: Number(rect.left || 0),
+              top: Number(rect.top || 0),
+              width: Math.max(0, Number(rect.width || 0)),
+              height: Math.max(0, Number(rect.height || 0))
+            };
+          }
+
+          function __studioTruncate(value, fallback) {
+            var text = (value || '').trim();
+            if (!text) return fallback;
+            return text.length > 80 ? text.slice(0, 77) + '...' : text;
+          }
+
+          function __studioGetElementPath(element) {
+            if (!element || !element.tagName) return '';
+            var parts = [];
+            var current = element;
+            while (current && current !== document.body && current !== document.documentElement) {
+              var tagName = current.tagName.toLowerCase();
+              var selector = tagName;
+              if (current.id) {
+                selector += '#' + current.id;
+                parts.unshift(selector);
+                break;
+              }
+              if (current.classList && current.classList.length > 0) {
+                selector += '.' + Array.from(current.classList).slice(0, 2).join('.');
+              }
+              parts.unshift(selector);
+              current = current.parentElement;
+            }
+            return parts.join(' > ');
+          }
+
+          function __studioGetSourceHints(element) {
+            if (!element) return [];
+            var hints = [];
+            if (element.tagName) hints.push(element.tagName.toLowerCase());
+            if (element.id) hints.push(element.id);
+            if (element.className && typeof element.className === 'string') {
+              element.className
+                .split(/\\s+/)
+                .filter(Boolean)
+                .slice(0, 4)
+                .forEach(function(value) {
+                  hints.push(value);
+                });
+            }
+            return Array.from(new Set(hints.filter(Boolean)));
+          }
+
+          function __studioCreateTargetId(prefix) {
+            return prefix + ':' + Math.random().toString(36).slice(2, 10);
+          }
+
+          function __studioNormalizeSelectableElement(element) {
+            if (!element || !element.closest) return element;
+            var interactiveAncestor = element.closest(
+              'button, a, input, textarea, select, label, summary, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"]'
+            );
+            if (
+              interactiveAncestor &&
+              interactiveAncestor !== document.body &&
+              interactiveAncestor !== document.documentElement
+            ) {
+              return interactiveAncestor;
+            }
+            return element;
+          }
+
+          function __studioMakeDomTarget(element) {
+            if (!element || !element.getBoundingClientRect) return null;
+            var rect = __studioNormalizeRect(element.getBoundingClientRect());
+            if (!rect || rect.width < 2 || rect.height < 2) return null;
+            var textPreview = __studioTruncate(
+              element.innerText ||
+                element.textContent ||
+                (element.getAttribute && element.getAttribute('aria-label')) ||
+                (element.getAttribute && element.getAttribute('alt')) ||
+                '',
+              ''
+            );
+            var labelParts = [];
+            if (element.tagName) labelParts.push('<' + element.tagName.toLowerCase() + '>');
+            if (textPreview) labelParts.push(textPreview);
+            return {
+              id: element.dataset.studioNodeId || (element.dataset.studioNodeId = __studioCreateTargetId('dom')),
+              kind: 'dom',
+              label: __studioTruncate(labelParts.join(' '), 'Element'),
+              tagName: element.tagName ? element.tagName.toLowerCase() : undefined,
+              elementId: element.id || undefined,
+              className: typeof element.className === 'string' ? element.className : undefined,
+              textPreview: textPreview || undefined,
+              domPath: __studioGetElementPath(element),
+              bounds: rect,
+              collisionBounds: null,
+              sourceHints: __studioGetSourceHints(element)
+            };
+          }
+
+          function __studioEnsureOverlayRoot() {
+            var root = document.getElementById('__studio_overlay_root');
+            if (root) return root;
+            root = document.createElement('div');
+            root.id = '__studio_overlay_root';
+            root.style.position = 'fixed';
+            root.style.inset = '0';
+            root.style.pointerEvents = 'none';
+            root.style.zIndex = '2147483647';
+            document.body.appendChild(root);
+            return root;
+          }
+
+          function __studioUpsertOverlay(id, rect, borderStyle, borderColor, backgroundColor) {
+            var root = __studioEnsureOverlayRoot();
+            var node = document.getElementById(id);
+            if (!rect) {
+              if (node) node.remove();
+              return;
+            }
+            if (!node) {
+              node = document.createElement('div');
+              node.id = id;
+              root.appendChild(node);
+            }
+            node.style.position = 'fixed';
+            node.style.left = rect.left + 'px';
+            node.style.top = rect.top + 'px';
+            node.style.width = rect.width + 'px';
+            node.style.height = rect.height + 'px';
+            node.style.border = borderStyle + ' ' + borderColor;
+            node.style.background = backgroundColor;
+            node.style.boxSizing = 'border-box';
+          }
+
+          function __studioRenderOverlays() {
+            var hoveredRect =
+              __studioPreviewState.enabled &&
+              __studioPreviewState.hoveredTarget &&
+              (!__studioPreviewState.selectedTarget ||
+                __studioPreviewState.hoveredTarget.id !== __studioPreviewState.selectedTarget.id)
+                ? __studioPreviewState.hoveredTarget.bounds
+                : null;
+            var selectedRect =
+              __studioPreviewState.enabled && __studioPreviewState.selectedTarget
+                ? __studioPreviewState.selectedTarget.bounds
+                : null;
+            __studioUpsertOverlay(
+              '__studio_overlay_hover',
+              hoveredRect,
+              '3px dashed',
+              '#71717a',
+              'rgba(113, 113, 122, 0.04)'
+            );
+            __studioUpsertOverlay(
+              '__studio_overlay_selected',
+              selectedRect,
+              '3px solid',
+              '#71717a',
+              'rgba(113, 113, 122, 0.05)'
+            );
+          }
+
+          function __studioPostPreviewEvent(type, target) {
+            window.parent.postMessage({ type: type, target: target }, '*');
+          }
+
+          function __studioSetHoveredTarget(target) {
+            var left = __studioPreviewState.hoveredTarget;
+            if (
+              left &&
+              target &&
+              left.id === target.id &&
+              left.bounds.left === target.bounds.left &&
+              left.bounds.top === target.bounds.top &&
+              left.bounds.width === target.bounds.width &&
+              left.bounds.height === target.bounds.height
+            ) {
+              return;
+            }
+            __studioPreviewState.hoveredTarget = target;
+            __studioRenderOverlays();
+            __studioPostPreviewEvent('studio-edit-hover', target);
+          }
+
+          function __studioSetSelectedTarget(target, openOptions) {
+            __studioPreviewState.selectedTarget = target;
+            __studioPreviewState.selectedTargetId = target ? target.id : null;
+            __studioRenderOverlays();
+            __studioPostPreviewEvent('studio-edit-select', target);
+            if (target && openOptions) {
+              __studioPostPreviewEvent('studio-edit-open-options', target);
+            }
+          }
+
+          function __studioGetDomDepth(element) {
+            var depth = 0;
+            var current = element;
+            while (current && current.parentElement) {
+              depth += 1;
+              current = current.parentElement;
+            }
+            return depth;
+          }
+
+          function __studioContainsPoint(element, clientX, clientY) {
+            if (!element || !element.getBoundingClientRect) return false;
+            var rect = element.getBoundingClientRect();
+            return (
+              rect.width >= 2 &&
+              rect.height >= 2 &&
+              clientX >= rect.left &&
+              clientX <= rect.right &&
+              clientY >= rect.top &&
+              clientY <= rect.bottom
+            );
+          }
+
+          function __studioFindDeepestDomElementAtPoint(rootElement, clientX, clientY) {
+            if (!rootElement || !rootElement.querySelectorAll) return rootElement;
+            var deepest = rootElement;
+            var bestDepth = __studioGetDomDepth(rootElement);
+            var descendants = rootElement.querySelectorAll('*');
+            for (var index = 0; index < descendants.length; index += 1) {
+              var descendant = descendants[index];
+              if (!__studioContainsPoint(descendant, clientX, clientY)) continue;
+              var depth = __studioGetDomDepth(descendant);
+              if (depth > bestDepth) {
+                deepest = descendant;
+                bestDepth = depth;
+                continue;
+              }
+              if (depth === bestDepth && deepest && deepest.getBoundingClientRect) {
+                var currentRect = descendant.getBoundingClientRect();
+                var bestRect = deepest.getBoundingClientRect();
+                var currentArea = currentRect.width * currentRect.height;
+                var bestArea = bestRect.width * bestRect.height;
+                if (currentArea < bestArea) {
+                  deepest = descendant;
+                }
+              }
+            }
+            return deepest;
+          }
+
+          function __studioIsLargeContainerTarget(target) {
+            if (!target || !target.bounds) return false;
+            var viewportWidth = Math.max(window.innerWidth || 0, 1);
+            var viewportHeight = Math.max(window.innerHeight || 0, 1);
+            var widthRatio = target.bounds.width / viewportWidth;
+            var heightRatio = target.bounds.height / viewportHeight;
+            return widthRatio >= 0.9 && heightRatio >= 0.9;
+          }
+
+          function __studioIsSelectableOverlayElement(element) {
+            if (
+              !element ||
+              element === document.body ||
+              element === document.documentElement ||
+              !element.tagName
+            ) {
+              return false;
+            }
+            var tagName = element.tagName.toLowerCase();
+            if (
+              tagName === 'script' ||
+              tagName === 'style' ||
+              tagName === 'link' ||
+              tagName === 'meta' ||
+              tagName === 'canvas'
+            ) {
+              return false;
+            }
+            if (element.id === '__studio_overlay_root') return false;
+            if (element.closest && element.closest('#__studio_overlay_root')) return false;
+            var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+            if (!style) return false;
+            if (
+              style.display === 'none' ||
+              style.visibility === 'hidden' ||
+              Number(style.opacity || '1') <= 0.01
+            ) {
+              return false;
+            }
+            if (style.pointerEvents !== 'none') return false;
+            var textContent = (element.textContent || '').trim();
+            return textContent.length > 0 || element.children.length > 0;
+          }
+
+          function __studioFindPointerEventsNoneTargetAtPoint(clientX, clientY) {
+            if (!document.body || !document.body.querySelectorAll) return null;
+            var elements = document.body.querySelectorAll('*');
+            var bestElement = null;
+            var bestDepth = -1;
+            var bestArea = Infinity;
+            for (var index = 0; index < elements.length; index += 1) {
+              var element = elements[index];
+              if (!__studioIsSelectableOverlayElement(element)) continue;
+              if (!__studioContainsPoint(element, clientX, clientY)) continue;
+              var normalizedElement = __studioNormalizeSelectableElement(element);
+              var depth = __studioGetDomDepth(normalizedElement);
+              var rect = normalizedElement.getBoundingClientRect();
+              var area = rect.width * rect.height;
+              if (depth > bestDepth || (depth === bestDepth && area < bestArea)) {
+                bestElement = normalizedElement;
+                bestDepth = depth;
+                bestArea = area;
+              }
+            }
+            return bestElement ? __studioMakeDomTarget(bestElement) : null;
+          }
+
+          function __studioPreferPointerEventsNoneTarget(clientX, clientY, fallbackTarget) {
+            var overlayTarget = __studioFindPointerEventsNoneTargetAtPoint(clientX, clientY);
+            return overlayTarget || fallbackTarget || null;
+          }
+
+          function __studioChooseBestDomTarget(elements, clientX, clientY) {
+            var candidates = [];
+            for (var index = 0; index < elements.length; index += 1) {
+              var element = elements[index];
+              if (!element || element.id === '__studio_overlay_root') continue;
+              if (element.closest && element.closest('#__studio_overlay_root')) continue;
+              if (element === document.body || element === document.documentElement) continue;
+              var refinedElement = __studioFindDeepestDomElementAtPoint(element, clientX, clientY);
+              var normalizedElement = __studioNormalizeSelectableElement(refinedElement || element);
+              var target = __studioMakeDomTarget(normalizedElement);
+              if (!target) continue;
+              candidates.push({
+                target: target,
+                depth: __studioGetDomDepth(normalizedElement)
+              });
+            }
+
+            if (candidates.length === 0) return null;
+            if (candidates.length === 1) return candidates[0].target;
+
+            var nonContainerCandidates = candidates.filter(function(entry) {
+              return !__studioIsLargeContainerTarget(entry.target);
+            });
+            var effectiveCandidates =
+              nonContainerCandidates.length > 0 ? nonContainerCandidates : candidates;
+
+            effectiveCandidates.sort(function(left, right) {
+              if (left.depth !== right.depth) {
+                return right.depth - left.depth;
+              }
+              var leftArea = left.target.bounds.width * left.target.bounds.height;
+              var rightArea = right.target.bounds.width * right.target.bounds.height;
+              return leftArea - rightArea;
+            });
+
+            return effectiveCandidates[0].target;
+          }
+
+          function __studioResolveTargetFromPoint(clientX, clientY) {
+            var elements = document.elementsFromPoint(clientX, clientY);
+            var domTarget = __studioChooseBestDomTarget(elements, clientX, clientY);
+            return __studioPreferPointerEventsNoneTarget(clientX, clientY, domTarget);
+          }
+
+          function __studioHandleMouseMove(event) {
+            if (!__studioPreviewState.enabled) return;
+            __studioSetHoveredTarget(__studioResolveTargetFromPoint(event.clientX, event.clientY));
+          }
+
+          function __studioHandlePointerLeave() {
+            if (!__studioPreviewState.enabled) return;
+            __studioSetHoveredTarget(null);
+          }
+
+          function __studioHandleClick(event) {
+            if (!__studioPreviewState.enabled) return;
+            var target = __studioResolveTargetFromPoint(event.clientX, event.clientY);
+            if (!target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            __studioSetSelectedTarget(target, false);
+          }
+
+          function __studioHandleDoubleClick(event) {
+            if (!__studioPreviewState.enabled) return;
+            var target = __studioResolveTargetFromPoint(event.clientX, event.clientY);
+            if (!target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            __studioSetSelectedTarget(target, true);
+          }
+
+          window.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'studio-preview-control') {
+              __studioPreviewState.enabled = event.data.enabled === true;
+              __studioPreviewState.paused = event.data.paused === true;
+              __studioPreviewState.selectedTargetId =
+                typeof event.data.selectedTargetId === 'string'
+                  ? event.data.selectedTargetId
+                  : null;
+              if (typeof window.__studioApplyPauseState === 'function') {
+                window.__studioApplyPauseState(__studioPreviewState.paused);
+              }
+              if (!__studioPreviewState.enabled) {
+                __studioPreviewState.hoveredTarget = null;
+                __studioPreviewState.selectedTarget = null;
+              }
+              __studioRenderOverlays();
+            }
+          });
+
+          document.addEventListener('mousemove', __studioHandleMouseMove, true);
+          document.addEventListener('mouseleave', __studioHandlePointerLeave, true);
+          document.addEventListener('click', __studioHandleClick, true);
+          document.addEventListener('dblclick', __studioHandleDoubleClick, true);
+
+          function __studioNotifyReady() {
+            window.parent.postMessage({ type: 'studio-preview-ready' }, '*');
+          }
+
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+              window.requestAnimationFrame(__studioNotifyReady);
+            }, { once: true });
+          } else {
+            window.requestAnimationFrame(__studioNotifyReady);
+          }
+        })();
+      <\/script>
+    `;
     const injectStudioBootstrapIntoHtml = (rawHtml: string): string => {
       const html = rawHtml.trim();
-      const bootstrap = `${studioPreviewPauseStyle}${studioPreviewPauseBootstrapScript}`;
+      const bootstrap = `${studioPreviewPauseStyle}${studioPreviewPauseBootstrapScript}${studioPreviewHtmlEditBridgeScript}`;
       if (!/<html[\s>]/i.test(html)) {
         return `<!DOCTYPE html><html><head><meta charset="UTF-8" />${bootstrap}</head><body>${html}</body></html>`;
       }
