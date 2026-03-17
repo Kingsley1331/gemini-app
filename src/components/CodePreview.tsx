@@ -3271,6 +3271,21 @@ export default function CodePreview({
                 return prefix + ':' + Math.random().toString(36).slice(2, 10);
               }
 
+              function __studioNormalizeSelectableElement(element) {
+                if (!element || !element.closest) return element;
+                var interactiveAncestor = element.closest(
+                  'button, a, input, textarea, select, label, summary, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"]'
+                );
+                if (
+                  interactiveAncestor &&
+                  interactiveAncestor !== document.body &&
+                  interactiveAncestor !== document.documentElement
+                ) {
+                  return interactiveAncestor;
+                }
+                return element;
+              }
+
               function __studioMakeDomTarget(element) {
                 if (!element || !element.getBoundingClientRect) return null;
                 var rect = __studioNormalizeRect(element.getBoundingClientRect());
@@ -3592,11 +3607,12 @@ export default function CodePreview({
                   var element = elements[index];
                   if (!__studioIsSelectableOverlayElement(element)) continue;
                   if (!__studioContainsPoint(element, clientX, clientY)) continue;
-                  var depth = __studioGetDomDepth(element);
-                  var rect = element.getBoundingClientRect();
+                  var normalizedElement = __studioNormalizeSelectableElement(element);
+                  var depth = __studioGetDomDepth(normalizedElement);
+                  var rect = normalizedElement.getBoundingClientRect();
                   var area = rect.width * rect.height;
                   if (depth > bestDepth || (depth === bestDepth && area < bestArea)) {
-                    bestElement = element;
+                    bestElement = normalizedElement;
                     bestDepth = depth;
                     bestArea = area;
                   }
@@ -3623,11 +3639,14 @@ export default function CodePreview({
                     __studioPreviewState.lastPointer.x,
                     __studioPreviewState.lastPointer.y
                   );
-                  var target = __studioMakeDomTarget(refinedElement || element);
+                  var normalizedElement = __studioNormalizeSelectableElement(
+                    refinedElement || element
+                  );
+                  var target = __studioMakeDomTarget(normalizedElement);
                   if (!target) continue;
                   candidates.push({
                     target: target,
-                    depth: __studioGetDomDepth(refinedElement || element),
+                    depth: __studioGetDomDepth(normalizedElement),
                   });
                 }
 
@@ -3653,6 +3672,44 @@ export default function CodePreview({
               }
 
               function __studioResolveTargetFromEvent(event) {
+                var elements = document.elementsFromPoint(event.clientX, event.clientY);
+                var prioritizedSpriteTarget = null;
+                for (var spriteIndex = 0; spriteIndex < elements.length; spriteIndex += 1) {
+                  var spriteElement = elements[spriteIndex];
+                  if (!spriteElement || spriteElement.id === '__studio_overlay_root') continue;
+                  if (spriteElement.closest && spriteElement.closest('#__studio_overlay_root')) continue;
+                  if (spriteElement.tagName === 'CANVAS') {
+                    prioritizedSpriteTarget = __studioGetSpriteTargetAtPoint(
+                      event.clientX,
+                      event.clientY,
+                      spriteElement
+                    );
+                    if (prioritizedSpriteTarget) break;
+                  }
+                  var domSpriteTarget = __studioMakeDomTarget(
+                    __studioNormalizeSelectableElement(spriteElement)
+                  );
+                  if (domSpriteTarget && domSpriteTarget.kind === 'sprite') {
+                    prioritizedSpriteTarget = domSpriteTarget;
+                    break;
+                  }
+                }
+                var domTarget = __studioChooseBestDomTarget(elements);
+                var hasStrongDomTarget =
+                  domTarget &&
+                  domTarget.tagName !== 'canvas' &&
+                  domTarget.kind !== 'sprite' &&
+                  !__studioIsLargeContainerTarget(domTarget);
+                if (hasStrongDomTarget) {
+                  return domTarget;
+                }
+                if (prioritizedSpriteTarget) {
+                  return __studioPreferPointerEventsNoneTarget(
+                    event.clientX,
+                    event.clientY,
+                    prioritizedSpriteTarget
+                  );
+                }
                 var prioritizedGlobalSpriteTarget = __studioGetAnySpriteTargetAtPoint(
                   event.clientX,
                   event.clientY
@@ -3664,49 +3721,11 @@ export default function CodePreview({
                     prioritizedGlobalSpriteTarget
                   );
                 }
-
-                var elements = document.elementsFromPoint(event.clientX, event.clientY);
-                for (var spriteIndex = 0; spriteIndex < elements.length; spriteIndex += 1) {
-                  var spriteElement = elements[spriteIndex];
-                  if (!spriteElement || spriteElement.id === '__studio_overlay_root') continue;
-                  if (spriteElement.closest && spriteElement.closest('#__studio_overlay_root')) continue;
-                  if (spriteElement.tagName === 'CANVAS') {
-                    var prioritizedSpriteTarget = __studioGetSpriteTargetAtPoint(
-                      event.clientX,
-                      event.clientY,
-                      spriteElement
-                    );
-                    if (prioritizedSpriteTarget) {
-                      return __studioPreferPointerEventsNoneTarget(
-                        event.clientX,
-                        event.clientY,
-                        prioritizedSpriteTarget
-                      );
-                    }
-                  }
-                  var domSpriteTarget = __studioMakeDomTarget(spriteElement);
-                  if (domSpriteTarget && domSpriteTarget.kind === 'sprite') {
-                    return __studioPreferPointerEventsNoneTarget(
-                      event.clientX,
-                      event.clientY,
-                      domSpriteTarget
-                    );
-                  }
-                }
-                var domTarget = __studioChooseBestDomTarget(elements);
-                if (
-                  !domTarget ||
-                  domTarget.tagName === 'canvas' ||
-                  domTarget.kind === 'sprite' ||
-                  __studioIsLargeContainerTarget(domTarget)
-                ) {
-                  return __studioPreferPointerEventsNoneTarget(
-                    event.clientX,
-                    event.clientY,
-                    domTarget
-                  );
-                }
-                return domTarget;
+                return __studioPreferPointerEventsNoneTarget(
+                  event.clientX,
+                  event.clientY,
+                  domTarget
+                );
               }
 
               function __studioHandleMouseMove(event) {
