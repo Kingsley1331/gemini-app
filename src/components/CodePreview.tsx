@@ -1581,7 +1581,7 @@ export default function CodePreview({
       return {
         ...current,
         isEnabled: true,
-        isPaused: true,
+        isPaused: false,
         activePanel: null,
       };
     });
@@ -3200,6 +3200,27 @@ export default function CodePreview({
                 );
               }
 
+              function __studioGetBackgroundAssetHint(element) {
+                if (!element || !window.getComputedStyle) return null;
+                try {
+                  var backgroundImage = window.getComputedStyle(element).backgroundImage || '';
+                  var urlMatches = backgroundImage.match(/url\\((['"]?)(.*?)\\1\\)/gi);
+                  if (!urlMatches) return null;
+                  for (var index = 0; index < urlMatches.length; index += 1) {
+                    var match = urlMatches[index];
+                    var cleaned = match
+                      .replace(/^url\\((['"]?)/i, '')
+                      .replace(/(['"]?)\\)$/i, '')
+                      .trim();
+                    var hint = __studioResolveAssetHint(cleaned);
+                    if (hint) return hint;
+                  }
+                } catch (_error) {
+                  return null;
+                }
+                return null;
+              }
+
               function __studioGetElementPath(element) {
                 if (!element || !element.tagName) return '';
                 var parts = [];
@@ -3263,11 +3284,14 @@ export default function CodePreview({
                 if (textPreview) labelParts.push(textPreview);
                 var hintedImage = element.tagName === 'IMG'
                   ? __studioResolveAssetHint(element.currentSrc || element.src || '')
-                  : null;
+                  : __studioGetBackgroundAssetHint(element);
                 return {
                   id: element.dataset.studioNodeId || (element.dataset.studioNodeId = __studioCreateTargetId('dom')),
                   kind: hintedImage ? 'sprite' : 'dom',
-                  label: __studioTruncate(labelParts.join(' '), hintedImage ? 'Sprite image' : 'Element'),
+                  label: __studioTruncate(
+                    labelParts.join(' '),
+                    hintedImage ? (hintedImage.assetKey || 'Sprite image') : 'Element'
+                  ),
                   tagName: element.tagName ? element.tagName.toLowerCase() : undefined,
                   elementId: element.id || undefined,
                   className: typeof element.className === 'string' ? element.className : undefined,
@@ -3402,9 +3426,34 @@ export default function CodePreview({
                 }
               }
 
+              function __studioGetActiveSpriteEntries() {
+                var entries = (__studioPreviewState.spriteEntries || []).filter(function(entry) {
+                  return (
+                    entry &&
+                    entry.bounds &&
+                    typeof entry.bounds.left === 'number' &&
+                    typeof entry.bounds.top === 'number' &&
+                    typeof entry.bounds.width === 'number' &&
+                    typeof entry.bounds.height === 'number' &&
+                    entry.bounds.width > 0 &&
+                    entry.bounds.height > 0 &&
+                    entry.canvas &&
+                    (!entry.canvas.isConnected || entry.canvas.isConnected === true)
+                  );
+                });
+                if (entries.length === 0) return entries;
+                var latestTimestamp = entries.reduce(function(max, entry) {
+                  return Math.max(max, Number(entry.timestamp || 0));
+                }, 0);
+                var frameWindowMs = __studioPreviewState.paused ? 250 : 120;
+                return entries.filter(function(entry) {
+                  return latestTimestamp - Number(entry.timestamp || 0) <= frameWindowMs;
+                });
+              }
+
               function __studioGetSpriteTargetAtPoint(clientX, clientY, canvas) {
                 var now = Date.now();
-                var candidates = __studioPreviewState.spriteEntries
+                var candidates = __studioGetActiveSpriteEntries()
                   .filter(function(entry) {
                     return (
                       entry.canvas === canvas &&
@@ -3421,26 +3470,239 @@ export default function CodePreview({
                 return candidates.length > 0 ? __studioMakeSpriteTarget(candidates[0]) : null;
               }
 
-              function __studioResolveTargetFromEvent(event) {
-                var elements = document.elementsFromPoint(event.clientX, event.clientY);
-                for (var i = 0; i < elements.length; i += 1) {
-                  var element = elements[i];
+              function __studioGetAnySpriteTargetAtPoint(clientX, clientY) {
+                var now = Date.now();
+                var candidates = __studioGetActiveSpriteEntries()
+                  .filter(function(entry) {
+                    return (
+                      (__studioPreviewState.paused || now - entry.timestamp < 1500) &&
+                      clientX >= entry.bounds.left &&
+                      clientX <= entry.bounds.left + entry.bounds.width &&
+                      clientY >= entry.bounds.top &&
+                      clientY <= entry.bounds.top + entry.bounds.height
+                    );
+                  })
+                  .sort(function(a, b) {
+                    return b.timestamp - a.timestamp;
+                  });
+                return candidates.length > 0 ? __studioMakeSpriteTarget(candidates[0]) : null;
+              }
+
+              function __studioIsLargeContainerTarget(target) {
+                if (!target || !target.bounds) return false;
+                var viewportWidth = Math.max(window.innerWidth || 0, 1);
+                var viewportHeight = Math.max(window.innerHeight || 0, 1);
+                var widthRatio = target.bounds.width / viewportWidth;
+                var heightRatio = target.bounds.height / viewportHeight;
+                return widthRatio >= 0.9 && heightRatio >= 0.9;
+              }
+
+              function __studioGetDomDepth(element) {
+                var depth = 0;
+                var current = element;
+                while (current && current.parentElement) {
+                  depth += 1;
+                  current = current.parentElement;
+                }
+                return depth;
+              }
+
+              function __studioContainsPoint(element, clientX, clientY) {
+                if (!element || !element.getBoundingClientRect) return false;
+                var rect = element.getBoundingClientRect();
+                return (
+                  rect.width >= 2 &&
+                  rect.height >= 2 &&
+                  clientX >= rect.left &&
+                  clientX <= rect.right &&
+                  clientY >= rect.top &&
+                  clientY <= rect.bottom
+                );
+              }
+
+              function __studioFindDeepestDomElementAtPoint(rootElement, clientX, clientY) {
+                if (!rootElement || !rootElement.querySelectorAll) return rootElement;
+                var deepest = rootElement;
+                var bestDepth = __studioGetDomDepth(rootElement);
+                var descendants = rootElement.querySelectorAll('*');
+                for (var index = 0; index < descendants.length; index += 1) {
+                  var descendant = descendants[index];
+                  if (!__studioContainsPoint(descendant, clientX, clientY)) continue;
+                  var depth = __studioGetDomDepth(descendant);
+                  if (depth > bestDepth) {
+                    deepest = descendant;
+                    bestDepth = depth;
+                    continue;
+                  }
+                  if (depth === bestDepth && deepest && deepest.getBoundingClientRect) {
+                    var currentRect = descendant.getBoundingClientRect();
+                    var bestRect = deepest.getBoundingClientRect();
+                    var currentArea = currentRect.width * currentRect.height;
+                    var bestArea = bestRect.width * bestRect.height;
+                    if (currentArea < bestArea) {
+                      deepest = descendant;
+                    }
+                  }
+                }
+                return deepest;
+              }
+
+              function __studioIsSelectableOverlayElement(element) {
+                if (
+                  !element ||
+                  element === document.body ||
+                  element === document.documentElement ||
+                  !element.tagName
+                ) {
+                  return false;
+                }
+                var tagName = element.tagName.toLowerCase();
+                if (
+                  tagName === 'script' ||
+                  tagName === 'style' ||
+                  tagName === 'link' ||
+                  tagName === 'meta' ||
+                  tagName === 'canvas'
+                ) {
+                  return false;
+                }
+                if (element.id === '__studio_overlay_root') return false;
+                if (element.closest && element.closest('#__studio_overlay_root')) return false;
+                var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+                if (!style) return false;
+                if (
+                  style.display === 'none' ||
+                  style.visibility === 'hidden' ||
+                  Number(style.opacity || '1') <= 0.01
+                ) {
+                  return false;
+                }
+                if (style.pointerEvents !== 'none') return false;
+                var textContent = (element.textContent || '').trim();
+                return textContent.length > 0 || element.children.length > 0;
+              }
+
+              function __studioFindPointerEventsNoneTargetAtPoint(clientX, clientY) {
+                if (!document.body || !document.body.querySelectorAll) return null;
+                var elements = document.body.querySelectorAll('*');
+                var bestElement = null;
+                var bestDepth = -1;
+                var bestArea = Infinity;
+                for (var index = 0; index < elements.length; index += 1) {
+                  var element = elements[index];
+                  if (!__studioIsSelectableOverlayElement(element)) continue;
+                  if (!__studioContainsPoint(element, clientX, clientY)) continue;
+                  var depth = __studioGetDomDepth(element);
+                  var rect = element.getBoundingClientRect();
+                  var area = rect.width * rect.height;
+                  if (depth > bestDepth || (depth === bestDepth && area < bestArea)) {
+                    bestElement = element;
+                    bestDepth = depth;
+                    bestArea = area;
+                  }
+                }
+                return bestElement ? __studioMakeDomTarget(bestElement) : null;
+              }
+
+              function __studioChooseBestDomTarget(elements) {
+                var candidates = [];
+                for (var index = 0; index < elements.length; index += 1) {
+                  var element = elements[index];
                   if (!element || element.id === '__studio_overlay_root') continue;
                   if (element.closest && element.closest('#__studio_overlay_root')) continue;
-                  if (element.tagName === 'CANVAS') {
-                    var spriteTarget = __studioGetSpriteTargetAtPoint(
-                      event.clientX,
-                      event.clientY,
-                      element
-                    );
-                    if (spriteTarget) return spriteTarget;
-                  }
                   if (element === document.body || element === document.documentElement) {
                     continue;
                   }
-                  return __studioMakeDomTarget(element);
+                  var refinedElement = __studioFindDeepestDomElementAtPoint(
+                    element,
+                    __studioPreviewState.lastPointer.x,
+                    __studioPreviewState.lastPointer.y
+                  );
+                  var target = __studioMakeDomTarget(refinedElement || element);
+                  if (!target) continue;
+                  candidates.push({
+                    target: target,
+                    depth: __studioGetDomDepth(refinedElement || element),
+                  });
                 }
-                return null;
+
+                if (candidates.length === 0) return null;
+                if (candidates.length === 1) return candidates[0].target;
+
+                var nonContainerCandidates = candidates.filter(function(entry) {
+                  return !__studioIsLargeContainerTarget(entry.target);
+                });
+                var effectiveCandidates =
+                  nonContainerCandidates.length > 0 ? nonContainerCandidates : candidates;
+
+                effectiveCandidates.sort(function(left, right) {
+                  if (left.depth !== right.depth) {
+                    return right.depth - left.depth;
+                  }
+                  var leftArea = left.target.bounds.width * left.target.bounds.height;
+                  var rightArea = right.target.bounds.width * right.target.bounds.height;
+                  return leftArea - rightArea;
+                });
+
+                return effectiveCandidates[0].target;
+              }
+
+              function __studioResolveTargetFromEvent(event) {
+                var pointerEventsNoneTarget = null;
+                var prioritizedGlobalSpriteTarget = __studioGetAnySpriteTargetAtPoint(
+                  event.clientX,
+                  event.clientY
+                );
+                if (prioritizedGlobalSpriteTarget) {
+                  pointerEventsNoneTarget = __studioFindPointerEventsNoneTargetAtPoint(
+                    event.clientX,
+                    event.clientY
+                  );
+                  return pointerEventsNoneTarget || prioritizedGlobalSpriteTarget;
+                }
+
+                var elements = document.elementsFromPoint(event.clientX, event.clientY);
+                for (var spriteIndex = 0; spriteIndex < elements.length; spriteIndex += 1) {
+                  var spriteElement = elements[spriteIndex];
+                  if (!spriteElement || spriteElement.id === '__studio_overlay_root') continue;
+                  if (spriteElement.closest && spriteElement.closest('#__studio_overlay_root')) continue;
+                  if (spriteElement.tagName === 'CANVAS') {
+                    var prioritizedSpriteTarget = __studioGetSpriteTargetAtPoint(
+                      event.clientX,
+                      event.clientY,
+                      spriteElement
+                    );
+                    if (prioritizedSpriteTarget) {
+                      pointerEventsNoneTarget = __studioFindPointerEventsNoneTargetAtPoint(
+                        event.clientX,
+                        event.clientY
+                      );
+                      return pointerEventsNoneTarget || prioritizedSpriteTarget;
+                    }
+                  }
+                  var domSpriteTarget = __studioMakeDomTarget(spriteElement);
+                  if (domSpriteTarget && domSpriteTarget.kind === 'sprite') {
+                    pointerEventsNoneTarget = __studioFindPointerEventsNoneTargetAtPoint(
+                      event.clientX,
+                      event.clientY
+                    );
+                    return pointerEventsNoneTarget || domSpriteTarget;
+                  }
+                }
+                var domTarget = __studioChooseBestDomTarget(elements);
+                if (
+                  !domTarget ||
+                  domTarget.tagName === 'canvas' ||
+                  domTarget.kind === 'sprite' ||
+                  __studioIsLargeContainerTarget(domTarget)
+                ) {
+                  pointerEventsNoneTarget = __studioFindPointerEventsNoneTargetAtPoint(
+                    event.clientX,
+                    event.clientY
+                  );
+                  if (pointerEventsNoneTarget) return pointerEventsNoneTarget;
+                }
+                return domTarget;
               }
 
               function __studioHandleMouseMove(event) {
@@ -3509,6 +3771,16 @@ export default function CodePreview({
                     ? this.canvas.getBoundingClientRect()
                     : null;
                   if (canvasRect) {
+                    const canvasWidth =
+                      this.canvas && typeof this.canvas.width === 'number' && this.canvas.width > 0
+                        ? this.canvas.width
+                        : canvasRect.width;
+                    const canvasHeight =
+                      this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0
+                        ? this.canvas.height
+                        : canvasRect.height;
+                    const scaleX = canvasWidth > 0 ? canvasRect.width / canvasWidth : 1;
+                    const scaleY = canvasHeight > 0 ? canvasRect.height / canvasHeight : 1;
                     let dx = 0;
                     let dy = 0;
                     let dw = image && image.width ? image.width : 0;
@@ -3540,16 +3812,16 @@ export default function CodePreview({
                         label: assetHint ? assetHint.assetKey : 'Canvas sprite',
                         sourceHints: assetHint ? [assetHint.assetKey, 'canvas', 'sprite'] : ['canvas', 'sprite'],
                         bounds: {
-                          left: canvasRect.left + dx,
-                          top: canvasRect.top + dy,
-                          width: dw,
-                          height: dh,
+                          left: canvasRect.left + dx * scaleX,
+                          top: canvasRect.top + dy * scaleY,
+                          width: dw * scaleX,
+                          height: dh * scaleY,
                         },
                         collisionBounds: {
-                          left: canvasRect.left + dx,
-                          top: canvasRect.top + dy,
-                          width: dw,
-                          height: dh,
+                          left: canvasRect.left + dx * scaleX,
+                          top: canvasRect.top + dy * scaleY,
+                          width: dw * scaleX,
+                          height: dh * scaleY,
                         },
                         timestamp: Date.now(),
                       });
@@ -3665,6 +3937,16 @@ export default function CodePreview({
                   // Final render logic
                   const container = document.getElementById('root');
                   const root = ReactDOM.createRoot(container);
+                  const notifyPreviewReady = () => {
+                    const nativeRaf =
+                      window.__studioNativeRequestAnimationFrame ||
+                      window.requestAnimationFrame.bind(window);
+                    nativeRaf(() => {
+                      nativeRaf(() => {
+                        window.parent.postMessage({ type: 'studio-preview-ready' }, '*');
+                      });
+                    });
+                  };
                   
                   if (typeof App !== 'undefined') {
                     root.render(
@@ -3678,6 +3960,7 @@ export default function CodePreview({
                     window.parent.postMessage({ type: 'preview-error', message: noAppMsg }, '*');
                     container.innerHTML = '<div style="padding: 20px; color: #ef4444;">Error: No <b>App</b> component found. Please define <code>export default function App()</code>.</div>';
                   }
+                  notifyPreviewReady();
                   
                   // Initialize lucide icons if any
                   setTimeout(() => {
@@ -3723,6 +4006,11 @@ export default function CodePreview({
         return;
       }
 
+      if (event.data?.type === "studio-preview-ready") {
+        postPreviewBridgeControl();
+        return;
+      }
+
       if (event.data?.type === "studio-edit-hover") {
         const target = event.data.target as StudioSelectedTarget | null;
         updateEditUiState((current) => ({
@@ -3762,7 +4050,7 @@ export default function CodePreview({
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [updateEditUiState]);
+  }, [postPreviewBridgeControl, updateEditUiState]);
 
   useEffect(() => {
     if (activeTab !== "preview") return;
