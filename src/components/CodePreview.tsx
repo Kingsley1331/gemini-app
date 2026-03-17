@@ -3604,6 +3604,11 @@ export default function CodePreview({
                 return bestElement ? __studioMakeDomTarget(bestElement) : null;
               }
 
+              function __studioPreferPointerEventsNoneTarget(clientX, clientY, fallbackTarget) {
+                var overlayTarget = __studioFindPointerEventsNoneTargetAtPoint(clientX, clientY);
+                return overlayTarget || fallbackTarget || null;
+              }
+
               function __studioChooseBestDomTarget(elements) {
                 var candidates = [];
                 for (var index = 0; index < elements.length; index += 1) {
@@ -3648,17 +3653,16 @@ export default function CodePreview({
               }
 
               function __studioResolveTargetFromEvent(event) {
-                var pointerEventsNoneTarget = null;
                 var prioritizedGlobalSpriteTarget = __studioGetAnySpriteTargetAtPoint(
                   event.clientX,
                   event.clientY
                 );
                 if (prioritizedGlobalSpriteTarget) {
-                  pointerEventsNoneTarget = __studioFindPointerEventsNoneTargetAtPoint(
+                  return __studioPreferPointerEventsNoneTarget(
                     event.clientX,
-                    event.clientY
+                    event.clientY,
+                    prioritizedGlobalSpriteTarget
                   );
-                  return pointerEventsNoneTarget || prioritizedGlobalSpriteTarget;
                 }
 
                 var elements = document.elementsFromPoint(event.clientX, event.clientY);
@@ -3673,20 +3677,20 @@ export default function CodePreview({
                       spriteElement
                     );
                     if (prioritizedSpriteTarget) {
-                      pointerEventsNoneTarget = __studioFindPointerEventsNoneTargetAtPoint(
+                      return __studioPreferPointerEventsNoneTarget(
                         event.clientX,
-                        event.clientY
+                        event.clientY,
+                        prioritizedSpriteTarget
                       );
-                      return pointerEventsNoneTarget || prioritizedSpriteTarget;
                     }
                   }
                   var domSpriteTarget = __studioMakeDomTarget(spriteElement);
                   if (domSpriteTarget && domSpriteTarget.kind === 'sprite') {
-                    pointerEventsNoneTarget = __studioFindPointerEventsNoneTargetAtPoint(
+                    return __studioPreferPointerEventsNoneTarget(
                       event.clientX,
-                      event.clientY
+                      event.clientY,
+                      domSpriteTarget
                     );
-                    return pointerEventsNoneTarget || domSpriteTarget;
                   }
                 }
                 var domTarget = __studioChooseBestDomTarget(elements);
@@ -3696,11 +3700,11 @@ export default function CodePreview({
                   domTarget.kind === 'sprite' ||
                   __studioIsLargeContainerTarget(domTarget)
                 ) {
-                  pointerEventsNoneTarget = __studioFindPointerEventsNoneTargetAtPoint(
+                  return __studioPreferPointerEventsNoneTarget(
                     event.clientX,
-                    event.clientY
+                    event.clientY,
+                    domTarget
                   );
-                  if (pointerEventsNoneTarget) return pointerEventsNoneTarget;
                 }
                 return domTarget;
               }
