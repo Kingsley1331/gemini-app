@@ -214,12 +214,6 @@ function getTargetDisplayLabel(target: StudioSelectedTarget | null): string {
   return truncateEditLabel(target.label, "Selected element");
 }
 
-function isLikelySpriteAssetPrompt(prompt: string): boolean {
-  return /\b(sprite|texture|image|icon|appearance|look|color|background|transparent|style|art|illustration|redraw|visual)\b/i.test(
-    prompt,
-  );
-}
-
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -736,19 +730,70 @@ export default function CodePreview({
     selectedAsset && selectedAssetIndex >= 0
       ? resolveAssetPreviewUrl(selectedAsset, selectedAssetIndex)
       : "";
+  const decodeAssetLookupValue = useCallback((value: string) => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }, []);
+  const normalizeAssetLookupValue = useCallback((value: string | null | undefined) => {
+    if (!value) return "";
+    const normalized = String(value).trim();
+    if (!normalized) return "";
+    try {
+      const parsed = new URL(normalized, "https://studio.local");
+      const pathname = decodeURIComponent(parsed.pathname || "")
+        .replace(/\/+/g, "/")
+        .toLowerCase();
+      return pathname || decodeAssetLookupValue(normalized).toLowerCase();
+    } catch {
+      return decodeAssetLookupValue(normalized)
+        .split(/[?#]/, 1)[0]
+        .replace(/\\/g, "/")
+        .toLowerCase();
+    }
+  }, [decodeAssetLookupValue]);
+  const assetUrlsMatch = useCallback(
+    (left: string | null | undefined, right: string | null | undefined) => {
+      const normalizedLeft = normalizeAssetLookupValue(left);
+      const normalizedRight = normalizeAssetLookupValue(right);
+      if (!normalizedLeft || !normalizedRight) return false;
+      if (normalizedLeft === normalizedRight) return true;
+      return (
+        normalizedLeft.endsWith(normalizedRight) ||
+        normalizedRight.endsWith(normalizedLeft)
+      );
+    },
+    [normalizeAssetLookupValue],
+  );
   const selectedEditAssetEntry = useMemo(
     () =>
-      editUi.selectedTarget?.assetKey
-        ? visualAssets.find(
-            ({ asset, index }) =>
-              (asset.assetKey || `asset_${index + 1}`) ===
-              editUi.selectedTarget?.assetKey,
-          ) || null
-        : null,
-    [editUi.selectedTarget?.assetKey, visualAssets],
+      visualAssets.find(({ asset, index }) => {
+        const assetKey = asset.assetKey || `asset_${index + 1}`;
+        if (
+          editUi.selectedTarget?.assetKey &&
+          assetKey === editUi.selectedTarget.assetKey
+        ) {
+          return true;
+        }
+        const assetUrl = resolveAssetPreviewUrl(asset, index) || asset.url || "";
+        return assetUrlsMatch(assetUrl, editUi.selectedTarget?.assetUrl);
+      }) || null,
+    [
+      assetUrlsMatch,
+      editUi.selectedTarget?.assetKey,
+      editUi.selectedTarget?.assetUrl,
+      resolveAssetPreviewUrl,
+      visualAssets,
+    ],
   );
   const selectedEditAsset = selectedEditAssetEntry?.asset || null;
   const selectedEditAssetIndex = selectedEditAssetEntry?.index ?? -1;
+  const selectedEditAssetKey =
+    selectedEditAssetEntry &&
+    (selectedEditAssetEntry.asset.assetKey ||
+      `asset_${selectedEditAssetEntry.index + 1}`);
   const selectedEditAssetPreviewUrl =
     selectedEditAsset && selectedEditAssetIndex >= 0
       ? resolveAssetPreviewUrl(selectedEditAsset, selectedEditAssetIndex)
@@ -1307,45 +1352,38 @@ export default function CodePreview({
     updateAssets,
   ]);
 
-  const handleGenerateAssetCandidate = useCallback(async () => {
-    if (!selectedAsset || selectedAssetIndex < 0 || isGeneratingAssetCandidate)
-      return;
-    if (!assetEditPrompt.trim()) {
-      setAssetEditStatus("Describe the changes you want to make first.");
-      return;
-    }
-
-    setIsGeneratingAssetCandidate(true);
-    setAssetEditStatus("Generating candidate...");
-    try {
-      const preparedAsset = await ensureInlineAsset(
-        selectedAsset,
-        selectedAssetIndex,
-      );
-      const wantsTransparentBackground =
-        assetEditTransparentBackground ||
-        requestsTransparentBackground(assetEditPrompt);
+  const generateEditedAssetCandidate = useCallback(
+    async ({
+      asset,
+      assetIndex,
+      prompt,
+      transparentBackground,
+    }: {
+      asset: AppAsset;
+      assetIndex: number;
+      prompt: string;
+      transparentBackground: boolean;
+    }): Promise<AppAsset> => {
+      const preparedAsset = await ensureInlineAsset(asset, assetIndex);
       const endpoint = isSvgMimeType(preparedAsset.mimeType)
         ? "/api/assets/edit-svg"
         : "/api/assets/edit-image";
       const body = isSvgMimeType(preparedAsset.mimeType)
         ? {
-            prompt: assetEditPrompt.trim(),
+            prompt: prompt.trim(),
             rolePrompt: preparedAsset.rolePrompt,
             displayName: preparedAsset.displayName,
             svgText: preparedAsset.svgText,
           }
         : {
-            prompt: assetEditPrompt.trim(),
+            prompt: prompt.trim(),
             rolePrompt: preparedAsset.rolePrompt,
             displayName: preparedAsset.displayName,
             mimeType: preparedAsset.mimeType,
-            outputMimeType: wantsTransparentBackground
+            outputMimeType: transparentBackground
               ? "image/png"
               : preparedAsset.mimeType,
-            backgroundMode: wantsTransparentBackground
-              ? "transparent"
-              : undefined,
+            backgroundMode: transparentBackground ? "transparent" : undefined,
             data: preparedAsset.data,
             pro: true,
           };
@@ -1362,14 +1400,69 @@ export default function CodePreview({
         );
       }
 
-      setAssetCandidate({
+      return {
         ...preparedAsset,
         mimeType: payload.asset.mimeType || preparedAsset.mimeType,
         data: payload.asset.data,
         url: payload.asset.url || preparedAsset.url,
         svgText: payload.asset.svgText ?? preparedAsset.svgText,
         sourceType: "edited",
+      };
+    },
+    [ensureInlineAsset],
+  );
+
+  const applyEditedAssetCandidate = useCallback(
+    (
+      candidate: AppAsset,
+      assetKey: string,
+      options?: { closeModal?: boolean },
+    ) => {
+      const nextAsset: AppAsset = {
+        ...candidate,
+        assetKey,
+      };
+      updateAssets((current) =>
+        current.map((asset, index) =>
+          (asset.assetKey || `asset_${index + 1}`) === assetKey
+            ? {
+                ...asset,
+                ...nextAsset,
+                assetKey,
+                displayName: nextAsset.displayName || asset.displayName,
+                rolePrompt: nextAsset.rolePrompt || asset.rolePrompt,
+              }
+            : asset,
+        ),
+      );
+      if (options?.closeModal) {
+        closeAssetModal();
+      }
+      void syncAssetToDraft(nextAsset);
+    },
+    [closeAssetModal, syncAssetToDraft, updateAssets],
+  );
+
+  const handleGenerateAssetCandidate = useCallback(async () => {
+    if (!selectedAsset || selectedAssetIndex < 0 || isGeneratingAssetCandidate)
+      return;
+    if (!assetEditPrompt.trim()) {
+      setAssetEditStatus("Describe the changes you want to make first.");
+      return;
+    }
+
+    setIsGeneratingAssetCandidate(true);
+    setAssetEditStatus("Generating candidate...");
+    try {
+      const candidate = await generateEditedAssetCandidate({
+        asset: selectedAsset,
+        assetIndex: selectedAssetIndex,
+        prompt: assetEditPrompt,
+        transparentBackground:
+          assetEditTransparentBackground ||
+          requestsTransparentBackground(assetEditPrompt),
       });
+      setAssetCandidate(candidate);
       setAssetEditStatus("Candidate ready. Review it, then click Keep.");
     } catch (error: unknown) {
       const message =
@@ -1381,7 +1474,7 @@ export default function CodePreview({
   }, [
     assetEditPrompt,
     assetEditTransparentBackground,
-    ensureInlineAsset,
+    generateEditedAssetCandidate,
     isGeneratingAssetCandidate,
     selectedAsset,
     selectedAssetIndex,
@@ -1389,31 +1482,11 @@ export default function CodePreview({
 
   const handleKeepAssetCandidate = useCallback(async () => {
     if (!assetCandidate || !selectedAssetKey) return;
-    const nextAsset: AppAsset = {
-      ...assetCandidate,
-      assetKey: selectedAssetKey,
-    };
-    updateAssets((current) =>
-      current.map((asset, index) =>
-        (asset.assetKey || `asset_${index + 1}`) === selectedAssetKey
-          ? {
-              ...asset,
-              ...nextAsset,
-              assetKey: selectedAssetKey,
-              displayName: nextAsset.displayName || asset.displayName,
-              rolePrompt: nextAsset.rolePrompt || asset.rolePrompt,
-            }
-          : asset,
-      ),
-    );
-    closeAssetModal();
-    void syncAssetToDraft(nextAsset);
+    applyEditedAssetCandidate(assetCandidate, selectedAssetKey, { closeModal: true });
   }, [
+    applyEditedAssetCandidate,
     assetCandidate,
-    closeAssetModal,
     selectedAssetKey,
-    syncAssetToDraft,
-    updateAssets,
   ]);
 
   const copyToClipboard = () => {
@@ -1599,6 +1672,9 @@ export default function CodePreview({
   const openEditPanel = useCallback(
     (panel: StudioEditPanel) => {
       setSelectionMenuOpen(false);
+      setAiAssetCandidate(null);
+      setAiAssetStatus(null);
+      setComponentUpdateStatus(null);
       updateEditUiState((current) => ({
         ...current,
         activePanel: panel,
@@ -1606,6 +1682,9 @@ export default function CodePreview({
           panel === "code" && selectedExtraction
             ? current.componentDraft || selectedExtraction.snippet
             : current.componentDraft,
+        generatedComponent: "",
+        generatedSummary: "",
+        generationMode: null,
       }));
     },
     [selectedExtraction, updateEditUiState],
@@ -1623,30 +1702,13 @@ export default function CodePreview({
   }, [code, editUi.componentDraft, editUi.selectedTarget, onCodeKeep, selectedExtraction]);
 
   const handleApplyGeneratedCandidate = useCallback(() => {
-    const selectedSpriteAssetKey = editUi.selectedTarget?.assetKey;
+    const selectedSpriteAssetKey = selectedEditAssetKey;
     if (
       editUi.generationMode === "asset" &&
       aiAssetCandidate &&
       selectedSpriteAssetKey
     ) {
-      const nextAsset: AppAsset = {
-        ...aiAssetCandidate,
-        assetKey: selectedSpriteAssetKey,
-      };
-      updateAssets((current) =>
-        current.map((asset, index) =>
-          (asset.assetKey || `asset_${index + 1}`) === selectedSpriteAssetKey
-            ? {
-                ...asset,
-                ...nextAsset,
-                assetKey: selectedSpriteAssetKey,
-                displayName: nextAsset.displayName || asset.displayName,
-                rolePrompt: nextAsset.rolePrompt || asset.rolePrompt,
-              }
-            : asset,
-        ),
-      );
-      void syncAssetToDraft(nextAsset);
+      applyEditedAssetCandidate(aiAssetCandidate, selectedSpriteAssetKey);
       setComponentUpdateStatus(`Updated sprite asset ${selectedSpriteAssetKey}.`);
       return;
     }
@@ -1662,15 +1724,15 @@ export default function CodePreview({
       `Applied generated changes to ${getTargetDisplayLabel(editUi.selectedTarget)}.`,
     );
   }, [
+    applyEditedAssetCandidate,
     aiAssetCandidate,
     code,
     editUi.generatedComponent,
     editUi.generationMode,
     editUi.selectedTarget,
     onCodeKeep,
+    selectedEditAssetKey,
     selectedExtraction,
-    syncAssetToDraft,
-    updateAssets,
   ]);
 
   const handleGenerateInspectorCandidate = useCallback(async () => {
@@ -1683,70 +1745,33 @@ export default function CodePreview({
       return;
     }
 
-    const shouldUseAssetGeneration =
-      editUi.selectedTarget.kind === "sprite" &&
-      Boolean(selectedEditAsset && selectedEditAssetIndex >= 0) &&
-      Boolean(editUi.selectedTarget.assetKey) &&
-      isLikelySpriteAssetPrompt(editUi.aiPrompt);
+    if (editUi.activePanel === "asset") {
+      if (
+        editUi.selectedTarget.kind !== "sprite" ||
+        !selectedEditAssetKey ||
+        !selectedEditAsset ||
+        selectedEditAssetIndex < 0
+      ) {
+        setComponentUpdateStatus(
+          "This sprite is not linked to a Studio asset yet, so it cannot be edited as an asset.",
+        );
+        return;
+      }
 
-    if (
-      shouldUseAssetGeneration &&
-      selectedEditAsset &&
-      selectedEditAssetIndex >= 0
-    ) {
       setIsGeneratingComponentCandidate(true);
       setAiAssetStatus("Generating sprite candidate...");
       setComponentUpdateStatus("Generating sprite candidate...");
       try {
-        const preparedAsset = await ensureInlineAsset(
-          selectedEditAsset,
-          selectedEditAssetIndex,
-        );
-        const wantsTransparentBackground = requestsTransparentBackground(editUi.aiPrompt);
-        const endpoint = isSvgMimeType(preparedAsset.mimeType)
-          ? "/api/assets/edit-svg"
-          : "/api/assets/edit-image";
-        const body = isSvgMimeType(preparedAsset.mimeType)
-          ? {
-              prompt: editUi.aiPrompt.trim(),
-              rolePrompt: preparedAsset.rolePrompt,
-              displayName: preparedAsset.displayName,
-              svgText: preparedAsset.svgText,
-            }
-          : {
-              prompt: editUi.aiPrompt.trim(),
-              rolePrompt: preparedAsset.rolePrompt,
-              displayName: preparedAsset.displayName,
-              mimeType: preparedAsset.mimeType,
-              outputMimeType: wantsTransparentBackground
-                ? "image/png"
-                : preparedAsset.mimeType,
-              backgroundMode: wantsTransparentBackground ? "transparent" : undefined,
-              data: preparedAsset.data,
-              pro: true,
-            };
-
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+        const candidate = await generateEditedAssetCandidate({
+          asset: selectedEditAsset,
+          assetIndex: selectedEditAssetIndex,
+          prompt: editUi.aiPrompt,
+          transparentBackground:
+            assetEditTransparentBackground ||
+            requestsTransparentBackground(editUi.aiPrompt),
         });
-        const payload = await response.json();
-        if (!response.ok || !payload?.asset) {
-          throw new Error(
-            payload?.details || payload?.error || "Unable to generate sprite candidate.",
-          );
-        }
-
-        setAiAssetCandidate({
-          ...preparedAsset,
-          mimeType: payload.asset.mimeType || preparedAsset.mimeType,
-          data: payload.asset.data,
-          url: payload.asset.url || preparedAsset.url,
-          svgText: payload.asset.svgText ?? preparedAsset.svgText,
-          sourceType: "edited",
-        });
-        setAiAssetStatus("Sprite candidate ready. Click Update Component to keep it.");
+        setAiAssetCandidate(candidate);
+        setAiAssetStatus("Sprite candidate ready. Click Keep Asset to save it.");
         updateEditUiState((current) => ({
           ...current,
           generatedSummary: "Generated a sprite asset candidate from your prompt.",
@@ -1832,13 +1857,16 @@ export default function CodePreview({
       setIsGeneratingComponentCandidate(false);
     }
   }, [
+    assetEditTransparentBackground,
     assets,
     code,
     editUi.aiPrompt,
+    editUi.activePanel,
     editUi.selectedTarget,
-    ensureInlineAsset,
+    generateEditedAssetCandidate,
     language,
     selectedEditAsset,
+    selectedEditAssetKey,
     selectedEditAssetIndex,
     selectedExtraction,
     studioModelId,
@@ -3135,6 +3163,42 @@ export default function CodePreview({
             return Array.from(new Set(hints.filter(Boolean)));
           }
 
+          function __studioNormalizeAssetLookupValue(value) {
+            if (!value) return '';
+            var raw = String(value).trim();
+            if (!raw) return '';
+            try {
+              var parsed = new URL(raw, location.origin);
+              return decodeURIComponent(parsed.pathname || '')
+                .split(/[?#]/, 1)[0]
+                .replace(/\/+/g, '/')
+                .toLowerCase();
+            } catch (_error) {
+              try {
+                return decodeURIComponent(raw)
+                  .split(/[?#]/, 1)[0]
+                  .replace(/\\/g, '/')
+                  .toLowerCase();
+              } catch (_decodeError) {
+                return raw
+                  .split(/[?#]/, 1)[0]
+                  .replace(/\\/g, '/')
+                  .toLowerCase();
+              }
+            }
+          }
+
+          function __studioAssetUrlsMatch(left, right) {
+            var normalizedLeft = __studioNormalizeAssetLookupValue(left);
+            var normalizedRight = __studioNormalizeAssetLookupValue(right);
+            if (!normalizedLeft || !normalizedRight) return false;
+            return (
+              normalizedLeft === normalizedRight ||
+              normalizedLeft.slice(-normalizedRight.length) === normalizedRight ||
+              normalizedRight.slice(-normalizedLeft.length) === normalizedLeft
+            );
+          }
+
           function __studioResolveAssetHintForCanvas(rawUrl) {
             if (!rawUrl) return null;
             if (typeof __studioResolveAssetHint === 'function') {
@@ -3145,7 +3209,12 @@ export default function CodePreview({
             for (var index = 0; index < hints.length; index += 1) {
               var entry = hints[index];
               if (!entry) continue;
-              if (entry.assetUrl === rawUrl || entry.assetUrl === normalized) {
+              if (
+                entry.assetUrl === rawUrl ||
+                entry.assetUrl === normalized ||
+                __studioAssetUrlsMatch(entry.assetUrl, rawUrl) ||
+                __studioAssetUrlsMatch(entry.assetUrl, normalized)
+              ) {
                 return entry;
               }
             }
@@ -4393,7 +4462,12 @@ ${studioCanvasInstrumentationScript}
                 var normalized = String(rawUrl).replace(location.origin, '');
                 return (
                   __studioPreviewState.assetHints.find(function(entry) {
-                    return entry.assetUrl === rawUrl || entry.assetUrl === normalized;
+                    return (
+                      entry.assetUrl === rawUrl ||
+                      entry.assetUrl === normalized ||
+                      __studioAssetUrlsMatch(entry.assetUrl, rawUrl) ||
+                      __studioAssetUrlsMatch(entry.assetUrl, normalized)
+                    );
                   }) || null
                 );
               }
@@ -5161,13 +5235,20 @@ ${studioCanvasInstrumentationScript}
   }, [code, activeTab, updateIframe]);
 
   const selectedTargetLabel = getTargetDisplayLabel(editUi.selectedTarget);
+  const canEditSelectedTargetAsAsset = Boolean(
+    editUi.selectedTarget?.kind === "sprite" &&
+      selectedEditAssetKey &&
+      selectedEditAsset &&
+      selectedEditAssetIndex >= 0,
+  );
   const canApplyComponentDraft = Boolean(
     selectedExtraction && editUi.componentDraft.trim() && onCodeKeep,
   );
   const canApplyGeneratedCandidate =
     (editUi.generationMode === "component" &&
       Boolean(selectedExtraction && editUi.generatedComponent.trim() && onCodeKeep)) ||
-    (editUi.generationMode === "asset" && Boolean(aiAssetCandidate && selectedAssetKey));
+    (editUi.generationMode === "asset" &&
+      Boolean(aiAssetCandidate && selectedEditAssetKey));
 
   return (
     <div
@@ -5379,7 +5460,7 @@ ${studioCanvasInstrumentationScript}
             Edit Mode:
           </span>{" "}
           Hover elements, sprites, or canvas targets to inspect them. Click to select. Double-click the
-          selected target to choose `Code` or `AI`.
+          selected target to choose how to edit it.
           {editUi.selectedTarget ? (
             <span className="ml-2 font-medium text-zinc-800 dark:text-zinc-100">
               Selected: {selectedTargetLabel}
@@ -5390,10 +5471,143 @@ ${studioCanvasInstrumentationScript}
 
       <div className="relative flex-1 min-h-[320px] bg-zinc-50 dark:bg-zinc-900/20 sm:min-h-[500px]">
         {activeTab === "preview" ? (
-          <div className="flex h-full min-h-[320px] flex-col sm:min-h-[500px] lg:h-[600px] lg:min-h-0 lg:flex-row">
+          <div className="flex h-full min-h-[320px] flex-col sm:min-h-[500px] lg:h-[600px] lg:min-h-0 lg:flex-row lg:overflow-hidden">
+            {editUi.isEnabled &&
+            editUi.activePanel === "asset" &&
+            canEditSelectedTargetAsAsset ? (
+              <aside
+                className="flex flex-col border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 lg:h-full lg:min-h-0 lg:border-b-0 lg:border-r lg:overflow-hidden"
+                style={{ width: clampPanelWidth(editUi.aiPanelWidth, 320, 520) }}
+              >
+                <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+                  <div>
+                    <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                      Asset Edit
+                    </h3>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {selectedTargetLabel}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateEditUiState((current) => ({ ...current, activePanel: null }))
+                    }
+                    className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="flex-1 space-y-4 overflow-y-auto p-4">
+                  <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-300">
+                    <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                      Linked asset
+                    </p>
+                    <p className="mt-1">
+                      {selectedEditAsset?.displayName ||
+                        selectedEditAsset?.assetKey ||
+                        "Sprite asset"}
+                    </p>
+                    {selectedEditAsset?.rolePrompt ? (
+                      <p className="mt-2">{selectedEditAsset.rolePrompt}</p>
+                    ) : null}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/50">
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Current Sprite
+                      </p>
+                      <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-lg bg-white dark:bg-zinc-950">
+                        {selectedEditAssetPreviewUrl ? (
+                          <Image
+                            src={selectedEditAssetPreviewUrl}
+                            alt={selectedEditAsset?.displayName || "Current sprite"}
+                            fill
+                            unoptimized
+                            className="object-contain"
+                          />
+                        ) : (
+                          <ImageIcon className="h-8 w-8 text-zinc-400" />
+                        )}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/50">
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Candidate
+                      </p>
+                      <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-lg bg-white dark:bg-zinc-950">
+                        {aiAssetCandidate?.url ? (
+                          <Image
+                            src={aiAssetCandidate.url}
+                            alt={aiAssetCandidate.displayName || "Generated sprite candidate"}
+                            fill
+                            unoptimized
+                            className="object-contain"
+                          />
+                        ) : (
+                          <ImageIcon className="h-8 w-8 text-zinc-400" />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Change Prompt
+                    </label>
+                    <textarea
+                      value={editUi.aiPrompt}
+                      onChange={(event) =>
+                        updateEditUiState((current) => ({
+                          ...current,
+                          aiPrompt: event.target.value,
+                        }))
+                      }
+                      className="mt-2 min-h-[180px] w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      placeholder="Describe the visual changes you want to make."
+                    />
+                  </div>
+                  {selectedEditAsset && !isSvgMimeType(selectedEditAsset.mimeType) ? (
+                    <label className="flex items-start gap-3 rounded-lg border border-zinc-200 bg-white px-3 py-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+                      <input
+                        type="checkbox"
+                        checked={assetEditTransparentBackground}
+                        onChange={(event) =>
+                          setAssetEditTransparentBackground(event.target.checked)
+                        }
+                        className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-700 dark:bg-zinc-900"
+                      />
+                      <span>Return a transparent PNG and remove the background.</span>
+                    </label>
+                  ) : null}
+                  {componentUpdateStatus || aiAssetStatus ? (
+                    <p className="text-xs text-zinc-600 dark:text-zinc-300">
+                      {aiAssetStatus || componentUpdateStatus}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={handleGenerateInspectorCandidate}
+                      disabled={isGeneratingComponentCandidate}
+                      className="rounded-lg border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      {isGeneratingComponentCandidate ? "Generating..." : "Generate"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleApplyGeneratedCandidate}
+                      disabled={!canApplyGeneratedCandidate}
+                      className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                    >
+                      Keep Asset
+                    </button>
+                  </div>
+                </div>
+              </aside>
+            ) : null}
             {editUi.isEnabled && editUi.activePanel === "ai" ? (
               <aside
-                className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 lg:h-full lg:border-b-0 lg:border-r"
+                className="flex flex-col border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 lg:h-full lg:min-h-0 lg:border-b-0 lg:border-r lg:overflow-hidden"
                 style={{ width: clampPanelWidth(editUi.aiPanelWidth, 320, 520) }}
               >
                 <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
@@ -5415,7 +5629,7 @@ ${studioCanvasInstrumentationScript}
                     Close
                   </button>
                 </div>
-                <div className="space-y-4 p-4">
+                <div className="flex-1 space-y-4 overflow-y-auto p-4">
                   <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-300">
                     <p className="font-medium text-zinc-900 dark:text-zinc-100">
                       Selected target
@@ -5528,6 +5742,15 @@ ${studioCanvasInstrumentationScript}
                     Choose how to edit {selectedTargetLabel}
                   </p>
                   <div className="mt-3 flex gap-2">
+                    {canEditSelectedTargetAsAsset ? (
+                      <button
+                        type="button"
+                        onClick={() => openEditPanel("asset")}
+                        className="rounded-lg border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                      >
+                        Asset
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => openEditPanel("code")}

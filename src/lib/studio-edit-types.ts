@@ -5,7 +5,7 @@ export type StudioEditTargetKind =
   | "sprite"
   | "canvas-text"
   | "canvas-shape";
-export type StudioEditPanel = "code" | "ai";
+export type StudioEditPanel = "code" | "ai" | "asset";
 export type StudioGenerationMode = "component" | "asset";
 export type StudioCanvasPaintMode = "fill" | "stroke" | "fill-stroke";
 
@@ -243,7 +243,9 @@ export function normalizeStudioEditUiState(value: unknown): StudioEditUiState | 
     hoveredTarget: normalizeStudioSelectedTarget(value.hoveredTarget),
     selectedTarget: normalizeStudioSelectedTarget(value.selectedTarget),
     activePanel:
-      value.activePanel === "code" || value.activePanel === "ai"
+      value.activePanel === "code" ||
+      value.activePanel === "ai" ||
+      value.activePanel === "asset"
         ? value.activePanel
         : null,
     codePanelWidth:
