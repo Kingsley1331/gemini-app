@@ -7,7 +7,10 @@ import {
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
-import { previewEditResponseFormatInstruction } from "@/lib/preview-edit-response";
+import {
+  componentEditResponseFormatInstruction,
+  previewEditResponseFormatInstruction,
+} from "@/lib/preview-edit-response";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,7 +38,10 @@ interface ChatRequestBody {
   clientMeta?: ChatRequestClientMeta;
 }
 
-type ChatResponseMode = "default" | "preview_edit_compact";
+type ChatResponseMode =
+  | "default"
+  | "preview_edit_compact"
+  | "component_edit_compact";
 
 function getProvider(modelId: string): Provider {
   if (modelId.startsWith("gemini-")) return "gemini";
@@ -258,6 +264,9 @@ When writing mathematical formulas in regular chat (not code), use LaTeX notatio
 function getSystemInstructionForMode(responseMode: ChatResponseMode): string {
   if (responseMode === "preview_edit_compact") {
     return `${defaultSystemInstruction}\n\n${previewEditResponseFormatInstruction}`;
+  }
+  if (responseMode === "component_edit_compact") {
+    return `${defaultSystemInstruction}\n\n${componentEditResponseFormatInstruction}`;
   }
 
   return defaultSystemInstruction;
@@ -683,7 +692,11 @@ export async function POST(req: Request) {
         : "gemini-3.1-pro-preview";
     const provider = getProvider(modelId);
     const effectiveResponseMode: ChatResponseMode =
-      responseMode === "preview_edit_compact" ? "preview_edit_compact" : "default";
+      responseMode === "preview_edit_compact"
+        ? "preview_edit_compact"
+        : responseMode === "component_edit_compact"
+          ? "component_edit_compact"
+          : "default";
     const systemInstructionText =
       typeof customSystemInstruction === "string" && customSystemInstruction
         ? customSystemInstruction

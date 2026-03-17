@@ -1055,6 +1055,7 @@ export default function StudioClient({
           onAssetsChange={setPreviewAssets}
           persistedUiState={codePreviewUiState}
           onPersistedUiStateChange={handleCodePreviewUiStateChange}
+          studioModelId={selectedModel}
         />
       )}
 

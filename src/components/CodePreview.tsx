@@ -30,6 +30,7 @@ import {
   Share2,
   ExternalLink,
   Plus,
+  Pause,
   Sparkles,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -54,11 +55,25 @@ import {
   createPwaPreviewId,
   persistPwaPreviewAssets,
 } from "@/lib/pwa-preview";
-import { getPreviewDiffSemanticsText } from "@/lib/preview-edit-response";
+import {
+  getPreviewDiffSemanticsText,
+  parseComponentEditResponse,
+} from "@/lib/preview-edit-response";
+import { buildSelectedComponentContextRequestMessage } from "@/lib/preview-chat-context";
 import {
   areStudioCodePreviewUiStatesEqual,
   type StudioCodePreviewUiState,
 } from "@/lib/studio-session-store";
+import {
+  DEFAULT_STUDIO_EDIT_UI_STATE,
+  areStudioEditUiStatesEqual,
+  type StudioComponentExtraction,
+  type StudioEditPanel,
+  type StudioEditUiState,
+  type StudioSelectedTarget,
+} from "@/lib/studio-edit-types";
+import { extractEditableComponentBlock } from "@/lib/studio-component-extract";
+import { applyComponentPatchToCode } from "@/lib/studio-component-patch";
 
 interface CodePreviewProps {
   code: string;
@@ -82,6 +97,7 @@ interface CodePreviewProps {
   initialHasGeneratedIcon?: boolean;
   persistedUiState?: StudioCodePreviewUiState | null;
   onPersistedUiStateChange?: (state: StudioCodePreviewUiState) => void;
+  studioModelId?: string;
 }
 
 const EMPTY_PREVIEW_ASSETS: AppAsset[] = [];
@@ -169,6 +185,30 @@ function getRestoredDraftCode(
 ): string {
   if (!persistedUiState) return code;
   return persistedUiState.sourceCode === code ? persistedUiState.draftCode : code;
+}
+
+function clampPanelWidth(width: number, min: number, max: number): number {
+  return Math.min(Math.max(width, min), max);
+}
+
+function truncateEditLabel(value: string | undefined, fallback: string): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed) return fallback;
+  return trimmed.length > 72 ? `${trimmed.slice(0, 69)}...` : trimmed;
+}
+
+function getTargetDisplayLabel(target: StudioSelectedTarget | null): string {
+  if (!target) return "Nothing selected";
+  if (target.kind === "sprite") {
+    return truncateEditLabel(target.label || target.assetKey, "Selected sprite");
+  }
+  return truncateEditLabel(target.label, "Selected element");
+}
+
+function isLikelySpriteAssetPrompt(prompt: string): boolean {
+  return /\b(sprite|texture|image|icon|appearance|look|color|background|transparent|style|art|illustration|redraw|visual)\b/i.test(
+    prompt,
+  );
 }
 
 function sleep(ms: number) {
@@ -356,6 +396,7 @@ export default function CodePreview({
   onPersistedUiStateChange,
   onDebug,
   onSnapshot,
+  studioModelId,
 }: CodePreviewProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -430,6 +471,19 @@ export default function CodePreview({
   const [diffViewMode, setDiffViewMode] = useState<"split" | "combined">(
     persistedUiState?.diffViewMode ?? "combined",
   );
+  const [editUi, setEditUi] = useState<StudioEditUiState>(
+    persistedUiState?.editUi ?? DEFAULT_STUDIO_EDIT_UI_STATE,
+  );
+  const [selectedExtraction, setSelectedExtraction] =
+    useState<StudioComponentExtraction | null>(null);
+  const [selectionMenuOpen, setSelectionMenuOpen] = useState(false);
+  const [componentUpdateStatus, setComponentUpdateStatus] = useState<string | null>(
+    null,
+  );
+  const [isGeneratingComponentCandidate, setIsGeneratingComponentCandidate] =
+    useState(false);
+  const [aiAssetCandidate, setAiAssetCandidate] = useState<AppAsset | null>(null);
+  const [aiAssetStatus, setAiAssetStatus] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const addAssetInputRef = useRef<HTMLInputElement>(null);
   const latestAssetsRef = useRef(assets);
@@ -438,6 +492,7 @@ export default function CodePreview({
     persistedUiState ?? null,
   );
   const isHydratingPersistedUiStateRef = useRef(false);
+  const lastSelectionSignatureRef = useRef("");
   const isCodeEditable = isStudioPage && typeof onCodeKeep === "function";
   const isCodeDirty = isCodeEditable && draftCode !== code;
   const hasComparisonDiff =
@@ -457,8 +512,9 @@ export default function CodePreview({
       draftCode,
       sourceCode: code,
       diffViewMode,
+      editUi,
     }),
-    [activeTab, code, diffViewMode, draftCode, isStudioPage, language],
+    [activeTab, code, diffViewMode, draftCode, editUi, isStudioPage, language],
   );
   const shareInstallsEnabled =
     process.env.NEXT_PUBLIC_ENABLE_SHAREABLE_INSTALLS === "1" ||
@@ -507,6 +563,7 @@ export default function CodePreview({
     );
     const nextDraftCode = getRestoredDraftCode(persistedUiState, code);
     const nextDiffViewMode = persistedUiState.diffViewMode;
+    const nextEditUi = persistedUiState.editUi ?? DEFAULT_STUDIO_EDIT_UI_STATE;
     isHydratingPersistedUiStateRef.current = true;
 
     setActiveTab((current) =>
@@ -517,6 +574,9 @@ export default function CodePreview({
     );
     setDiffViewMode((current) =>
       current === nextDiffViewMode ? current : nextDiffViewMode,
+    );
+    setEditUi((current) =>
+      areStudioEditUiStatesEqual(current, nextEditUi) ? current : nextEditUi,
     );
   }, [
     code,
@@ -554,9 +614,18 @@ export default function CodePreview({
         draftCode,
         sourceCode: code,
         diffViewMode,
+        editUi,
       });
     },
-    [code, diffViewMode, draftCode, isStudioPage, language, publishPersistedUiState],
+    [
+      code,
+      diffViewMode,
+      draftCode,
+      editUi,
+      isStudioPage,
+      language,
+      publishPersistedUiState,
+    ],
   );
 
   useEffect(() => {
@@ -652,6 +721,23 @@ export default function CodePreview({
   const selectedAssetPreviewUrl =
     selectedAsset && selectedAssetIndex >= 0
       ? resolveAssetPreviewUrl(selectedAsset, selectedAssetIndex)
+      : "";
+  const selectedEditAssetEntry = useMemo(
+    () =>
+      editUi.selectedTarget?.assetKey
+        ? visualAssets.find(
+            ({ asset, index }) =>
+              (asset.assetKey || `asset_${index + 1}`) ===
+              editUi.selectedTarget?.assetKey,
+          ) || null
+        : null,
+    [editUi.selectedTarget?.assetKey, visualAssets],
+  );
+  const selectedEditAsset = selectedEditAssetEntry?.asset || null;
+  const selectedEditAssetIndex = selectedEditAssetEntry?.index ?? -1;
+  const selectedEditAssetPreviewUrl =
+    selectedEditAsset && selectedEditAssetIndex >= 0
+      ? resolveAssetPreviewUrl(selectedEditAsset, selectedEditAssetIndex)
       : "";
   const cloneSourceEntry = useMemo(
     () =>
@@ -1396,6 +1482,356 @@ export default function CodePreview({
     setCodeDraftStatus("Showing the current preview code.");
   }, [code, comparisonCode, hasComparisonDiff, onCodeUndo]);
 
+  const updateEditUiState = useCallback(
+    (
+      updater:
+        | StudioEditUiState
+        | ((current: StudioEditUiState) => StudioEditUiState),
+    ) => {
+      setEditUi((current) => {
+        const nextState =
+          typeof updater === "function"
+            ? (updater as (current: StudioEditUiState) => StudioEditUiState)(
+                current,
+              )
+            : updater;
+        return areStudioEditUiStatesEqual(current, nextState) ? current : nextState;
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const selection = editUi.selectedTarget;
+    if (!selection) {
+      setSelectedExtraction(null);
+      lastSelectionSignatureRef.current = "";
+      return;
+    }
+
+    const extraction = extractEditableComponentBlock(code, selection);
+    const selectionSignature = `${selection.id}:${extraction.startOffset}:${extraction.endOffset}:${extraction.snippet}`;
+    const selectionChanged = lastSelectionSignatureRef.current !== selectionSignature;
+    lastSelectionSignatureRef.current = selectionSignature;
+    setSelectedExtraction(extraction);
+    setAiAssetCandidate(null);
+    setAiAssetStatus(null);
+
+    if (selectionChanged) {
+      updateEditUiState((current) => ({
+        ...current,
+        componentDraft: extraction.snippet,
+        generatedComponent: "",
+        generatedSummary: "",
+        generationMode: null,
+      }));
+      setComponentUpdateStatus(extraction.reason);
+    }
+  }, [code, editUi.selectedTarget, updateEditUiState]);
+
+  const postPreviewBridgeControl = useCallback(() => {
+    const frameWindow = iframeRef.current?.contentWindow;
+    if (!frameWindow) return;
+    frameWindow.postMessage(
+      {
+        type: "studio-preview-control",
+        enabled: editUi.isEnabled,
+        paused: editUi.isPaused,
+        selectedTargetId: editUi.selectedTarget?.id ?? null,
+      },
+      "*",
+    );
+  }, [editUi.isEnabled, editUi.isPaused, editUi.selectedTarget?.id]);
+
+  const handleTogglePreviewPaused = useCallback(() => {
+    updateEditUiState((current) => ({
+      ...current,
+      isPaused: !current.isPaused,
+    }));
+  }, [updateEditUiState]);
+
+  const handleToggleEditMode = useCallback(() => {
+    if (activeTab !== "preview") {
+      handleTabChange("preview");
+    }
+
+    setSelectionMenuOpen(false);
+    setComponentUpdateStatus(null);
+    updateEditUiState((current) => {
+      if (current.isEnabled) {
+        return {
+          ...current,
+          isEnabled: false,
+          isPaused: false,
+          hoveredTarget: null,
+          selectedTarget: null,
+          activePanel: null,
+          componentDraft: "",
+          aiPrompt: "",
+          generatedComponent: "",
+          generatedSummary: "",
+          generationMode: null,
+        };
+      }
+      return {
+        ...current,
+        isEnabled: true,
+        isPaused: true,
+        activePanel: null,
+      };
+    });
+  }, [activeTab, handleTabChange, updateEditUiState]);
+
+  const openEditPanel = useCallback(
+    (panel: StudioEditPanel) => {
+      setSelectionMenuOpen(false);
+      updateEditUiState((current) => ({
+        ...current,
+        activePanel: panel,
+        componentDraft:
+          panel === "code" && selectedExtraction
+            ? current.componentDraft || selectedExtraction.snippet
+            : current.componentDraft,
+      }));
+    },
+    [selectedExtraction, updateEditUiState],
+  );
+
+  const handleApplyComponentDraft = useCallback(() => {
+    if (!selectedExtraction || !editUi.componentDraft.trim() || !onCodeKeep) return;
+    const nextCode = applyComponentPatchToCode(
+      code,
+      selectedExtraction,
+      editUi.componentDraft,
+    );
+    onCodeKeep(nextCode);
+    setComponentUpdateStatus(`Updated ${getTargetDisplayLabel(editUi.selectedTarget)}.`);
+  }, [code, editUi.componentDraft, editUi.selectedTarget, onCodeKeep, selectedExtraction]);
+
+  const handleApplyGeneratedCandidate = useCallback(() => {
+    const selectedSpriteAssetKey = editUi.selectedTarget?.assetKey;
+    if (
+      editUi.generationMode === "asset" &&
+      aiAssetCandidate &&
+      selectedSpriteAssetKey
+    ) {
+      const nextAsset: AppAsset = {
+        ...aiAssetCandidate,
+        assetKey: selectedSpriteAssetKey,
+      };
+      updateAssets((current) =>
+        current.map((asset, index) =>
+          (asset.assetKey || `asset_${index + 1}`) === selectedSpriteAssetKey
+            ? {
+                ...asset,
+                ...nextAsset,
+                assetKey: selectedSpriteAssetKey,
+                displayName: nextAsset.displayName || asset.displayName,
+                rolePrompt: nextAsset.rolePrompt || asset.rolePrompt,
+              }
+            : asset,
+        ),
+      );
+      void syncAssetToDraft(nextAsset);
+      setComponentUpdateStatus(`Updated sprite asset ${selectedSpriteAssetKey}.`);
+      return;
+    }
+
+    if (!selectedExtraction || !editUi.generatedComponent.trim() || !onCodeKeep) return;
+    const nextCode = applyComponentPatchToCode(
+      code,
+      selectedExtraction,
+      editUi.generatedComponent,
+    );
+    onCodeKeep(nextCode);
+    setComponentUpdateStatus(
+      `Applied generated changes to ${getTargetDisplayLabel(editUi.selectedTarget)}.`,
+    );
+  }, [
+    aiAssetCandidate,
+    code,
+    editUi.generatedComponent,
+    editUi.generationMode,
+    editUi.selectedTarget,
+    onCodeKeep,
+    selectedExtraction,
+    syncAssetToDraft,
+    updateAssets,
+  ]);
+
+  const handleGenerateInspectorCandidate = useCallback(async () => {
+    if (!editUi.selectedTarget) {
+      setComponentUpdateStatus("Select an element or sprite first.");
+      return;
+    }
+    if (!editUi.aiPrompt.trim()) {
+      setComponentUpdateStatus("Describe the change you want to make first.");
+      return;
+    }
+
+    const shouldUseAssetGeneration =
+      editUi.selectedTarget.kind === "sprite" &&
+      Boolean(selectedEditAsset && selectedEditAssetIndex >= 0) &&
+      Boolean(editUi.selectedTarget.assetKey) &&
+      isLikelySpriteAssetPrompt(editUi.aiPrompt);
+
+    if (
+      shouldUseAssetGeneration &&
+      selectedEditAsset &&
+      selectedEditAssetIndex >= 0
+    ) {
+      setIsGeneratingComponentCandidate(true);
+      setAiAssetStatus("Generating sprite candidate...");
+      setComponentUpdateStatus("Generating sprite candidate...");
+      try {
+        const preparedAsset = await ensureInlineAsset(
+          selectedEditAsset,
+          selectedEditAssetIndex,
+        );
+        const wantsTransparentBackground = requestsTransparentBackground(editUi.aiPrompt);
+        const endpoint = isSvgMimeType(preparedAsset.mimeType)
+          ? "/api/assets/edit-svg"
+          : "/api/assets/edit-image";
+        const body = isSvgMimeType(preparedAsset.mimeType)
+          ? {
+              prompt: editUi.aiPrompt.trim(),
+              rolePrompt: preparedAsset.rolePrompt,
+              displayName: preparedAsset.displayName,
+              svgText: preparedAsset.svgText,
+            }
+          : {
+              prompt: editUi.aiPrompt.trim(),
+              rolePrompt: preparedAsset.rolePrompt,
+              displayName: preparedAsset.displayName,
+              mimeType: preparedAsset.mimeType,
+              outputMimeType: wantsTransparentBackground
+                ? "image/png"
+                : preparedAsset.mimeType,
+              backgroundMode: wantsTransparentBackground ? "transparent" : undefined,
+              data: preparedAsset.data,
+              pro: true,
+            };
+
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.asset) {
+          throw new Error(
+            payload?.details || payload?.error || "Unable to generate sprite candidate.",
+          );
+        }
+
+        setAiAssetCandidate({
+          ...preparedAsset,
+          mimeType: payload.asset.mimeType || preparedAsset.mimeType,
+          data: payload.asset.data,
+          url: payload.asset.url || preparedAsset.url,
+          svgText: payload.asset.svgText ?? preparedAsset.svgText,
+          sourceType: "edited",
+        });
+        setAiAssetStatus("Sprite candidate ready. Click Update Component to keep it.");
+        updateEditUiState((current) => ({
+          ...current,
+          generatedSummary: "Generated a sprite asset candidate from your prompt.",
+          generatedComponent: "",
+          generationMode: "asset",
+        }));
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error ? error.message : "Unable to generate sprite candidate.";
+        setAiAssetStatus(message);
+        setComponentUpdateStatus(message);
+      } finally {
+        setIsGeneratingComponentCandidate(false);
+      }
+      return;
+    }
+
+    if (!selectedExtraction) {
+      setComponentUpdateStatus(
+        "Studio could not map this selection to editable source yet. Try another element or use the full Code tab.",
+      );
+      return;
+    }
+
+    setIsGeneratingComponentCandidate(true);
+    setAiAssetCandidate(null);
+    setAiAssetStatus(null);
+    setComponentUpdateStatus("Generating component update...");
+    try {
+      const requestMessages = [
+        await buildSelectedComponentContextRequestMessage({
+          title: title || "Studio Preview",
+          code,
+          language,
+          assets,
+          target: editUi.selectedTarget,
+          extraction: selectedExtraction,
+        }),
+        {
+          role: "user" as const,
+          content: editUi.aiPrompt.trim(),
+        },
+      ];
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: studioModelId || "gemini-3.1-pro-preview",
+          messages: requestMessages,
+          responseMode: "component_edit_compact",
+        }),
+      });
+      if (!response.ok || !response.body) {
+        throw new Error("Unable to generate a component update.");
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let assistantContent = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        assistantContent += decoder.decode(value, { stream: true });
+      }
+      assistantContent += decoder.decode();
+
+      const parsedResponse = parseComponentEditResponse(assistantContent);
+      if (!parsedResponse) {
+        throw new Error("The model did not return an updated component block.");
+      }
+
+      updateEditUiState((current) => ({
+        ...current,
+        generatedComponent: parsedResponse.componentCodeBlock.code,
+        generatedSummary: parsedResponse.chatSummary,
+        generationMode: "component",
+      }));
+      setComponentUpdateStatus(parsedResponse.chatContent || "Candidate ready.");
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Unable to generate a component update.";
+      setComponentUpdateStatus(message);
+    } finally {
+      setIsGeneratingComponentCandidate(false);
+    }
+  }, [
+    assets,
+    code,
+    editUi.aiPrompt,
+    editUi.selectedTarget,
+    ensureInlineAsset,
+    language,
+    selectedEditAsset,
+    selectedEditAssetIndex,
+    selectedExtraction,
+    studioModelId,
+    title,
+    updateEditUiState,
+  ]);
+
   const handleOpenInStudio = useCallback(() => {
     if (typeof window === "undefined") return;
 
@@ -2084,6 +2520,12 @@ export default function CodePreview({
     }
 
     const iframeWindow = iframe.contentWindow;
+    const nativePreviewRaf =
+      (
+        iframeWindow as Window & {
+          __studioNativeRequestAnimationFrame?: typeof window.requestAnimationFrame;
+        }
+      ).__studioNativeRequestAnimationFrame || iframeWindow.requestAnimationFrame.bind(iframeWindow);
 
     // Wait for web fonts so text metrics are correct.
     if (iframeDoc.fonts?.status !== "loaded") {
@@ -2095,8 +2537,8 @@ export default function CodePreview({
 
     // Let the browser finish one more paint frame.
     await new Promise<void>((resolve) => {
-      iframeWindow.requestAnimationFrame(() => {
-        iframeWindow.requestAnimationFrame(() => resolve());
+      nativePreviewRaf(() => {
+        nativePreviewRaf(() => resolve());
       });
     });
 
@@ -2315,10 +2757,252 @@ export default function CodePreview({
 
     const effectiveLanguage =
       language === "html" && isReactCode ? "tsx" : language;
+    const studioPreviewAssetHints = JSON.stringify(
+      indexedAssets.map((entry) => ({
+        assetKey: entry.key,
+        assetUrl: entry.assetUrl,
+        placeholder: entry.placeholder,
+      })),
+    );
+    const studioEditBootstrap = JSON.stringify({
+      enabled: false,
+      paused: false,
+      selectedTargetId: null,
+    });
+    const studioPreviewPauseBootstrapScript = `
+      <script>
+        (function() {
+          var state = (window.__studioPreviewState = window.__studioPreviewState || {});
+          state.hoveredTarget = state.hoveredTarget || null;
+          state.selectedTarget = state.selectedTarget || null;
+          state.enabled = ${studioEditBootstrap}.enabled;
+          state.paused = ${studioEditBootstrap}.paused;
+          state.selectedTargetId = ${studioEditBootstrap}.selectedTargetId;
+          state.assetHints = ${studioPreviewAssetHints};
+          state.spriteEntries = Array.isArray(state.spriteEntries) ? state.spriteEntries : [];
+          state.lastPointer = state.lastPointer || { x: 0, y: 0 };
+          state.pausedMedia = Array.isArray(state.pausedMedia) ? state.pausedMedia : [];
+          state.pendingRaf = state.pendingRaf || {};
+          state.pendingTimeouts = state.pendingTimeouts || {};
+          state.nextRafId = state.nextRafId || 1;
+          state.nextTimeoutId = state.nextTimeoutId || 1;
+
+          if (!window.__studioPauseApiInstalled) {
+            window.__studioPauseApiInstalled = true;
+            state.nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
+            state.nativeCancelAnimationFrame = window.cancelAnimationFrame.bind(window);
+            state.nativeSetInterval = window.setInterval.bind(window);
+            state.nativeClearInterval = window.clearInterval.bind(window);
+            state.nativeSetTimeout = window.setTimeout.bind(window);
+            state.nativeClearTimeout = window.clearTimeout.bind(window);
+            window.__studioNativeRequestAnimationFrame = state.nativeRequestAnimationFrame;
+
+            function invokeCallback(callback, args) {
+              if (typeof callback === 'function') {
+                return callback.apply(window, args || []);
+              }
+              return window.eval(String(callback));
+            }
+
+            function scheduleRaf(id) {
+              var entry = state.pendingRaf[id];
+              if (!entry || entry.nativeId || state.paused) return;
+              entry.nativeId = state.nativeRequestAnimationFrame(function(timestamp) {
+                var current = state.pendingRaf[id];
+                if (!current) return;
+                current.nativeId = null;
+                if (state.paused) {
+                  current.timestamp = timestamp;
+                  return;
+                }
+                delete state.pendingRaf[id];
+                current.callback(timestamp);
+              });
+            }
+
+            window.requestAnimationFrame = function(callback) {
+              var id = state.nextRafId++;
+              state.pendingRaf[id] = {
+                callback: callback,
+                nativeId: null,
+                timestamp: null
+              };
+              scheduleRaf(id);
+              return id;
+            };
+
+            window.cancelAnimationFrame = function(id) {
+              var entry = state.pendingRaf[id];
+              if (!entry) return;
+              if (entry.nativeId) {
+                state.nativeCancelAnimationFrame(entry.nativeId);
+              }
+              delete state.pendingRaf[id];
+            };
+
+            window.setInterval = function(callback, delay) {
+              var args = Array.prototype.slice.call(arguments, 2);
+              return state.nativeSetInterval(function() {
+                if (state.paused) return;
+                invokeCallback(callback, args);
+              }, delay);
+            };
+
+            window.clearInterval = function(id) {
+              return state.nativeClearInterval(id);
+            };
+
+            window.setTimeout = function(callback, delay) {
+              var args = Array.prototype.slice.call(arguments, 2);
+              var id = state.nextTimeoutId++;
+              function runTimeout() {
+                var entry = state.pendingTimeouts[id];
+                if (!entry) return;
+                entry.nativeId = null;
+                if (state.paused) {
+                  entry.ready = true;
+                  return;
+                }
+                delete state.pendingTimeouts[id];
+                invokeCallback(entry.callback, entry.args);
+              }
+              state.pendingTimeouts[id] = {
+                callback: callback,
+                args: args,
+                ready: false,
+                nativeId: state.nativeSetTimeout(runTimeout, delay)
+              };
+              return id;
+            };
+
+            window.clearTimeout = function(id) {
+              var entry = state.pendingTimeouts[id];
+              if (!entry) return;
+              if (entry.nativeId) {
+                state.nativeClearTimeout(entry.nativeId);
+              }
+              delete state.pendingTimeouts[id];
+            };
+
+            if (window.Element && Element.prototype.animate && !Element.prototype.__studioPauseWrapped) {
+              var nativeAnimate = Element.prototype.animate;
+              Element.prototype.__studioPauseWrapped = true;
+              Element.prototype.animate = function() {
+                var animation = nativeAnimate.apply(this, arguments);
+                if (state.paused && animation && typeof animation.pause === 'function') {
+                  animation.pause();
+                }
+                return animation;
+              };
+            }
+
+            if (window.HTMLMediaElement && HTMLMediaElement.prototype.play && !HTMLMediaElement.prototype.__studioPauseWrapped) {
+              var nativePlay = HTMLMediaElement.prototype.play;
+              HTMLMediaElement.prototype.__studioPauseWrapped = true;
+              HTMLMediaElement.prototype.play = function() {
+                if (state.paused) {
+                  return Promise.resolve();
+                }
+                return nativePlay.apply(this, arguments);
+              };
+            }
+
+            window.__studioApplyPauseState = function(paused) {
+              state.paused = paused === true;
+              if (document && document.documentElement) {
+                document.documentElement.setAttribute(
+                  'data-studio-preview-paused',
+                  state.paused ? 'true' : 'false'
+                );
+              }
+
+              if (state.paused) {
+                state.pausedMedia = Array.from(document.querySelectorAll('audio, video')).filter(function(media) {
+                  if (!media || media.paused) return false;
+                  try {
+                    media.pause();
+                    return true;
+                  } catch (_error) {
+                    return false;
+                  }
+                });
+              } else {
+                Object.keys(state.pendingRaf).forEach(function(id) {
+                  scheduleRaf(Number(id));
+                });
+                Object.keys(state.pendingTimeouts).forEach(function(id) {
+                  var entry = state.pendingTimeouts[id];
+                  if (!entry || !entry.ready || entry.nativeId) return;
+                  entry.ready = false;
+                  entry.nativeId = state.nativeSetTimeout(function() {
+                    var current = state.pendingTimeouts[id];
+                    if (!current) return;
+                    current.nativeId = null;
+                    if (state.paused) {
+                      current.ready = true;
+                      return;
+                    }
+                    delete state.pendingTimeouts[id];
+                    invokeCallback(current.callback, current.args);
+                  }, 0);
+                });
+                state.pausedMedia.forEach(function(media) {
+                  if (!media || typeof media.play !== 'function') return;
+                  media.play().catch(function() {});
+                });
+                state.pausedMedia = [];
+              }
+
+              if (document && document.getAnimations) {
+                document.getAnimations().forEach(function(animation) {
+                  try {
+                    if (state.paused) {
+                      animation.pause();
+                    } else {
+                      animation.play();
+                    }
+                  } catch (_error) {
+                    // Ignore animations that cannot be controlled.
+                  }
+                });
+              }
+            };
+          }
+
+          window.__studioApplyPauseState(state.paused);
+        })();
+      <\/script>
+    `;
+    const studioPreviewPauseStyle = `
+      <style id="__studio_preview_pause_style">
+        :root[data-studio-preview-paused="true"] *,
+        :root[data-studio-preview-paused="true"] *::before,
+        :root[data-studio-preview-paused="true"] *::after {
+          animation-play-state: paused !important;
+          transition-duration: 0s !important;
+          transition-delay: 0s !important;
+          caret-color: transparent !important;
+        }
+      </style>
+    `;
+    const injectStudioBootstrapIntoHtml = (rawHtml: string): string => {
+      const html = rawHtml.trim();
+      const bootstrap = `${studioPreviewPauseStyle}${studioPreviewPauseBootstrapScript}`;
+      if (!/<html[\s>]/i.test(html)) {
+        return `<!DOCTYPE html><html><head><meta charset="UTF-8" />${bootstrap}</head><body>${html}</body></html>`;
+      }
+      if (/<\/head>/i.test(html)) {
+        return html.replace(/<\/head>/i, `${bootstrap}</head>`);
+      }
+      if (/<body[^>]*>/i.test(html)) {
+        return html.replace(/<body([^>]*)>/i, `<body$1>${bootstrap}`);
+      }
+      return `${bootstrap}${html}`;
+    };
 
     let content = "";
     if (effectiveLanguage === "html") {
-      content = codeWithResolvedFallbacks;
+      content = injectStudioBootstrapIntoHtml(codeWithResolvedFallbacks);
     } else if (
       effectiveLanguage === "jsx" ||
       effectiveLanguage === "tsx" ||
@@ -2435,6 +3119,8 @@ export default function CodePreview({
             <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><\/script>
             <script src="https://unpkg.com/lucide@latest"><\/script>
             <script src="https://cdn.tailwindcss.com"><\/script>
+            ${studioPreviewPauseStyle}
+            ${studioPreviewPauseBootstrapScript}
             <script>
               // Register a custom TSX preset so Babel can parse TypeScript generics + JSX together
               Babel.registerPreset('tsx', {
@@ -2471,6 +3157,340 @@ export default function CodePreview({
                 Children, createRef, isValidElement
               } = React;
 
+              const __studioPreviewState = window.__studioPreviewState || (window.__studioPreviewState = {});
+              __studioPreviewState.hoveredTarget = __studioPreviewState.hoveredTarget || null;
+              __studioPreviewState.selectedTarget = __studioPreviewState.selectedTarget || null;
+              __studioPreviewState.enabled = ${studioEditBootstrap}.enabled;
+              __studioPreviewState.paused = ${studioEditBootstrap}.paused;
+              __studioPreviewState.selectedTargetId = ${studioEditBootstrap}.selectedTargetId;
+              __studioPreviewState.assetHints = ${studioPreviewAssetHints};
+              __studioPreviewState.spriteEntries = Array.isArray(__studioPreviewState.spriteEntries)
+                ? __studioPreviewState.spriteEntries
+                : [];
+              __studioPreviewState.lastPointer = __studioPreviewState.lastPointer || { x: 0, y: 0 };
+
+              function __studioNormalizeRect(rect) {
+                if (!rect) return null;
+                return {
+                  left: Number(rect.left || 0),
+                  top: Number(rect.top || 0),
+                  width: Math.max(0, Number(rect.width || 0)),
+                  height: Math.max(0, Number(rect.height || 0))
+                };
+              }
+
+              function __studioTruncate(value, fallback) {
+                var text = (value || '').trim();
+                if (!text) return fallback;
+                return text.length > 80 ? text.slice(0, 77) + '...' : text;
+              }
+
+              function __studioResolveAssetHint(rawUrl) {
+                if (!rawUrl) return null;
+                var normalized = String(rawUrl).replace(location.origin, '');
+                return (
+                  __studioPreviewState.assetHints.find(function(entry) {
+                    return entry.assetUrl === rawUrl || entry.assetUrl === normalized;
+                  }) || null
+                );
+              }
+
+              function __studioGetElementPath(element) {
+                if (!element || !element.tagName) return '';
+                var parts = [];
+                var current = element;
+                while (current && current !== document.body && current !== document.documentElement) {
+                  var tagName = current.tagName.toLowerCase();
+                  var selector = tagName;
+                  if (current.id) {
+                    selector += '#' + current.id;
+                    parts.unshift(selector);
+                    break;
+                  }
+                  if (current.classList && current.classList.length > 0) {
+                    selector += '.' + Array.from(current.classList).slice(0, 2).join('.');
+                  }
+                  parts.unshift(selector);
+                  current = current.parentElement;
+                }
+                return parts.join(' > ');
+              }
+
+              function __studioGetSourceHints(element) {
+                if (!element) return [];
+                var hints = [];
+                if (element.tagName) hints.push(element.tagName.toLowerCase());
+                if (element.id) hints.push(element.id);
+                if (element.className && typeof element.className === 'string') {
+                  element.className
+                    .split(/\\s+/)
+                    .filter(Boolean)
+                    .slice(0, 4)
+                    .forEach(function(value) {
+                      hints.push(value);
+                    });
+                }
+                if (element.getAttribute) {
+                  var role = element.getAttribute('role');
+                  var aria = element.getAttribute('aria-label');
+                  var alt = element.getAttribute('alt');
+                  if (role) hints.push(role);
+                  if (aria) hints.push(aria);
+                  if (alt) hints.push(alt);
+                }
+                return Array.from(new Set(hints.filter(Boolean)));
+              }
+
+              function __studioCreateTargetId(prefix) {
+                return prefix + ':' + Math.random().toString(36).slice(2, 10);
+              }
+
+              function __studioMakeDomTarget(element) {
+                if (!element || !element.getBoundingClientRect) return null;
+                var rect = __studioNormalizeRect(element.getBoundingClientRect());
+                if (!rect || rect.width < 2 || rect.height < 2) return null;
+                var textPreview = __studioTruncate(
+                  element.innerText || element.textContent || element.getAttribute && element.getAttribute('aria-label') || element.getAttribute && element.getAttribute('alt') || '',
+                  ''
+                );
+                var labelParts = [];
+                if (element.tagName) labelParts.push('<' + element.tagName.toLowerCase() + '>');
+                if (textPreview) labelParts.push(textPreview);
+                var hintedImage = element.tagName === 'IMG'
+                  ? __studioResolveAssetHint(element.currentSrc || element.src || '')
+                  : null;
+                return {
+                  id: element.dataset.studioNodeId || (element.dataset.studioNodeId = __studioCreateTargetId('dom')),
+                  kind: hintedImage ? 'sprite' : 'dom',
+                  label: __studioTruncate(labelParts.join(' '), hintedImage ? 'Sprite image' : 'Element'),
+                  tagName: element.tagName ? element.tagName.toLowerCase() : undefined,
+                  elementId: element.id || undefined,
+                  className: typeof element.className === 'string' ? element.className : undefined,
+                  textPreview: textPreview || undefined,
+                  domPath: __studioGetElementPath(element),
+                  assetKey: hintedImage ? hintedImage.assetKey : undefined,
+                  assetUrl: hintedImage ? hintedImage.assetUrl : (element.currentSrc || element.src || undefined),
+                  bounds: rect,
+                  collisionBounds: hintedImage ? rect : null,
+                  sourceHints: __studioGetSourceHints(element)
+                };
+              }
+
+              function __studioMakeSpriteTarget(entry) {
+                if (!entry || !entry.bounds) return null;
+                return {
+                  id: entry.id,
+                  kind: 'sprite',
+                  label: __studioTruncate(entry.label || entry.assetKey || 'Sprite', 'Sprite'),
+                  tagName: 'canvas',
+                  assetKey: entry.assetKey || undefined,
+                  assetUrl: entry.assetUrl || undefined,
+                  bounds: entry.bounds,
+                  collisionBounds: entry.collisionBounds || entry.bounds,
+                  sourceHints: Array.isArray(entry.sourceHints) ? entry.sourceHints : []
+                };
+              }
+
+              function __studioEnsureOverlayRoot() {
+                var root = document.getElementById('__studio_overlay_root');
+                if (root) return root;
+                root = document.createElement('div');
+                root.id = '__studio_overlay_root';
+                root.style.position = 'fixed';
+                root.style.inset = '0';
+                root.style.pointerEvents = 'none';
+                root.style.zIndex = '2147483647';
+                document.body.appendChild(root);
+                return root;
+              }
+
+              function __studioUpsertOverlay(id, rect, borderStyle, borderColor, backgroundColor) {
+                var root = __studioEnsureOverlayRoot();
+                var node = document.getElementById(id);
+                if (!rect) {
+                  if (node) node.remove();
+                  return;
+                }
+                if (!node) {
+                  node = document.createElement('div');
+                  node.id = id;
+                  root.appendChild(node);
+                }
+                node.style.position = 'fixed';
+                node.style.left = rect.left + 'px';
+                node.style.top = rect.top + 'px';
+                node.style.width = rect.width + 'px';
+                node.style.height = rect.height + 'px';
+                node.style.border = borderStyle + ' ' + borderColor;
+                node.style.background = backgroundColor;
+                node.style.boxSizing = 'border-box';
+              }
+
+              function __studioRenderOverlays() {
+                var hoveredRect =
+                  __studioPreviewState.enabled &&
+                  __studioPreviewState.hoveredTarget &&
+                  (!__studioPreviewState.selectedTarget ||
+                    __studioPreviewState.hoveredTarget.id !== __studioPreviewState.selectedTarget.id)
+                    ? __studioPreviewState.hoveredTarget.bounds
+                    : null;
+                var selectedRect =
+                  __studioPreviewState.enabled && __studioPreviewState.selectedTarget
+                    ? __studioPreviewState.selectedTarget.bounds
+                    : null;
+                var collisionRect =
+                  __studioPreviewState.enabled && __studioPreviewState.selectedTarget
+                    ? __studioPreviewState.selectedTarget.collisionBounds || null
+                    : null;
+                __studioUpsertOverlay(
+                  '__studio_overlay_hover',
+                  hoveredRect,
+                  '3px dashed',
+                  '#71717a',
+                  'rgba(113, 113, 122, 0.04)'
+                );
+                __studioUpsertOverlay(
+                  '__studio_overlay_selected',
+                  selectedRect,
+                  '3px solid',
+                  '#71717a',
+                  'rgba(113, 113, 122, 0.05)'
+                );
+                __studioUpsertOverlay(
+                  '__studio_overlay_collision',
+                  collisionRect,
+                  '2px dashed',
+                  '#60a5fa',
+                  'rgba(96, 165, 250, 0.06)'
+                );
+              }
+
+              function __studioPostPreviewEvent(type, target) {
+                window.parent.postMessage({ type: type, target: target }, '*');
+              }
+
+              function __studioSetHoveredTarget(target) {
+                var left = __studioPreviewState.hoveredTarget;
+                if (
+                  left &&
+                  target &&
+                  left.id === target.id &&
+                  left.bounds.left === target.bounds.left &&
+                  left.bounds.top === target.bounds.top &&
+                  left.bounds.width === target.bounds.width &&
+                  left.bounds.height === target.bounds.height
+                ) {
+                  return;
+                }
+                __studioPreviewState.hoveredTarget = target;
+                __studioRenderOverlays();
+                __studioPostPreviewEvent('studio-edit-hover', target);
+              }
+
+              function __studioSetSelectedTarget(target, openOptions) {
+                __studioPreviewState.selectedTarget = target;
+                __studioPreviewState.selectedTargetId = target ? target.id : null;
+                __studioRenderOverlays();
+                __studioPostPreviewEvent('studio-edit-select', target);
+                if (target && openOptions) {
+                  __studioPostPreviewEvent('studio-edit-open-options', target);
+                }
+              }
+
+              function __studioGetSpriteTargetAtPoint(clientX, clientY, canvas) {
+                var now = Date.now();
+                var candidates = __studioPreviewState.spriteEntries
+                  .filter(function(entry) {
+                    return (
+                      entry.canvas === canvas &&
+                      (__studioPreviewState.paused || now - entry.timestamp < 1500) &&
+                      clientX >= entry.bounds.left &&
+                      clientX <= entry.bounds.left + entry.bounds.width &&
+                      clientY >= entry.bounds.top &&
+                      clientY <= entry.bounds.top + entry.bounds.height
+                    );
+                  })
+                  .sort(function(a, b) {
+                    return b.timestamp - a.timestamp;
+                  });
+                return candidates.length > 0 ? __studioMakeSpriteTarget(candidates[0]) : null;
+              }
+
+              function __studioResolveTargetFromEvent(event) {
+                var elements = document.elementsFromPoint(event.clientX, event.clientY);
+                for (var i = 0; i < elements.length; i += 1) {
+                  var element = elements[i];
+                  if (!element || element.id === '__studio_overlay_root') continue;
+                  if (element.closest && element.closest('#__studio_overlay_root')) continue;
+                  if (element.tagName === 'CANVAS') {
+                    var spriteTarget = __studioGetSpriteTargetAtPoint(
+                      event.clientX,
+                      event.clientY,
+                      element
+                    );
+                    if (spriteTarget) return spriteTarget;
+                  }
+                  if (element === document.body || element === document.documentElement) {
+                    continue;
+                  }
+                  return __studioMakeDomTarget(element);
+                }
+                return null;
+              }
+
+              function __studioHandleMouseMove(event) {
+                __studioPreviewState.lastPointer = { x: event.clientX, y: event.clientY };
+                if (!__studioPreviewState.enabled) return;
+                __studioSetHoveredTarget(__studioResolveTargetFromEvent(event));
+              }
+
+              function __studioHandlePointerLeave() {
+                if (!__studioPreviewState.enabled) return;
+                __studioSetHoveredTarget(null);
+              }
+
+              function __studioHandleClick(event) {
+                if (!__studioPreviewState.enabled) return;
+                var target = __studioResolveTargetFromEvent(event);
+                if (!target) return;
+                event.preventDefault();
+                event.stopPropagation();
+                __studioSetSelectedTarget(target, false);
+              }
+
+              function __studioHandleDoubleClick(event) {
+                if (!__studioPreviewState.enabled) return;
+                var target = __studioResolveTargetFromEvent(event);
+                if (!target) return;
+                event.preventDefault();
+                event.stopPropagation();
+                __studioSetSelectedTarget(target, true);
+              }
+
+              window.addEventListener('message', function(event) {
+                if (event.data && event.data.type === 'studio-preview-control') {
+                  __studioPreviewState.enabled = event.data.enabled === true;
+                  __studioPreviewState.paused = event.data.paused === true;
+                  __studioPreviewState.selectedTargetId =
+                    typeof event.data.selectedTargetId === 'string'
+                      ? event.data.selectedTargetId
+                      : null;
+                  if (typeof window.__studioApplyPauseState === 'function') {
+                    window.__studioApplyPauseState(__studioPreviewState.paused);
+                  }
+                  if (!__studioPreviewState.enabled) {
+                    __studioPreviewState.hoveredTarget = null;
+                    __studioPreviewState.selectedTarget = null;
+                  }
+                  __studioRenderOverlays();
+                }
+              });
+
+              document.addEventListener('mousemove', __studioHandleMouseMove, true);
+              document.addEventListener('mouseleave', __studioHandlePointerLeave, true);
+              document.addEventListener('click', __studioHandleClick, true);
+              document.addEventListener('dblclick', __studioHandleDoubleClick, true);
+
               // Guard canvas draws against not-yet-ready/broken images so preview code
               // does not crash when assets are still loading.
               const __nativeDrawImage = CanvasRenderingContext2D.prototype.drawImage;
@@ -2478,6 +3498,63 @@ export default function CodePreview({
                 if (image instanceof HTMLImageElement) {
                   const imageBroken = !image.complete || image.naturalWidth === 0 || image.naturalHeight === 0;
                   if (imageBroken) return;
+                }
+                try {
+                  const canvasRect = this.canvas && this.canvas.getBoundingClientRect
+                    ? this.canvas.getBoundingClientRect()
+                    : null;
+                  if (canvasRect) {
+                    let dx = 0;
+                    let dy = 0;
+                    let dw = image && image.width ? image.width : 0;
+                    let dh = image && image.height ? image.height : 0;
+                    if (args.length === 2) {
+                      dx = Number(args[0] || 0);
+                      dy = Number(args[1] || 0);
+                    } else if (args.length === 4) {
+                      dx = Number(args[0] || 0);
+                      dy = Number(args[1] || 0);
+                      dw = Number(args[2] || 0);
+                      dh = Number(args[3] || 0);
+                    } else if (args.length >= 8) {
+                      dx = Number(args[4] || 0);
+                      dy = Number(args[5] || 0);
+                      dw = Number(args[6] || 0);
+                      dh = Number(args[7] || 0);
+                    }
+                    if (dw > 0 && dh > 0) {
+                      const assetHint =
+                        image instanceof HTMLImageElement
+                          ? __studioResolveAssetHint(image.currentSrc || image.src || '')
+                          : null;
+                      __studioPreviewState.spriteEntries.push({
+                        id: __studioCreateTargetId('sprite'),
+                        canvas: this.canvas,
+                        assetKey: assetHint ? assetHint.assetKey : undefined,
+                        assetUrl: assetHint ? assetHint.assetUrl : image && image.src ? image.src : undefined,
+                        label: assetHint ? assetHint.assetKey : 'Canvas sprite',
+                        sourceHints: assetHint ? [assetHint.assetKey, 'canvas', 'sprite'] : ['canvas', 'sprite'],
+                        bounds: {
+                          left: canvasRect.left + dx,
+                          top: canvasRect.top + dy,
+                          width: dw,
+                          height: dh,
+                        },
+                        collisionBounds: {
+                          left: canvasRect.left + dx,
+                          top: canvasRect.top + dy,
+                          width: dw,
+                          height: dh,
+                        },
+                        timestamp: Date.now(),
+                      });
+                      if (__studioPreviewState.spriteEntries.length > 300) {
+                        __studioPreviewState.spriteEntries = __studioPreviewState.spriteEntries.slice(-200);
+                      }
+                    }
+                  }
+                } catch (error) {
+                  console.warn('Studio sprite instrumentation failed:', error);
                 }
                 return __nativeDrawImage.call(this, image, ...args);
               };
@@ -2638,12 +3715,63 @@ export default function CodePreview({
             ? event.data.message
             : String(event.data.message);
         setError(normalizePreviewError(rawMessage));
+        return;
+      }
+
+      if (event.data?.type === "studio-edit-hover") {
+        const target = event.data.target as StudioSelectedTarget | null;
+        updateEditUiState((current) => ({
+          ...current,
+          hoveredTarget:
+            current.isEnabled && target
+              ? target
+              : current.isEnabled
+                ? null
+                : current.hoveredTarget,
+        }));
+        return;
+      }
+
+      if (event.data?.type === "studio-edit-select") {
+        const target = event.data.target as StudioSelectedTarget | null;
+        setSelectionMenuOpen(false);
+        updateEditUiState((current) => ({
+          ...current,
+          selectedTarget: target,
+          hoveredTarget: target ?? current.hoveredTarget,
+          activePanel: target ? current.activePanel : null,
+        }));
+        return;
+      }
+
+      if (event.data?.type === "studio-edit-open-options") {
+        const target = event.data.target as StudioSelectedTarget | null;
+        updateEditUiState((current) => ({
+          ...current,
+          selectedTarget: target,
+          hoveredTarget: target ?? current.hoveredTarget,
+        }));
+        setSelectionMenuOpen(Boolean(target));
       }
     };
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, []);
+  }, [updateEditUiState]);
+
+  useEffect(() => {
+    if (activeTab !== "preview") return;
+    const timer = window.setTimeout(() => {
+      postPreviewBridgeControl();
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeTab,
+    editUi.isEnabled,
+    editUi.isPaused,
+    editUi.selectedTarget?.id,
+    postPreviewBridgeControl,
+  ]);
 
   // Use a separate effect for the initial load and tab switches
   // but don't clear the error here
@@ -2657,6 +3785,15 @@ export default function CodePreview({
 
     return () => clearTimeout(timer);
   }, [code, activeTab, updateIframe]);
+
+  const selectedTargetLabel = getTargetDisplayLabel(editUi.selectedTarget);
+  const canApplyComponentDraft = Boolean(
+    selectedExtraction && editUi.componentDraft.trim() && onCodeKeep,
+  );
+  const canApplyGeneratedCandidate =
+    (editUi.generationMode === "component" &&
+      Boolean(selectedExtraction && editUi.generatedComponent.trim() && onCodeKeep)) ||
+    (editUi.generationMode === "asset" && Boolean(aiAssetCandidate && selectedAssetKey));
 
   return (
     <div
@@ -2729,6 +3866,40 @@ export default function CodePreview({
               title="Open in Studio"
             >
               <ExternalLink className="w-4 h-4" />
+            </button>
+          ) : null}
+          {isStudioPage ? (
+            <button
+              type="button"
+              onClick={handleToggleEditMode}
+              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+                editUi.isEnabled
+                  ? "bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                  : "border border-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              }`}
+              title={editUi.isEnabled ? "Exit edit mode" : "Enter edit mode"}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              {editUi.isEnabled ? "Editing App" : "Edit App"}
+            </button>
+          ) : null}
+          {isStudioPage ? (
+            <button
+              type="button"
+              onClick={handleTogglePreviewPaused}
+              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+                editUi.isPaused
+                  ? "bg-emerald-600 text-white hover:bg-emerald-500"
+                  : "border border-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              }`}
+              title={editUi.isPaused ? "Resume preview" : "Pause preview"}
+            >
+              {editUi.isPaused ? (
+                <Play className="h-3.5 w-3.5" />
+              ) : (
+                <Pause className="h-3.5 w-3.5" />
+              )}
+              {editUi.isPaused ? "Play" : "Pause"}
             </button>
           ) : null}
           <button
@@ -2828,15 +3999,254 @@ export default function CodePreview({
           ) : null}
         </div>
       ) : null}
+      {isStudioPage && editUi.isEnabled ? (
+        <div className="border-b border-zinc-200 bg-zinc-50/90 px-4 py-2 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/70 dark:text-zinc-300">
+          <span className="font-medium text-zinc-800 dark:text-zinc-100">
+            Edit Mode:
+          </span>{" "}
+          Hover elements or sprites to inspect them. Click to select. Double-click the
+          selected target to choose `Code` or `AI`.
+          {editUi.selectedTarget ? (
+            <span className="ml-2 font-medium text-zinc-800 dark:text-zinc-100">
+              Selected: {selectedTargetLabel}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="relative flex-1 min-h-[320px] bg-zinc-50 dark:bg-zinc-900/20 sm:min-h-[500px]">
         {activeTab === "preview" ? (
-          <iframe
-            ref={iframeRef}
-            className="h-full min-h-[320px] w-full border-none bg-white sm:min-h-[500px]"
-            sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
-            title="Code Preview"
-          />
+          <div className="flex h-full min-h-[320px] flex-col sm:min-h-[500px] lg:h-[600px] lg:min-h-0 lg:flex-row">
+            {editUi.isEnabled && editUi.activePanel === "ai" ? (
+              <aside
+                className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 lg:h-full lg:border-b-0 lg:border-r"
+                style={{ width: clampPanelWidth(editUi.aiPanelWidth, 320, 520) }}
+              >
+                <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+                  <div>
+                    <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                      AI Edit
+                    </h3>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {selectedTargetLabel}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateEditUiState((current) => ({ ...current, activePanel: null }))
+                    }
+                    className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="space-y-4 p-4">
+                  <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-300">
+                    <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                      Selected target
+                    </p>
+                    <p className="mt-1">{selectedTargetLabel}</p>
+                    {selectedExtraction ? (
+                      <p className="mt-2">
+                        Editing lines {selectedExtraction.lineStart}-{selectedExtraction.lineEnd}.
+                      </p>
+                    ) : null}
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Prompt
+                    </label>
+                    <textarea
+                      value={editUi.aiPrompt}
+                      onChange={(event) =>
+                        updateEditUiState((current) => ({
+                          ...current,
+                          aiPrompt: event.target.value,
+                        }))
+                      }
+                      className="mt-2 min-h-[180px] w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      placeholder="Describe how you want to change the selected element or sprite."
+                    />
+                  </div>
+                  {editUi.selectedTarget?.kind === "sprite" && aiAssetCandidate?.url ? (
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+                      <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/50">
+                        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                          Current Sprite
+                        </p>
+                        <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-lg bg-white dark:bg-zinc-950">
+                          {selectedEditAssetPreviewUrl ? (
+                            <Image
+                              src={selectedEditAssetPreviewUrl}
+                              alt={selectedEditAsset?.displayName || "Current sprite"}
+                              fill
+                              unoptimized
+                              className="object-contain"
+                            />
+                          ) : (
+                            <ImageIcon className="h-8 w-8 text-zinc-400" />
+                          )}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/50">
+                        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                          Candidate
+                        </p>
+                        <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-lg bg-white dark:bg-zinc-950">
+                          <Image
+                            src={aiAssetCandidate.url}
+                            alt={aiAssetCandidate.displayName || "Generated sprite candidate"}
+                            fill
+                            unoptimized
+                            className="object-contain"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {editUi.generationMode === "component" && editUi.generatedComponent ? (
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/50">
+                      <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Generated Component
+                      </p>
+                      <div className="mt-2 max-h-[240px] overflow-auto rounded-lg bg-[#1e1e1e]">
+                        <SyntaxHighlighter
+                          language={language}
+                          style={vscDarkPlus}
+                          customStyle={{ margin: 0, padding: "1rem", fontSize: "0.75rem" }}
+                        >
+                          {editUi.generatedComponent}
+                        </SyntaxHighlighter>
+                      </div>
+                    </div>
+                  ) : null}
+                  {componentUpdateStatus || aiAssetStatus ? (
+                    <p className="text-xs text-zinc-600 dark:text-zinc-300">
+                      {aiAssetStatus || componentUpdateStatus}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={handleGenerateInspectorCandidate}
+                      disabled={isGeneratingComponentCandidate}
+                      className="rounded-lg border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      {isGeneratingComponentCandidate ? "Generating..." : "Generate"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleApplyGeneratedCandidate}
+                      disabled={!canApplyGeneratedCandidate}
+                      className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                    >
+                      Update Component
+                    </button>
+                  </div>
+                </div>
+              </aside>
+            ) : null}
+            <div className="relative min-h-[320px] flex-1 sm:min-h-[500px] lg:min-h-0">
+              {selectionMenuOpen && editUi.selectedTarget ? (
+                <div className="absolute left-4 top-4 z-20 rounded-xl border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-950">
+                  <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Choose how to edit {selectedTargetLabel}
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openEditPanel("code")}
+                      className="rounded-lg border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      Code
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditPanel("ai")}
+                      className="rounded-lg bg-zinc-900 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                    >
+                      AI
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              <iframe
+                ref={iframeRef}
+                className="h-full w-full border-none bg-white"
+                sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin"
+                title="Code Preview"
+                onLoad={postPreviewBridgeControl}
+              />
+            </div>
+            {editUi.isEnabled && editUi.activePanel === "code" ? (
+              <aside
+                className="flex flex-col border-t border-zinc-200 bg-[#1e1e1e] dark:border-zinc-800 lg:h-full lg:border-l lg:border-t-0"
+                style={{ width: clampPanelWidth(editUi.codePanelWidth, 340, 620) }}
+              >
+                <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950 px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-zinc-100">Component Code</h3>
+                    <p className="text-xs text-zinc-400">
+                      {selectedTargetLabel}
+                      {selectedExtraction
+                        ? ` · lines ${selectedExtraction.lineStart}-${selectedExtraction.lineEnd}`
+                        : ""}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateEditUiState((current) => ({ ...current, activePanel: null }))
+                    }
+                    className="text-xs text-zinc-400 hover:text-zinc-100"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="h-[420px] min-h-[320px] overflow-hidden lg:min-h-0 lg:flex-1">
+                  <MonacoEditor
+                    height="100%"
+                    language={monacoLanguage}
+                    path={`${monacoPath}.component`}
+                    value={editUi.componentDraft}
+                    onChange={(value) =>
+                      updateEditUiState((current) => ({
+                        ...current,
+                        componentDraft: value ?? "",
+                      }))
+                    }
+                    theme="vs-dark"
+                    options={{
+                      automaticLayout: true,
+                      minimap: { enabled: false },
+                      fontSize: 13,
+                      lineNumbersMinChars: 3,
+                      padding: { top: 16, bottom: 16 },
+                      scrollBeyondLastLine: false,
+                      tabSize: 2,
+                      wordWrap: "on",
+                    }}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800 bg-zinc-950 px-4 py-3">
+                  <p className="text-xs text-zinc-400">
+                    {componentUpdateStatus ||
+                      selectedExtraction?.reason ||
+                      "Edit the selected component block, then update the preview."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleApplyComponentDraft}
+                    disabled={!canApplyComponentDraft}
+                    className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-400 disabled:opacity-50"
+                  >
+                    Update Component
+                  </button>
+                </div>
+              </aside>
+            ) : null}
+          </div>
         ) : activeTab === "code" || !isStudioPage ? (
           isCodeEditable && activeTab === "code" ? (
             <div className="flex h-full min-h-[320px] flex-col bg-[#1e1e1e] sm:min-h-[500px]">

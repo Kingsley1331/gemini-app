@@ -1,6 +1,12 @@
 "use client";
 
 import type { AppAsset } from "@/lib/app-assets";
+import {
+  areStudioEditUiStatesEqual,
+  DEFAULT_STUDIO_EDIT_UI_STATE,
+  normalizeStudioEditUiState,
+  type StudioEditUiState,
+} from "@/lib/studio-edit-types";
 
 const STUDIO_SESSION_STORAGE_PREFIX = "studio-session:";
 const STUDIO_SESSION_VERSION = 1;
@@ -30,6 +36,7 @@ export type StudioCodePreviewUiState = {
   draftCode: string;
   sourceCode: string;
   diffViewMode: "split" | "combined";
+  editUi: StudioEditUiState;
 };
 
 export type StudioSessionBaseline = {
@@ -66,7 +73,8 @@ export function areStudioCodePreviewUiStatesEqual(
     left.activeTab === right.activeTab &&
     left.draftCode === right.draftCode &&
     left.sourceCode === right.sourceCode &&
-    left.diffViewMode === right.diffViewMode
+    left.diffViewMode === right.diffViewMode &&
+    areStudioEditUiStatesEqual(left.editUi, right.editUi)
   );
 }
 
@@ -226,6 +234,7 @@ function normalizeCodePreviewUi(value: unknown): StudioCodePreviewUiState | null
     draftCode,
     sourceCode,
     diffViewMode,
+    editUi: normalizeStudioEditUiState(value.editUi) ?? DEFAULT_STUDIO_EDIT_UI_STATE,
   };
 }
 
