@@ -1,8 +1,13 @@
 "use client";
 
-export type StudioEditTargetKind = "dom" | "sprite";
+export type StudioEditTargetKind =
+  | "dom"
+  | "sprite"
+  | "canvas-text"
+  | "canvas-shape";
 export type StudioEditPanel = "code" | "ai";
 export type StudioGenerationMode = "component" | "asset";
+export type StudioCanvasPaintMode = "fill" | "stroke" | "fill-stroke";
 
 export type StudioRect = {
   left: number;
@@ -22,6 +27,9 @@ export type StudioSelectedTarget = {
   domPath?: string;
   assetKey?: string;
   assetUrl?: string;
+  canvasOperation?: string;
+  canvasPaintMode?: StudioCanvasPaintMode;
+  styleHints?: string[];
   bounds: StudioRect;
   collisionBounds?: StudioRect | null;
   sourceHints: string[];
@@ -34,6 +42,8 @@ export type StudioComponentMatchKind =
   | "id"
   | "class"
   | "tag"
+  | "canvas-operation"
+  | "style"
   | "component-name"
   | "fallback";
 
@@ -103,7 +113,14 @@ export function normalizeStudioSelectedTarget(
 ): StudioSelectedTarget | null {
   if (!isRecord(value)) return null;
   if (typeof value.id !== "string" || !value.id) return null;
-  if (value.kind !== "dom" && value.kind !== "sprite") return null;
+  if (
+    value.kind !== "dom" &&
+    value.kind !== "sprite" &&
+    value.kind !== "canvas-text" &&
+    value.kind !== "canvas-shape"
+  ) {
+    return null;
+  }
   const bounds = normalizeStudioRect(value.bounds);
   if (!bounds) return null;
 
@@ -115,6 +132,10 @@ export function normalizeStudioSelectedTarget(
         ? value.label
         : value.kind === "sprite"
           ? "Sprite"
+          : value.kind === "canvas-text"
+            ? "Canvas text"
+            : value.kind === "canvas-shape"
+              ? "Canvas shape"
           : "Element",
     tagName: typeof value.tagName === "string" ? value.tagName : undefined,
     elementId: typeof value.elementId === "string" ? value.elementId : undefined,
@@ -124,6 +145,20 @@ export function normalizeStudioSelectedTarget(
     domPath: typeof value.domPath === "string" ? value.domPath : undefined,
     assetKey: typeof value.assetKey === "string" ? value.assetKey : undefined,
     assetUrl: typeof value.assetUrl === "string" ? value.assetUrl : undefined,
+    canvasOperation:
+      typeof value.canvasOperation === "string" ? value.canvasOperation : undefined,
+    canvasPaintMode:
+      value.canvasPaintMode === "fill" ||
+      value.canvasPaintMode === "stroke" ||
+      value.canvasPaintMode === "fill-stroke"
+        ? value.canvasPaintMode
+        : undefined,
+    styleHints: Array.isArray(value.styleHints)
+      ? value.styleHints.filter(
+          (entry): entry is string =>
+            typeof entry === "string" && entry.trim().length > 0,
+        )
+      : [],
     bounds,
     collisionBounds: normalizeStudioRect(value.collisionBounds),
     sourceHints: Array.isArray(value.sourceHints)
@@ -167,6 +202,9 @@ export function areStudioSelectedTargetsEqual(
     left.domPath === right.domPath &&
     left.assetKey === right.assetKey &&
     left.assetUrl === right.assetUrl &&
+    left.canvasOperation === right.canvasOperation &&
+    left.canvasPaintMode === right.canvasPaintMode &&
+    (left.styleHints || []).join("\n") === (right.styleHints || []).join("\n") &&
     areStudioRectsEqual(left.bounds, right.bounds) &&
     areStudioRectsEqual(left.collisionBounds, right.collisionBounds) &&
     left.sourceHints.join("\n") === right.sourceHints.join("\n")

@@ -184,7 +184,7 @@ function findNarrowJsxMatch(
     if (containingCandidate) {
       return {
         ...containingCandidate,
-        reason: `Focused on the matched <${tagName}> JSX block for the selected element.`,
+        reason: `Focused on the matched <${tagName}> JSX block for the selected target.`,
       };
     }
 
@@ -202,7 +202,7 @@ function findNarrowJsxMatch(
       });
       return {
         ...nearestCandidate,
-        reason: `Focused on the nearest <${tagName}> JSX block for the selected element.`,
+        reason: `Focused on the nearest <${tagName}> JSX block for the selected target.`,
       };
     }
   }
@@ -264,11 +264,19 @@ function buildSearchTerms(target: StudioSelectedTarget): Array<{
     });
   }
 
+  if (target.canvasOperation) {
+    terms.push({
+      kind: "canvas-operation",
+      value: target.canvasOperation,
+      reason: `Matched the selected canvas operation "${target.canvasOperation}".`,
+    });
+  }
+
   if (target.elementId) {
     terms.push({
       kind: "id",
       value: target.elementId,
-      reason: `Matched the selected element id "${target.elementId}".`,
+      reason: `Matched the selected target id "${target.elementId}".`,
     });
   }
 
@@ -280,7 +288,7 @@ function buildSearchTerms(target: StudioSelectedTarget): Array<{
     terms.push({
       kind: "class",
       value: className,
-      reason: `Matched the selected element class "${className}".`,
+      reason: `Matched the selected target class "${className}".`,
     });
   }
 
@@ -298,6 +306,17 @@ function buildSearchTerms(target: StudioSelectedTarget): Array<{
       value: `<${target.tagName.toLowerCase()}`,
       reason: `Matched the selected tag name ${target.tagName.toLowerCase()}.`,
     });
+  }
+
+  if (target.styleHints?.length) {
+    for (const styleHint of target.styleHints.slice(0, 4)) {
+      if (styleHint.length < 3) continue;
+      terms.push({
+        kind: "style",
+        value: styleHint,
+        reason: `Matched a canvas style hint reported from the preview: ${styleHint}.`,
+      });
+    }
   }
 
   if (target.sourceHints.length > 0) {

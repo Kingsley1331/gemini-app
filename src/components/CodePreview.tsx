@@ -202,6 +202,15 @@ function getTargetDisplayLabel(target: StudioSelectedTarget | null): string {
   if (target.kind === "sprite") {
     return truncateEditLabel(target.label || target.assetKey, "Selected sprite");
   }
+  if (target.kind === "canvas-text") {
+    return truncateEditLabel(
+      target.textPreview || target.label,
+      "Selected canvas text",
+    );
+  }
+  if (target.kind === "canvas-shape") {
+    return truncateEditLabel(target.label, "Selected canvas shape");
+  }
   return truncateEditLabel(target.label, "Selected element");
 }
 
@@ -1666,7 +1675,7 @@ export default function CodePreview({
 
   const handleGenerateInspectorCandidate = useCallback(async () => {
     if (!editUi.selectedTarget) {
-      setComponentUpdateStatus("Select an element or sprite first.");
+      setComponentUpdateStatus("Select an element, sprite, or canvas target first.");
       return;
     }
     if (!editUi.aiPrompt.trim()) {
@@ -2784,7 +2793,12 @@ export default function CodePreview({
           state.paused = ${studioEditBootstrap}.paused;
           state.selectedTargetId = ${studioEditBootstrap}.selectedTargetId;
           state.assetHints = ${studioPreviewAssetHints};
-          state.spriteEntries = Array.isArray(state.spriteEntries) ? state.spriteEntries : [];
+          state.canvasEntries = Array.isArray(state.canvasEntries)
+            ? state.canvasEntries
+            : Array.isArray(state.spriteEntries)
+              ? state.spriteEntries
+              : [];
+          state.spriteEntries = state.canvasEntries;
           state.lastPointer = state.lastPointer || { x: 0, y: 0 };
           state.pausedMedia = Array.isArray(state.pausedMedia) ? state.pausedMedia : [];
           state.pendingRaf = state.pendingRaf || {};
@@ -2990,6 +3004,693 @@ export default function CodePreview({
         }
       </style>
     `;
+    const studioCanvasInstrumentationScript = String.raw`
+          __studioPreviewState.assetHints = Array.isArray(__studioPreviewState.assetHints)
+            ? __studioPreviewState.assetHints
+            : [];
+          __studioPreviewState.canvasEntries = Array.isArray(__studioPreviewState.canvasEntries)
+            ? __studioPreviewState.canvasEntries
+            : Array.isArray(__studioPreviewState.spriteEntries)
+              ? __studioPreviewState.spriteEntries
+              : [];
+          __studioPreviewState.spriteEntries = __studioPreviewState.canvasEntries;
+          __studioPreviewState.lastPointer = __studioPreviewState.lastPointer || { x: 0, y: 0 };
+
+          function __studioRoundCanvasNumber(value) {
+            return Math.round(Number(value || 0) * 10) / 10;
+          }
+
+          function __studioHashString(value) {
+            var hash = 0;
+            var input = String(value || '');
+            for (var index = 0; index < input.length; index += 1) {
+              hash = (hash << 5) - hash + input.charCodeAt(index);
+              hash |= 0;
+            }
+            return Math.abs(hash).toString(36);
+          }
+
+          function __studioGetCanvasElementId(canvas) {
+            if (!canvas) return 'canvas:unknown';
+            if (canvas.dataset && canvas.dataset.studioCanvasId) {
+              return canvas.dataset.studioCanvasId;
+            }
+            var id = __studioCreateTargetId('canvas');
+            if (canvas.dataset) {
+              canvas.dataset.studioCanvasId = id;
+            }
+            return id;
+          }
+
+          function __studioGetCanvasMetrics(canvas) {
+            var canvasRect = canvas && canvas.getBoundingClientRect
+              ? canvas.getBoundingClientRect()
+              : null;
+            if (!canvasRect) return null;
+            var canvasWidth =
+              canvas && typeof canvas.width === 'number' && canvas.width > 0
+                ? canvas.width
+                : canvasRect.width;
+            var canvasHeight =
+              canvas && typeof canvas.height === 'number' && canvas.height > 0
+                ? canvas.height
+                : canvasRect.height;
+            return {
+              rect: canvasRect,
+              scaleX: canvasWidth > 0 ? canvasRect.width / canvasWidth : 1,
+              scaleY: canvasHeight > 0 ? canvasRect.height / canvasHeight : 1
+            };
+          }
+
+          function __studioTransformCanvasPoint(matrix, x, y) {
+            if (!matrix) {
+              return { x: Number(x || 0), y: Number(y || 0) };
+            }
+            return {
+              x: matrix.a * x + matrix.c * y + matrix.e,
+              y: matrix.b * x + matrix.d * y + matrix.f
+            };
+          }
+
+          function __studioProjectCanvasRect(context, left, top, width, height) {
+            if (!context || !context.canvas) return null;
+            var metrics = __studioGetCanvasMetrics(context.canvas);
+            if (!metrics) return null;
+            var matrix = typeof context.getTransform === 'function' ? context.getTransform() : null;
+            var safeLeft = Number(left || 0);
+            var safeTop = Number(top || 0);
+            var safeWidth = Number(width || 0);
+            var safeHeight = Number(height || 0);
+            var corners = [
+              __studioTransformCanvasPoint(matrix, safeLeft, safeTop),
+              __studioTransformCanvasPoint(matrix, safeLeft + safeWidth, safeTop),
+              __studioTransformCanvasPoint(matrix, safeLeft, safeTop + safeHeight),
+              __studioTransformCanvasPoint(matrix, safeLeft + safeWidth, safeTop + safeHeight)
+            ];
+            var minX = Infinity;
+            var minY = Infinity;
+            var maxX = -Infinity;
+            var maxY = -Infinity;
+            for (var index = 0; index < corners.length; index += 1) {
+              var point = corners[index];
+              minX = Math.min(minX, point.x);
+              minY = Math.min(minY, point.y);
+              maxX = Math.max(maxX, point.x);
+              maxY = Math.max(maxY, point.y);
+            }
+            if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+              return null;
+            }
+            return __studioNormalizeRect({
+              left: metrics.rect.left + minX * metrics.scaleX,
+              top: metrics.rect.top + minY * metrics.scaleY,
+              width: Math.max(0, (maxX - minX) * metrics.scaleX),
+              height: Math.max(0, (maxY - minY) * metrics.scaleY)
+            });
+          }
+
+          function __studioNormalizeCanvasHint(value) {
+            var normalized = __studioTruncate(String(value || ''), '').trim();
+            return normalized;
+          }
+
+          function __studioBuildCanvasStyleHints(context) {
+            if (!context) return [];
+            var hints = [];
+            var fillStyle = typeof context.fillStyle === 'string' ? context.fillStyle : '';
+            var strokeStyle = typeof context.strokeStyle === 'string' ? context.strokeStyle : '';
+            var font = typeof context.font === 'string' ? context.font : '';
+            if (fillStyle) hints.push('fill:' + fillStyle);
+            if (strokeStyle) hints.push('stroke:' + strokeStyle);
+            if (font) hints.push('font:' + font);
+            if (typeof context.lineWidth === 'number' && Number.isFinite(context.lineWidth)) {
+              hints.push('lineWidth:' + __studioRoundCanvasNumber(context.lineWidth));
+            }
+            if (typeof context.textAlign === 'string' && context.textAlign) {
+              hints.push('textAlign:' + context.textAlign);
+            }
+            if (typeof context.textBaseline === 'string' && context.textBaseline) {
+              hints.push('textBaseline:' + context.textBaseline);
+            }
+            return Array.from(new Set(hints.filter(Boolean)));
+          }
+
+          function __studioResolveAssetHintForCanvas(rawUrl) {
+            if (!rawUrl) return null;
+            if (typeof __studioResolveAssetHint === 'function') {
+              return __studioResolveAssetHint(rawUrl);
+            }
+            var normalized = String(rawUrl).replace(location.origin, '');
+            var hints = __studioPreviewState.assetHints || [];
+            for (var index = 0; index < hints.length; index += 1) {
+              var entry = hints[index];
+              if (!entry) continue;
+              if (entry.assetUrl === rawUrl || entry.assetUrl === normalized) {
+                return entry;
+              }
+            }
+            return null;
+          }
+
+          function __studioBuildCanvasEntryId(entry) {
+            var rect = entry.bounds || {};
+            var fingerprint = [
+              __studioGetCanvasElementId(entry.canvas),
+              entry.kind || 'canvas-shape',
+              entry.canvasOperation || '',
+              entry.canvasPaintMode || '',
+              entry.assetKey || '',
+              entry.textPreview || '',
+              __studioRoundCanvasNumber(rect.left),
+              __studioRoundCanvasNumber(rect.top),
+              __studioRoundCanvasNumber(rect.width),
+              __studioRoundCanvasNumber(rect.height),
+              Array.isArray(entry.sourceHints) ? entry.sourceHints.join('|') : ''
+            ].join('::');
+            return (entry.kind || 'canvas') + ':' + __studioHashString(fingerprint);
+          }
+
+          function __studioRegisterCanvasEntry(entry) {
+            if (!entry || !entry.canvas || !entry.bounds) return;
+            entry.id = entry.id || __studioBuildCanvasEntryId(entry);
+            entry.timestamp = Date.now();
+            var entries = __studioPreviewState.canvasEntries || [];
+            var updated = false;
+            for (var index = entries.length - 1; index >= 0; index -= 1) {
+              if (entries[index] && entries[index].id === entry.id) {
+                entries[index] = entry;
+                updated = true;
+                break;
+              }
+            }
+            if (!updated) {
+              entries.push(entry);
+            }
+            if (entries.length > 500) {
+              entries = entries.slice(-350);
+            }
+            __studioPreviewState.canvasEntries = entries;
+            __studioPreviewState.spriteEntries = entries;
+          }
+
+          function __studioMakeCanvasTarget(entry) {
+            if (!entry || !entry.bounds) return null;
+            return {
+              id: entry.id,
+              kind: entry.kind || 'canvas-shape',
+              label: __studioTruncate(entry.label || 'Canvas target', 'Canvas target'),
+              tagName: 'canvas',
+              textPreview: entry.textPreview || undefined,
+              assetKey: entry.assetKey || undefined,
+              assetUrl: entry.assetUrl || undefined,
+              canvasOperation: entry.canvasOperation || undefined,
+              canvasPaintMode: entry.canvasPaintMode || undefined,
+              styleHints: Array.isArray(entry.styleHints) ? entry.styleHints : [],
+              bounds: entry.bounds,
+              collisionBounds: entry.collisionBounds || entry.bounds,
+              sourceHints: Array.isArray(entry.sourceHints) ? entry.sourceHints : []
+            };
+          }
+
+          function __studioGetActiveCanvasEntries() {
+            var entries = (__studioPreviewState.canvasEntries || []).filter(function(entry) {
+              return (
+                entry &&
+                entry.bounds &&
+                typeof entry.bounds.left === 'number' &&
+                typeof entry.bounds.top === 'number' &&
+                typeof entry.bounds.width === 'number' &&
+                typeof entry.bounds.height === 'number' &&
+                entry.bounds.width > 0 &&
+                entry.bounds.height > 0 &&
+                entry.canvas &&
+                (!entry.canvas.isConnected || entry.canvas.isConnected === true)
+              );
+            });
+            if (entries.length === 0) return entries;
+            var latestTimestamp = entries.reduce(function(max, entry) {
+              return Math.max(max, Number(entry.timestamp || 0));
+            }, 0);
+            var frameWindowMs = __studioPreviewState.paused ? 400 : 180;
+            return entries.filter(function(entry) {
+              return latestTimestamp - Number(entry.timestamp || 0) <= frameWindowMs;
+            });
+          }
+
+          function __studioGetCanvasTargetAtPoint(clientX, clientY, canvas) {
+            var now = Date.now();
+            var candidates = __studioGetActiveCanvasEntries()
+              .filter(function(entry) {
+                var hitBounds = entry.collisionBounds || entry.bounds;
+                return (
+                  entry.canvas === canvas &&
+                  (__studioPreviewState.paused || now - entry.timestamp < 1500) &&
+                  hitBounds &&
+                  clientX >= hitBounds.left &&
+                  clientX <= hitBounds.left + hitBounds.width &&
+                  clientY >= hitBounds.top &&
+                  clientY <= hitBounds.top + hitBounds.height
+                );
+              })
+              .sort(function(left, right) {
+                if (right.timestamp !== left.timestamp) {
+                  return right.timestamp - left.timestamp;
+                }
+                var leftArea = left.bounds.width * left.bounds.height;
+                var rightArea = right.bounds.width * right.bounds.height;
+                return leftArea - rightArea;
+              });
+            return candidates.length > 0 ? __studioMakeCanvasTarget(candidates[0]) : null;
+          }
+
+          function __studioGetAnyCanvasTargetAtPoint(clientX, clientY) {
+            var now = Date.now();
+            var candidates = __studioGetActiveCanvasEntries()
+              .filter(function(entry) {
+                var hitBounds = entry.collisionBounds || entry.bounds;
+                return (
+                  (__studioPreviewState.paused || now - entry.timestamp < 1500) &&
+                  hitBounds &&
+                  clientX >= hitBounds.left &&
+                  clientX <= hitBounds.left + hitBounds.width &&
+                  clientY >= hitBounds.top &&
+                  clientY <= hitBounds.top + hitBounds.height
+                );
+              })
+              .sort(function(left, right) {
+                if (right.timestamp !== left.timestamp) {
+                  return right.timestamp - left.timestamp;
+                }
+                var leftArea = left.bounds.width * left.bounds.height;
+                var rightArea = right.bounds.width * right.bounds.height;
+                return leftArea - rightArea;
+              });
+            return candidates.length > 0 ? __studioMakeCanvasTarget(candidates[0]) : null;
+          }
+
+          function __studioGetCanvasPathState(context) {
+            if (!context.__studioCanvasPathState) {
+              context.__studioCanvasPathState = {
+                minX: Infinity,
+                minY: Infinity,
+                maxX: -Infinity,
+                maxY: -Infinity,
+                hasPoint: false,
+                label: 'path',
+                hints: []
+              };
+            }
+            return context.__studioCanvasPathState;
+          }
+
+          function __studioResetCanvasPathState(context) {
+            context.__studioCanvasPathState = {
+              minX: Infinity,
+              minY: Infinity,
+              maxX: -Infinity,
+              maxY: -Infinity,
+              hasPoint: false,
+              label: 'path',
+              hints: []
+            };
+            return context.__studioCanvasPathState;
+          }
+
+          function __studioExpandCanvasPathState(state, x, y) {
+            var pointX = Number(x || 0);
+            var pointY = Number(y || 0);
+            state.minX = Math.min(state.minX, pointX);
+            state.minY = Math.min(state.minY, pointY);
+            state.maxX = Math.max(state.maxX, pointX);
+            state.maxY = Math.max(state.maxY, pointY);
+            state.hasPoint = true;
+          }
+
+          function __studioExpandCanvasPathRect(state, x, y, width, height) {
+            var safeX = Number(x || 0);
+            var safeY = Number(y || 0);
+            var safeWidth = Number(width || 0);
+            var safeHeight = Number(height || 0);
+            __studioExpandCanvasPathState(state, safeX, safeY);
+            __studioExpandCanvasPathState(state, safeX + safeWidth, safeY + safeHeight);
+          }
+
+          function __studioReadCanvasFontSize(font) {
+            var match = String(font || '').match(/([0-9]+(?:\\.[0-9]+)?)px/);
+            return match ? Number(match[1]) : 16;
+          }
+
+          function __studioRecordCanvasRect(context, operation, x, y, width, height, paintMode, label) {
+            var rect = __studioProjectCanvasRect(context, x, y, width, height);
+            if (!rect || rect.width < 2 || rect.height < 2) return;
+            __studioRegisterCanvasEntry({
+              canvas: context.canvas,
+              kind: 'canvas-shape',
+              label: label || 'Canvas rect',
+              canvasOperation: operation,
+              canvasPaintMode: paintMode,
+              styleHints: __studioBuildCanvasStyleHints(context),
+              sourceHints: ['canvas', 'shape', operation, paintMode, __studioNormalizeCanvasHint(label)].filter(Boolean),
+              bounds: rect,
+              collisionBounds: rect
+            });
+          }
+
+          function __studioRecordCanvasText(context, operation, rawText, x, y, maxWidth, paintMode) {
+            var text = String(rawText == null ? '' : rawText);
+            var textPreview = __studioNormalizeCanvasHint(text);
+            if (!textPreview) return;
+            var metrics = null;
+            try {
+              metrics = typeof context.measureText === 'function' ? context.measureText(text) : null;
+            } catch (_error) {
+              metrics = null;
+            }
+            var fontSize = __studioReadCanvasFontSize(context.font);
+            var actualLeft = metrics && typeof metrics.actualBoundingBoxLeft === 'number'
+              ? metrics.actualBoundingBoxLeft
+              : 0;
+            var actualRight = metrics && typeof metrics.actualBoundingBoxRight === 'number'
+              ? metrics.actualBoundingBoxRight
+              : Number(metrics && metrics.width) || maxWidth || text.length * (fontSize * 0.6);
+            var ascent = metrics && typeof metrics.actualBoundingBoxAscent === 'number'
+              ? metrics.actualBoundingBoxAscent
+              : fontSize * 0.8;
+            var descent = metrics && typeof metrics.actualBoundingBoxDescent === 'number'
+              ? metrics.actualBoundingBoxDescent
+              : fontSize * 0.2;
+            var textWidth = Math.max(1, actualLeft + actualRight);
+            if (maxWidth && Number.isFinite(Number(maxWidth)) && Number(maxWidth) > 0) {
+              textWidth = Math.min(textWidth, Number(maxWidth));
+            }
+            var textHeight = Math.max(1, ascent + descent);
+            var rect = __studioProjectCanvasRect(
+              context,
+              Number(x || 0) - actualLeft,
+              Number(y || 0) - ascent,
+              textWidth,
+              textHeight
+            );
+            if (!rect || rect.width < 2 || rect.height < 2) return;
+            __studioRegisterCanvasEntry({
+              canvas: context.canvas,
+              kind: 'canvas-text',
+              label: __studioTruncate(textPreview, 'Canvas text'),
+              textPreview: textPreview,
+              canvasOperation: operation,
+              canvasPaintMode: paintMode,
+              styleHints: __studioBuildCanvasStyleHints(context),
+              sourceHints: ['canvas', 'text', operation, textPreview].filter(Boolean),
+              bounds: rect,
+              collisionBounds: rect
+            });
+          }
+
+          function __studioRecordCanvasPath(context, operation, paintMode) {
+            var state = __studioGetCanvasPathState(context);
+            if (!state.hasPoint) return;
+            var padding = paintMode === 'stroke' || paintMode === 'fill-stroke'
+              ? Math.max(1, Number(context.lineWidth || 1) / 2)
+              : 0;
+            var rect = __studioProjectCanvasRect(
+              context,
+              state.minX - padding,
+              state.minY - padding,
+              Math.max(1, state.maxX - state.minX + padding * 2),
+              Math.max(1, state.maxY - state.minY + padding * 2)
+            );
+            if (!rect || rect.width < 2 || rect.height < 2) return;
+            var label = 'Canvas ' + (state.label || 'path');
+            __studioRegisterCanvasEntry({
+              canvas: context.canvas,
+              kind: 'canvas-shape',
+              label: label,
+              canvasOperation: operation,
+              canvasPaintMode: paintMode,
+              styleHints: __studioBuildCanvasStyleHints(context),
+              sourceHints: ['canvas', 'shape', operation]
+                .concat(Array.isArray(state.hints) ? state.hints : [])
+                .filter(Boolean),
+              bounds: rect,
+              collisionBounds: rect
+            });
+          }
+
+          if (!window.__studioCanvasInstrumentationInstalled && typeof CanvasRenderingContext2D !== 'undefined') {
+            window.__studioCanvasInstrumentationInstalled = true;
+            var __canvasProto = CanvasRenderingContext2D.prototype;
+            var __nativeBeginPath = __canvasProto.beginPath;
+            __canvasProto.beginPath = function() {
+              __studioResetCanvasPathState(this);
+              return __nativeBeginPath.apply(this, arguments);
+            };
+
+            var __nativeMoveTo = __canvasProto.moveTo;
+            __canvasProto.moveTo = function(x, y) {
+              var state = __studioGetCanvasPathState(this);
+              state.label = state.label || 'path';
+              __studioExpandCanvasPathState(state, x, y);
+              return __nativeMoveTo.apply(this, arguments);
+            };
+
+            var __nativeLineTo = __canvasProto.lineTo;
+            __canvasProto.lineTo = function(x, y) {
+              var state = __studioGetCanvasPathState(this);
+              state.label = 'line';
+              state.hints = ['lineTo'];
+              __studioExpandCanvasPathState(state, x, y);
+              return __nativeLineTo.apply(this, arguments);
+            };
+
+            if (typeof __canvasProto.rect === 'function') {
+              var __nativeRect = __canvasProto.rect;
+              __canvasProto.rect = function(x, y, width, height) {
+                var state = __studioGetCanvasPathState(this);
+                state.label = 'rect';
+                state.hints = ['rect'];
+                __studioExpandCanvasPathRect(state, x, y, width, height);
+                return __nativeRect.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.roundRect === 'function') {
+              var __nativeRoundRect = __canvasProto.roundRect;
+              __canvasProto.roundRect = function(x, y, width, height) {
+                var state = __studioGetCanvasPathState(this);
+                state.label = 'roundRect';
+                state.hints = ['roundRect'];
+                __studioExpandCanvasPathRect(state, x, y, width, height);
+                return __nativeRoundRect.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.arc === 'function') {
+              var __nativeArc = __canvasProto.arc;
+              __canvasProto.arc = function(x, y, radius) {
+                var state = __studioGetCanvasPathState(this);
+                state.label = 'arc';
+                state.hints = ['arc'];
+                var safeRadius = Math.abs(Number(radius || 0));
+                __studioExpandCanvasPathRect(
+                  state,
+                  Number(x || 0) - safeRadius,
+                  Number(y || 0) - safeRadius,
+                  safeRadius * 2,
+                  safeRadius * 2
+                );
+                return __nativeArc.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.ellipse === 'function') {
+              var __nativeEllipse = __canvasProto.ellipse;
+              __canvasProto.ellipse = function(x, y, radiusX, radiusY) {
+                var state = __studioGetCanvasPathState(this);
+                state.label = 'ellipse';
+                state.hints = ['ellipse'];
+                __studioExpandCanvasPathRect(
+                  state,
+                  Number(x || 0) - Math.abs(Number(radiusX || 0)),
+                  Number(y || 0) - Math.abs(Number(radiusY || 0)),
+                  Math.abs(Number(radiusX || 0)) * 2,
+                  Math.abs(Number(radiusY || 0)) * 2
+                );
+                return __nativeEllipse.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.arcTo === 'function') {
+              var __nativeArcTo = __canvasProto.arcTo;
+              __canvasProto.arcTo = function(x1, y1, x2, y2, radius) {
+                var state = __studioGetCanvasPathState(this);
+                state.label = 'arc';
+                state.hints = ['arcTo'];
+                __studioExpandCanvasPathState(state, x1, y1);
+                __studioExpandCanvasPathState(state, x2, y2);
+                var safeRadius = Math.abs(Number(radius || 0));
+                if (safeRadius > 0) {
+                  __studioExpandCanvasPathRect(
+                    state,
+                    Math.min(Number(x1 || 0), Number(x2 || 0)) - safeRadius,
+                    Math.min(Number(y1 || 0), Number(y2 || 0)) - safeRadius,
+                    Math.abs(Number(x2 || 0) - Number(x1 || 0)) + safeRadius * 2,
+                    Math.abs(Number(y2 || 0) - Number(y1 || 0)) + safeRadius * 2
+                  );
+                }
+                return __nativeArcTo.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.quadraticCurveTo === 'function') {
+              var __nativeQuadraticCurveTo = __canvasProto.quadraticCurveTo;
+              __canvasProto.quadraticCurveTo = function(cpx, cpy, x, y) {
+                var state = __studioGetCanvasPathState(this);
+                state.label = 'quadraticCurve';
+                state.hints = ['quadraticCurveTo'];
+                __studioExpandCanvasPathState(state, cpx, cpy);
+                __studioExpandCanvasPathState(state, x, y);
+                return __nativeQuadraticCurveTo.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.bezierCurveTo === 'function') {
+              var __nativeBezierCurveTo = __canvasProto.bezierCurveTo;
+              __canvasProto.bezierCurveTo = function(cp1x, cp1y, cp2x, cp2y, x, y) {
+                var state = __studioGetCanvasPathState(this);
+                state.label = 'bezierCurve';
+                state.hints = ['bezierCurveTo'];
+                __studioExpandCanvasPathState(state, cp1x, cp1y);
+                __studioExpandCanvasPathState(state, cp2x, cp2y);
+                __studioExpandCanvasPathState(state, x, y);
+                return __nativeBezierCurveTo.apply(this, arguments);
+              };
+            }
+
+            var __nativeFill = __canvasProto.fill;
+            __canvasProto.fill = function() {
+              try {
+                __studioRecordCanvasPath(this, 'fill', 'fill');
+              } catch (error) {
+                console.warn('Studio canvas path fill instrumentation failed:', error);
+              }
+              return __nativeFill.apply(this, arguments);
+            };
+
+            var __nativeStroke = __canvasProto.stroke;
+            __canvasProto.stroke = function() {
+              try {
+                __studioRecordCanvasPath(this, 'stroke', 'stroke');
+              } catch (error) {
+                console.warn('Studio canvas path stroke instrumentation failed:', error);
+              }
+              return __nativeStroke.apply(this, arguments);
+            };
+
+            if (typeof __canvasProto.fillRect === 'function') {
+              var __nativeFillRect = __canvasProto.fillRect;
+              __canvasProto.fillRect = function(x, y, width, height) {
+                try {
+                  __studioRecordCanvasRect(this, 'fillRect', x, y, width, height, 'fill', 'Canvas rect');
+                } catch (error) {
+                  console.warn('Studio canvas fillRect instrumentation failed:', error);
+                }
+                return __nativeFillRect.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.strokeRect === 'function') {
+              var __nativeStrokeRect = __canvasProto.strokeRect;
+              __canvasProto.strokeRect = function(x, y, width, height) {
+                try {
+                  __studioRecordCanvasRect(this, 'strokeRect', x, y, width, height, 'stroke', 'Canvas rect');
+                } catch (error) {
+                  console.warn('Studio canvas strokeRect instrumentation failed:', error);
+                }
+                return __nativeStrokeRect.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.fillText === 'function') {
+              var __nativeFillText = __canvasProto.fillText;
+              __canvasProto.fillText = function(text, x, y, maxWidth) {
+                try {
+                  __studioRecordCanvasText(this, 'fillText', text, x, y, maxWidth, 'fill');
+                } catch (error) {
+                  console.warn('Studio canvas fillText instrumentation failed:', error);
+                }
+                return __nativeFillText.apply(this, arguments);
+              };
+            }
+
+            if (typeof __canvasProto.strokeText === 'function') {
+              var __nativeStrokeText = __canvasProto.strokeText;
+              __canvasProto.strokeText = function(text, x, y, maxWidth) {
+                try {
+                  __studioRecordCanvasText(this, 'strokeText', text, x, y, maxWidth, 'stroke');
+                } catch (error) {
+                  console.warn('Studio canvas strokeText instrumentation failed:', error);
+                }
+                return __nativeStrokeText.apply(this, arguments);
+              };
+            }
+
+            var __nativeDrawImage = __canvasProto.drawImage;
+            __canvasProto.drawImage = function(image) {
+              if (image instanceof HTMLImageElement) {
+                var imageBroken = !image.complete || image.naturalWidth === 0 || image.naturalHeight === 0;
+                if (imageBroken) return;
+              }
+              try {
+                var args = Array.prototype.slice.call(arguments, 1);
+                var dx = 0;
+                var dy = 0;
+                var dw = image && image.width ? image.width : 0;
+                var dh = image && image.height ? image.height : 0;
+                if (args.length === 2) {
+                  dx = Number(args[0] || 0);
+                  dy = Number(args[1] || 0);
+                } else if (args.length === 4) {
+                  dx = Number(args[0] || 0);
+                  dy = Number(args[1] || 0);
+                  dw = Number(args[2] || 0);
+                  dh = Number(args[3] || 0);
+                } else if (args.length >= 8) {
+                  dx = Number(args[4] || 0);
+                  dy = Number(args[5] || 0);
+                  dw = Number(args[6] || 0);
+                  dh = Number(args[7] || 0);
+                }
+                if (dw > 0 && dh > 0) {
+                  var rect = __studioProjectCanvasRect(this, dx, dy, dw, dh);
+                  var assetHint =
+                    image instanceof HTMLImageElement
+                      ? __studioResolveAssetHintForCanvas(image.currentSrc || image.src || '')
+                      : null;
+                  if (rect && rect.width >= 2 && rect.height >= 2) {
+                    __studioRegisterCanvasEntry({
+                      canvas: this.canvas,
+                      kind: 'sprite',
+                      label: assetHint ? assetHint.assetKey : 'Canvas sprite',
+                      assetKey: assetHint ? assetHint.assetKey : undefined,
+                      assetUrl: assetHint ? assetHint.assetUrl : image && image.src ? image.src : undefined,
+                      canvasOperation: 'drawImage',
+                      canvasPaintMode: 'fill',
+                      styleHints: __studioBuildCanvasStyleHints(this),
+                      sourceHints: assetHint
+                        ? [assetHint.assetKey, 'canvas', 'sprite', 'drawImage']
+                        : ['canvas', 'sprite', 'drawImage'],
+                      bounds: rect,
+                      collisionBounds: rect
+                    });
+                  }
+                }
+              } catch (error) {
+                console.warn('Studio canvas drawImage instrumentation failed:', error);
+              }
+              return __nativeDrawImage.apply(this, arguments);
+            };
+          }
+    `;
     const studioPreviewHtmlEditBridgeScript = `
       <script>
         (function() {
@@ -2999,6 +3700,12 @@ export default function CodePreview({
           __studioPreviewState.enabled = ${studioEditBootstrap}.enabled;
           __studioPreviewState.paused = ${studioEditBootstrap}.paused;
           __studioPreviewState.selectedTargetId = ${studioEditBootstrap}.selectedTargetId;
+          __studioPreviewState.assetHints = ${studioPreviewAssetHints};
+          __studioPreviewState.canvasEntries = Array.isArray(__studioPreviewState.canvasEntries)
+            ? __studioPreviewState.canvasEntries
+            : [];
+          __studioPreviewState.spriteEntries = __studioPreviewState.canvasEntries;
+          __studioPreviewState.lastPointer = __studioPreviewState.lastPointer || { x: 0, y: 0 };
 
           function __studioNormalizeRect(rect) {
             if (!rect) return null;
@@ -3057,6 +3764,8 @@ export default function CodePreview({
           function __studioCreateTargetId(prefix) {
             return prefix + ':' + Math.random().toString(36).slice(2, 10);
           }
+
+${studioCanvasInstrumentationScript}
 
           function __studioNormalizeSelectableElement(element) {
             if (!element || !element.closest) return element;
@@ -3150,6 +3859,10 @@ export default function CodePreview({
               __studioPreviewState.enabled && __studioPreviewState.selectedTarget
                 ? __studioPreviewState.selectedTarget.bounds
                 : null;
+            var collisionRect =
+              __studioPreviewState.enabled && __studioPreviewState.selectedTarget
+                ? __studioPreviewState.selectedTarget.collisionBounds || null
+                : null;
             __studioUpsertOverlay(
               '__studio_overlay_hover',
               hoveredRect,
@@ -3163,6 +3876,13 @@ export default function CodePreview({
               '3px solid',
               '#71717a',
               'rgba(113, 113, 122, 0.05)'
+            );
+            __studioUpsertOverlay(
+              '__studio_overlay_collision',
+              collisionRect,
+              '2px dashed',
+              '#60a5fa',
+              'rgba(96, 165, 250, 0.06)'
             );
           }
 
@@ -3360,12 +4080,47 @@ export default function CodePreview({
 
           function __studioResolveTargetFromPoint(clientX, clientY) {
             var elements = document.elementsFromPoint(clientX, clientY);
+            var prioritizedCanvasTarget = null;
+            for (var canvasIndex = 0; canvasIndex < elements.length; canvasIndex += 1) {
+              var candidate = elements[canvasIndex];
+              if (!candidate || candidate.id === '__studio_overlay_root') continue;
+              if (candidate.closest && candidate.closest('#__studio_overlay_root')) continue;
+              if (candidate.tagName === 'CANVAS') {
+                prioritizedCanvasTarget = __studioGetCanvasTargetAtPoint(
+                  clientX,
+                  clientY,
+                  candidate
+                );
+                if (prioritizedCanvasTarget) break;
+              }
+            }
             var domTarget = __studioChooseBestDomTarget(elements, clientX, clientY);
-            return __studioPreferPointerEventsNoneTarget(clientX, clientY, domTarget);
+            var hasStrongDomTarget =
+              domTarget &&
+              domTarget.tagName !== 'canvas' &&
+              domTarget.kind !== 'sprite' &&
+              !__studioIsLargeContainerTarget(domTarget);
+            if (hasStrongDomTarget) {
+              return domTarget;
+            }
+            if (prioritizedCanvasTarget) {
+              return __studioPreferPointerEventsNoneTarget(
+                clientX,
+                clientY,
+                prioritizedCanvasTarget
+              );
+            }
+            var fallbackCanvasTarget = __studioGetAnyCanvasTargetAtPoint(clientX, clientY);
+            return __studioPreferPointerEventsNoneTarget(
+              clientX,
+              clientY,
+              fallbackCanvasTarget || domTarget
+            );
           }
 
           function __studioHandleMouseMove(event) {
             if (!__studioPreviewState.enabled) return;
+            __studioPreviewState.lastPointer = { x: event.clientX, y: event.clientY };
             __studioSetHoveredTarget(__studioResolveTargetFromPoint(event.clientX, event.clientY));
           }
 
@@ -3609,9 +4364,12 @@ export default function CodePreview({
               __studioPreviewState.paused = ${studioEditBootstrap}.paused;
               __studioPreviewState.selectedTargetId = ${studioEditBootstrap}.selectedTargetId;
               __studioPreviewState.assetHints = ${studioPreviewAssetHints};
-              __studioPreviewState.spriteEntries = Array.isArray(__studioPreviewState.spriteEntries)
-                ? __studioPreviewState.spriteEntries
-                : [];
+              __studioPreviewState.canvasEntries = Array.isArray(__studioPreviewState.canvasEntries)
+                ? __studioPreviewState.canvasEntries
+                : Array.isArray(__studioPreviewState.spriteEntries)
+                  ? __studioPreviewState.spriteEntries
+                  : [];
+              __studioPreviewState.spriteEntries = __studioPreviewState.canvasEntries;
               __studioPreviewState.lastPointer = __studioPreviewState.lastPointer || { x: 0, y: 0 };
 
               function __studioNormalizeRect(rect) {
@@ -3711,6 +4469,8 @@ export default function CodePreview({
                 return prefix + ':' + Math.random().toString(36).slice(2, 10);
               }
 
+${studioCanvasInstrumentationScript}
+
               function __studioNormalizeSelectableElement(element) {
                 if (!element || !element.closest) return element;
                 var interactiveAncestor = element.closest(
@@ -3761,18 +4521,7 @@ export default function CodePreview({
               }
 
               function __studioMakeSpriteTarget(entry) {
-                if (!entry || !entry.bounds) return null;
-                return {
-                  id: entry.id,
-                  kind: 'sprite',
-                  label: __studioTruncate(entry.label || entry.assetKey || 'Sprite', 'Sprite'),
-                  tagName: 'canvas',
-                  assetKey: entry.assetKey || undefined,
-                  assetUrl: entry.assetUrl || undefined,
-                  bounds: entry.bounds,
-                  collisionBounds: entry.collisionBounds || entry.bounds,
-                  sourceHints: Array.isArray(entry.sourceHints) ? entry.sourceHints : []
-                };
+                return __studioMakeCanvasTarget(entry);
               }
 
               function __studioEnsureOverlayRoot() {
@@ -3882,65 +4631,15 @@ export default function CodePreview({
               }
 
               function __studioGetActiveSpriteEntries() {
-                var entries = (__studioPreviewState.spriteEntries || []).filter(function(entry) {
-                  return (
-                    entry &&
-                    entry.bounds &&
-                    typeof entry.bounds.left === 'number' &&
-                    typeof entry.bounds.top === 'number' &&
-                    typeof entry.bounds.width === 'number' &&
-                    typeof entry.bounds.height === 'number' &&
-                    entry.bounds.width > 0 &&
-                    entry.bounds.height > 0 &&
-                    entry.canvas &&
-                    (!entry.canvas.isConnected || entry.canvas.isConnected === true)
-                  );
-                });
-                if (entries.length === 0) return entries;
-                var latestTimestamp = entries.reduce(function(max, entry) {
-                  return Math.max(max, Number(entry.timestamp || 0));
-                }, 0);
-                var frameWindowMs = __studioPreviewState.paused ? 250 : 120;
-                return entries.filter(function(entry) {
-                  return latestTimestamp - Number(entry.timestamp || 0) <= frameWindowMs;
-                });
+                return __studioGetActiveCanvasEntries();
               }
 
               function __studioGetSpriteTargetAtPoint(clientX, clientY, canvas) {
-                var now = Date.now();
-                var candidates = __studioGetActiveSpriteEntries()
-                  .filter(function(entry) {
-                    return (
-                      entry.canvas === canvas &&
-                      (__studioPreviewState.paused || now - entry.timestamp < 1500) &&
-                      clientX >= entry.bounds.left &&
-                      clientX <= entry.bounds.left + entry.bounds.width &&
-                      clientY >= entry.bounds.top &&
-                      clientY <= entry.bounds.top + entry.bounds.height
-                    );
-                  })
-                  .sort(function(a, b) {
-                    return b.timestamp - a.timestamp;
-                  });
-                return candidates.length > 0 ? __studioMakeSpriteTarget(candidates[0]) : null;
+                return __studioGetCanvasTargetAtPoint(clientX, clientY, canvas);
               }
 
               function __studioGetAnySpriteTargetAtPoint(clientX, clientY) {
-                var now = Date.now();
-                var candidates = __studioGetActiveSpriteEntries()
-                  .filter(function(entry) {
-                    return (
-                      (__studioPreviewState.paused || now - entry.timestamp < 1500) &&
-                      clientX >= entry.bounds.left &&
-                      clientX <= entry.bounds.left + entry.bounds.width &&
-                      clientY >= entry.bounds.top &&
-                      clientY <= entry.bounds.top + entry.bounds.height
-                    );
-                  })
-                  .sort(function(a, b) {
-                    return b.timestamp - a.timestamp;
-                  });
-                return candidates.length > 0 ? __studioMakeSpriteTarget(candidates[0]) : null;
+                return __studioGetAnyCanvasTargetAtPoint(clientX, clientY);
               }
 
               function __studioIsLargeContainerTarget(target) {
@@ -4220,84 +4919,6 @@ export default function CodePreview({
               document.addEventListener('mouseleave', __studioHandlePointerLeave, true);
               document.addEventListener('click', __studioHandleClick, true);
               document.addEventListener('dblclick', __studioHandleDoubleClick, true);
-
-              // Guard canvas draws against not-yet-ready/broken images so preview code
-              // does not crash when assets are still loading.
-              const __nativeDrawImage = CanvasRenderingContext2D.prototype.drawImage;
-              CanvasRenderingContext2D.prototype.drawImage = function(image, ...args) {
-                if (image instanceof HTMLImageElement) {
-                  const imageBroken = !image.complete || image.naturalWidth === 0 || image.naturalHeight === 0;
-                  if (imageBroken) return;
-                }
-                try {
-                  const canvasRect = this.canvas && this.canvas.getBoundingClientRect
-                    ? this.canvas.getBoundingClientRect()
-                    : null;
-                  if (canvasRect) {
-                    const canvasWidth =
-                      this.canvas && typeof this.canvas.width === 'number' && this.canvas.width > 0
-                        ? this.canvas.width
-                        : canvasRect.width;
-                    const canvasHeight =
-                      this.canvas && typeof this.canvas.height === 'number' && this.canvas.height > 0
-                        ? this.canvas.height
-                        : canvasRect.height;
-                    const scaleX = canvasWidth > 0 ? canvasRect.width / canvasWidth : 1;
-                    const scaleY = canvasHeight > 0 ? canvasRect.height / canvasHeight : 1;
-                    let dx = 0;
-                    let dy = 0;
-                    let dw = image && image.width ? image.width : 0;
-                    let dh = image && image.height ? image.height : 0;
-                    if (args.length === 2) {
-                      dx = Number(args[0] || 0);
-                      dy = Number(args[1] || 0);
-                    } else if (args.length === 4) {
-                      dx = Number(args[0] || 0);
-                      dy = Number(args[1] || 0);
-                      dw = Number(args[2] || 0);
-                      dh = Number(args[3] || 0);
-                    } else if (args.length >= 8) {
-                      dx = Number(args[4] || 0);
-                      dy = Number(args[5] || 0);
-                      dw = Number(args[6] || 0);
-                      dh = Number(args[7] || 0);
-                    }
-                    if (dw > 0 && dh > 0) {
-                      const assetHint =
-                        image instanceof HTMLImageElement
-                          ? __studioResolveAssetHint(image.currentSrc || image.src || '')
-                          : null;
-                      __studioPreviewState.spriteEntries.push({
-                        id: __studioCreateTargetId('sprite'),
-                        canvas: this.canvas,
-                        assetKey: assetHint ? assetHint.assetKey : undefined,
-                        assetUrl: assetHint ? assetHint.assetUrl : image && image.src ? image.src : undefined,
-                        label: assetHint ? assetHint.assetKey : 'Canvas sprite',
-                        sourceHints: assetHint ? [assetHint.assetKey, 'canvas', 'sprite'] : ['canvas', 'sprite'],
-                        bounds: {
-                          left: canvasRect.left + dx * scaleX,
-                          top: canvasRect.top + dy * scaleY,
-                          width: dw * scaleX,
-                          height: dh * scaleY,
-                        },
-                        collisionBounds: {
-                          left: canvasRect.left + dx * scaleX,
-                          top: canvasRect.top + dy * scaleY,
-                          width: dw * scaleX,
-                          height: dh * scaleY,
-                        },
-                        timestamp: Date.now(),
-                      });
-                      if (__studioPreviewState.spriteEntries.length > 300) {
-                        __studioPreviewState.spriteEntries = __studioPreviewState.spriteEntries.slice(-200);
-                      }
-                    }
-                  }
-                } catch (error) {
-                  console.warn('Studio sprite instrumentation failed:', error);
-                }
-                return __nativeDrawImage.call(this, image, ...args);
-              };
 
               // Lucide icon factory — uses lucide.createElement() to get SVG HTML,
               // then wraps it in a React component with dangerouslySetInnerHTML
@@ -4757,7 +5378,7 @@ export default function CodePreview({
           <span className="font-medium text-zinc-800 dark:text-zinc-100">
             Edit Mode:
           </span>{" "}
-          Hover elements or sprites to inspect them. Click to select. Double-click the
+          Hover elements, sprites, or canvas targets to inspect them. Click to select. Double-click the
           selected target to choose `Code` or `AI`.
           {editUi.selectedTarget ? (
             <span className="ml-2 font-medium text-zinc-800 dark:text-zinc-100">
@@ -4819,7 +5440,7 @@ export default function CodePreview({
                         }))
                       }
                       className="mt-2 min-h-[180px] w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                      placeholder="Describe how you want to change the selected element or sprite."
+                      placeholder="Describe how you want to change the selected element, sprite, or canvas target."
                     />
                   </div>
                   {editUi.selectedTarget?.kind === "sprite" && aiAssetCandidate?.url ? (

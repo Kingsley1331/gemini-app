@@ -127,7 +127,12 @@ export async function buildSelectedComponentContextRequestMessage({
     target.className ? `class: ${target.className}` : null,
     target.domPath ? `domPath: ${target.domPath}` : null,
     target.assetKey ? `assetKey: ${target.assetKey}` : null,
+    target.canvasOperation ? `canvasOperation: ${target.canvasOperation}` : null,
+    target.canvasPaintMode ? `canvasPaintMode: ${target.canvasPaintMode}` : null,
     target.textPreview ? `text: ${target.textPreview}` : null,
+    target.styleHints?.length
+      ? `styleHints: ${target.styleHints.join(", ")}`
+      : null,
     target.sourceHints.length > 0
       ? `sourceHints: ${target.sourceHints.join(", ")}`
       : null,
