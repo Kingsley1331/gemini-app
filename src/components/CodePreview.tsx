@@ -1695,7 +1695,6 @@ export default function CodePreview({
         return {
           ...current,
           isEnabled: false,
-          isPaused: false,
           hoveredTarget: null,
           selectedTarget: null,
           activePanel: null,
@@ -1709,7 +1708,6 @@ export default function CodePreview({
       return {
         ...current,
         isEnabled: true,
-        isPaused: false,
         activePanel: null,
       };
     });
