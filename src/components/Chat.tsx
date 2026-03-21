@@ -461,6 +461,8 @@ ${assets
   .join("\n")}
 - For game sprites, normalize rendering size with explicit width/height values and object-fit style logic in code.
 - If a sprite includes excess transparent padding, compensate with tuned draw offsets and collision bounds.
+- If the app/game uses canvas gameplay collisions or hitboxes, keep window.__studioColliderRegistry.entries updated with stable entity IDs and authoritative collisionBounds.
+- Preserve existing collider registry logic when modifying gameplay code unless the user explicitly asks to remove it.
 
 Asset manifest:
 ${manifest}`;

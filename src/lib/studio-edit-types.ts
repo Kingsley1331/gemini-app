@@ -8,12 +8,38 @@ export type StudioEditTargetKind =
 export type StudioEditPanel = "code" | "ai" | "asset";
 export type StudioGenerationMode = "component" | "asset";
 export type StudioCanvasPaintMode = "fill" | "stroke" | "fill-stroke";
+export type StudioColliderRegistryCoordinateSpace = "canvas" | "screen";
 
 export type StudioRect = {
   left: number;
   top: number;
   width: number;
   height: number;
+};
+
+// Runtime canvas apps can publish authoritative collider data to
+// window.__studioColliderRegistry using this entry shape so Studio can render
+// real hitboxes instead of inferring them from draw calls.
+export type StudioColliderRegistryEntry = {
+  id?: string;
+  targetId?: string;
+  canvasId?: string;
+  kind?: StudioEditTargetKind;
+  label?: string;
+  textPreview?: string;
+  assetKey?: string;
+  assetUrl?: string;
+  canvasOperation?: string;
+  canvasPaintMode?: StudioCanvasPaintMode;
+  coordinateSpace?: StudioColliderRegistryCoordinateSpace;
+  bounds?: StudioRect | null;
+  collisionBounds?: StudioRect | null;
+  styleHints?: string[];
+  sourceHints?: string[];
+};
+
+export type StudioColliderRegistry = {
+  entries: StudioColliderRegistryEntry[];
 };
 
 export type StudioSelectedTarget = {

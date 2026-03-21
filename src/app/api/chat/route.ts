@@ -259,6 +259,33 @@ Your code blocks tagged as html, jsx, or tsx are rendered as LIVE PREVIEWS insid
    - Use only the placeholder asset identifiers provided in the prompt (for example __ASSET_character_primary__) as image sources in output code.
    - For canvas games, preload images and only call drawImage after each asset has finished loading.
 
+13. CANVAS COLLIDER REGISTRY:
+   - If you generate a canvas game/app with gameplay collisions, hitboxes, hurtboxes, tappable gameplay entities, or physics-style overlap checks, you MUST maintain window.__studioColliderRegistry so Studio can visualize the real colliders.
+   - Keep the registry updated whenever entity positions, sizes, or hitboxes change. Updating it once per animation frame is acceptable.
+   - Prefer stable entity IDs and stable canvas IDs so Studio can match runtime entities across frames.
+   - Use canvas-space coordinates unless you have a strong reason to publish screen-space rectangles.
+   - Visual draw bounds and gameplay collision bounds may differ. When they differ, publish both.
+   - Use this shape:
+     window.__studioColliderRegistry = {
+       entries: [
+         {
+           id: "player-bird",
+           targetId: "optional-studio-target-id",
+           canvasId: "game-canvas",
+           kind: "sprite",
+           label: "Player Bird",
+           assetKey: "character_primary",
+           canvasOperation: "drawImage",
+           coordinateSpace: "canvas",
+           bounds: { left: 120, top: 220, width: 64, height: 64 },
+           collisionBounds: { left: 128, top: 228, width: 48, height: 44 },
+           sourceHints: ["player", "bird"],
+         },
+       ],
+     };
+   - For non-colliding decorative canvas elements, omit collisionBounds instead of inventing one.
+   - When editing existing canvas gameplay code, preserve and update any existing window.__studioColliderRegistry logic unless the user explicitly asks to remove or redesign it.
+
 When writing mathematical formulas in regular chat (not code), use LaTeX notation with single dollar signs for inline math (e.g. $E=mc^2$) and double dollar signs for block math (e.g. $$a^2 + b^2 = c^2$$). You may receive input transcribed from voice; if so, maintain a helpful and conversational tone.`;
 
 function getSystemInstructionForMode(responseMode: ChatResponseMode): string {

@@ -3456,7 +3456,7 @@ export default function CodePreview({
             });
           }
 
-          function __studioGetCanvasEntryById(targetId) {
+          function __studioGetBaseCanvasEntryById(targetId) {
             var entries = __studioPreviewState.canvasEntries || [];
             for (var index = entries.length - 1; index >= 0; index -= 1) {
               if (entries[index] && entries[index].id === targetId) {
@@ -3466,25 +3466,282 @@ export default function CodePreview({
             return null;
           }
 
-          function __studioRefreshCanvasTarget(target) {
-            var entry = __studioGetCanvasEntryById(target && target.id);
-            if (!entry || !entry.canvas || !entry.canvas.getBoundingClientRect) return target;
-            var nextCanvasRect = __studioNormalizeRect(entry.canvas.getBoundingClientRect());
-            if (!nextCanvasRect) return target;
-            var previousCanvasRect = entry.canvasRectSnapshot || nextCanvasRect;
-            if (!__studioRectsEqual(previousCanvasRect, nextCanvasRect)) {
-              entry.bounds =
-                __studioScaleCanvasRect(entry.bounds, previousCanvasRect, nextCanvasRect) ||
-                entry.bounds;
-              entry.collisionBounds = entry.collisionBounds
-                ? __studioScaleCanvasRect(
-                    entry.collisionBounds,
-                    previousCanvasRect,
-                    nextCanvasRect
-                  ) || entry.collisionBounds
-                : null;
-              entry.canvasRectSnapshot = nextCanvasRect;
+          function __studioResolveRegistryCanvas(entry) {
+            if (!entry) return null;
+            if (entry.canvas && typeof entry.canvas.getBoundingClientRect === 'function') {
+              return entry.canvas;
             }
+            var canvasId = entry.canvasId || entry.canvas || null;
+            if (!canvasId || !document) return null;
+            if (typeof canvasId === 'string') {
+              var directByStudioId = document.querySelector(
+                '[data-studio-canvas-id="' + canvasId.replace(/"/g, '\\"') + '"]'
+              );
+              if (directByStudioId && directByStudioId.tagName === 'CANVAS') {
+                return directByStudioId;
+              }
+              var directById = document.getElementById(canvasId);
+              if (directById && directById.tagName === 'CANVAS') {
+                return directById;
+              }
+              if (/^[#.[]/.test(canvasId)) {
+                var queried = document.querySelector(canvasId);
+                if (queried && queried.tagName === 'CANVAS') {
+                  return queried;
+                }
+              }
+            }
+            return null;
+          }
+
+          function __studioProjectRegistryRect(rect, canvas, coordinateSpace) {
+            var normalizedRect = __studioNormalizeRect(rect);
+            if (!normalizedRect) return null;
+            if (coordinateSpace === 'screen') {
+              return normalizedRect;
+            }
+            var metrics = __studioGetCanvasMetrics(canvas);
+            if (!metrics) return null;
+            return __studioNormalizeRect({
+              left: metrics.rect.left + normalizedRect.left * metrics.scaleX,
+              top: metrics.rect.top + normalizedRect.top * metrics.scaleY,
+              width: normalizedRect.width * metrics.scaleX,
+              height: normalizedRect.height * metrics.scaleY
+            });
+          }
+
+          function __studioRectsOverlap(left, right) {
+            if (!left || !right) return false;
+            return !(
+              left.left + left.width < right.left ||
+              right.left + right.width < left.left ||
+              left.top + left.height < right.top ||
+              right.top + right.height < left.top
+            );
+          }
+
+          function __studioBuildRegistryCanvasEntry(rawEntry, index) {
+            if (!rawEntry) return null;
+            var canvas = __studioResolveRegistryCanvas(rawEntry);
+            if (!canvas) return null;
+            var coordinateSpace =
+              rawEntry.coordinateSpace === 'screen' ? 'screen' : 'canvas';
+            var projectedBounds = __studioProjectRegistryRect(
+              rawEntry.bounds || rawEntry.collisionBounds || null,
+              canvas,
+              coordinateSpace
+            );
+            var projectedCollision = rawEntry.collisionBounds
+              ? __studioProjectRegistryRect(
+                  rawEntry.collisionBounds,
+                  canvas,
+                  coordinateSpace
+                )
+              : null;
+            if (!projectedBounds) return null;
+            var canvasId = __studioGetCanvasElementId(canvas);
+            var registryId =
+              typeof rawEntry.id === 'string' && rawEntry.id.trim()
+                ? rawEntry.id.trim()
+                : 'registry:' +
+                  __studioHashString(
+                    [
+                      canvasId,
+                      rawEntry.kind || 'canvas-shape',
+                      rawEntry.assetKey || '',
+                      rawEntry.label || '',
+                      rawEntry.textPreview || '',
+                      rawEntry.canvasOperation || '',
+                      index
+                    ].join('::')
+                  );
+            return {
+              id: registryId,
+              registryId: registryId,
+              targetId:
+                typeof rawEntry.targetId === 'string' ? rawEntry.targetId : undefined,
+              canvas: canvas,
+              kind: rawEntry.kind || 'canvas-shape',
+              label: rawEntry.label || rawEntry.assetKey || rawEntry.textPreview || 'Canvas target',
+              textPreview:
+                typeof rawEntry.textPreview === 'string'
+                  ? rawEntry.textPreview
+                  : undefined,
+              assetKey:
+                typeof rawEntry.assetKey === 'string' ? rawEntry.assetKey : undefined,
+              assetUrl:
+                typeof rawEntry.assetUrl === 'string' ? rawEntry.assetUrl : undefined,
+              canvasOperation:
+                typeof rawEntry.canvasOperation === 'string'
+                  ? rawEntry.canvasOperation
+                  : undefined,
+              canvasPaintMode:
+                rawEntry.canvasPaintMode === 'fill' ||
+                rawEntry.canvasPaintMode === 'stroke' ||
+                rawEntry.canvasPaintMode === 'fill-stroke'
+                  ? rawEntry.canvasPaintMode
+                  : undefined,
+              styleHints: Array.isArray(rawEntry.styleHints) ? rawEntry.styleHints : [],
+              sourceHints: Array.isArray(rawEntry.sourceHints) ? rawEntry.sourceHints : [],
+              bounds: projectedBounds,
+              collisionBounds: projectedCollision,
+              canvasRectSnapshot: __studioNormalizeRect(canvas.getBoundingClientRect()),
+              timestamp: Date.now()
+            };
+          }
+
+          // Apps can provide authoritative collider data through:
+          // window.__studioColliderRegistry = { entries: [...] }
+          // Each entry can target a canvas entity via 'targetId', or match by
+          // 'assetKey' / 'textPreview' / 'label' + 'canvasOperation', and may
+          // include 'bounds' and 'collisionBounds' in canvas or screen space.
+          function __studioGetRegistryCanvasEntries() {
+            var registry = window.__studioColliderRegistry;
+            if (!registry) return [];
+            var rawEntries = Array.isArray(registry)
+              ? registry
+              : Array.isArray(registry.entries)
+                ? registry.entries
+                : [];
+            var entries = [];
+            for (var index = 0; index < rawEntries.length; index += 1) {
+              var built = __studioBuildRegistryCanvasEntry(rawEntries[index], index);
+              if (built) entries.push(built);
+            }
+            return entries;
+          }
+
+          function __studioRegistryEntryMatchesCanvasEntry(registryEntry, canvasEntry) {
+            if (!registryEntry || !canvasEntry) return false;
+            if (registryEntry.targetId && registryEntry.targetId === canvasEntry.id) {
+              return true;
+            }
+            if (
+              registryEntry.canvas &&
+              canvasEntry.canvas &&
+              registryEntry.canvas !== canvasEntry.canvas
+            ) {
+              return false;
+            }
+            if (
+              registryEntry.assetKey &&
+              canvasEntry.assetKey &&
+              registryEntry.assetKey === canvasEntry.assetKey
+            ) {
+              return true;
+            }
+            if (
+              registryEntry.textPreview &&
+              canvasEntry.textPreview &&
+              registryEntry.textPreview === canvasEntry.textPreview
+            ) {
+              return true;
+            }
+            if (
+              registryEntry.label &&
+              canvasEntry.label &&
+              registryEntry.label === canvasEntry.label &&
+              (!registryEntry.canvasOperation ||
+                registryEntry.canvasOperation === canvasEntry.canvasOperation)
+            ) {
+              return true;
+            }
+            return __studioRectsOverlap(registryEntry.bounds, canvasEntry.bounds);
+          }
+
+          function __studioMergeCanvasEntryWithRegistry(canvasEntry, registryEntry) {
+            if (!registryEntry) return canvasEntry;
+            return Object.assign({}, canvasEntry, {
+              label: registryEntry.label || canvasEntry.label,
+              textPreview: registryEntry.textPreview || canvasEntry.textPreview,
+              assetKey: registryEntry.assetKey || canvasEntry.assetKey,
+              assetUrl: registryEntry.assetUrl || canvasEntry.assetUrl,
+              canvasOperation:
+                registryEntry.canvasOperation || canvasEntry.canvasOperation,
+              canvasPaintMode:
+                registryEntry.canvasPaintMode || canvasEntry.canvasPaintMode,
+              styleHints:
+                registryEntry.styleHints && registryEntry.styleHints.length > 0
+                  ? registryEntry.styleHints
+                  : canvasEntry.styleHints,
+              sourceHints:
+                registryEntry.sourceHints && registryEntry.sourceHints.length > 0
+                  ? registryEntry.sourceHints
+                  : canvasEntry.sourceHints,
+              bounds: registryEntry.bounds || canvasEntry.bounds,
+              collisionBounds:
+                registryEntry.collisionBounds !== undefined
+                  ? registryEntry.collisionBounds
+                  : canvasEntry.collisionBounds || null,
+              timestamp: Math.max(
+                Number(canvasEntry.timestamp || 0),
+                Number(registryEntry.timestamp || 0)
+              )
+            });
+          }
+
+          function __studioGetResolvedCanvasEntries() {
+            var baseEntries = __studioPreviewState.canvasEntries || [];
+            var registryEntries = __studioGetRegistryCanvasEntries();
+            if (registryEntries.length === 0) return baseEntries;
+            var usedRegistryIds = {};
+            var mergedEntries = baseEntries.map(function(entry) {
+              var match = null;
+              for (var index = 0; index < registryEntries.length; index += 1) {
+                var registryEntry = registryEntries[index];
+                if (__studioRegistryEntryMatchesCanvasEntry(registryEntry, entry)) {
+                  match = registryEntry;
+                  usedRegistryIds[registryEntry.registryId || registryEntry.id] = true;
+                  break;
+                }
+              }
+              return match ? __studioMergeCanvasEntryWithRegistry(entry, match) : entry;
+            });
+            registryEntries.forEach(function(entry) {
+              var registryId = entry.registryId || entry.id;
+              if (!usedRegistryIds[registryId]) {
+                mergedEntries.push(entry);
+              }
+            });
+            return mergedEntries;
+          }
+
+          function __studioGetCanvasEntryById(targetId) {
+            var entries = __studioGetResolvedCanvasEntries();
+            for (var index = entries.length - 1; index >= 0; index -= 1) {
+              if (entries[index] && entries[index].id === targetId) {
+                return entries[index];
+              }
+            }
+            return null;
+          }
+
+          function __studioRefreshCanvasTarget(target) {
+            var baseEntry = __studioGetBaseCanvasEntryById(target && target.id);
+            if (baseEntry && baseEntry.canvas && baseEntry.canvas.getBoundingClientRect) {
+              var nextCanvasRect = __studioNormalizeRect(baseEntry.canvas.getBoundingClientRect());
+              if (nextCanvasRect) {
+                var previousCanvasRect = baseEntry.canvasRectSnapshot || nextCanvasRect;
+                if (!__studioRectsEqual(previousCanvasRect, nextCanvasRect)) {
+                  baseEntry.bounds =
+                    __studioScaleCanvasRect(
+                      baseEntry.bounds,
+                      previousCanvasRect,
+                      nextCanvasRect
+                    ) || baseEntry.bounds;
+                  baseEntry.collisionBounds = baseEntry.collisionBounds
+                    ? __studioScaleCanvasRect(
+                        baseEntry.collisionBounds,
+                        previousCanvasRect,
+                        nextCanvasRect
+                      ) || baseEntry.collisionBounds
+                    : null;
+                  baseEntry.canvasRectSnapshot = nextCanvasRect;
+                }
+              }
+            }
+            var entry = __studioGetCanvasEntryById(target && target.id);
+            if (!entry) return target;
             return __studioMakeCanvasTarget(entry);
           }
 
@@ -3508,7 +3765,7 @@ export default function CodePreview({
           }
 
           function __studioGetActiveCanvasEntries() {
-            var entries = (__studioPreviewState.canvasEntries || []).filter(function(entry) {
+            var entries = (__studioGetResolvedCanvasEntries() || []).filter(function(entry) {
               return (
                 entry &&
                 entry.bounds &&

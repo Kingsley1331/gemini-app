@@ -95,6 +95,7 @@ export async function buildPreviewContextRequestMessage({
     "- Preserve existing asset placeholders exactly as listed.",
     "- Use the listed visual assets via their placeholders when updating the app.",
     "- Keep placeholder references intact in code for assets listed in the manifest.",
+    "- If the app uses canvas gameplay collisions or hitboxes, preserve and update window.__studioColliderRegistry so collisionBounds stay authoritative.",
   ].join("\n");
 
   return {
@@ -172,6 +173,7 @@ export async function buildSelectedComponentContextRequestMessage({
     "- Preserve all asset placeholders exactly as listed.",
     "- Keep the component/block compatible with the existing app around it.",
     "- Avoid unrelated refactors.",
+    "- Preserve and update any existing window.__studioColliderRegistry logic for canvas gameplay entities unless the user explicitly asks to remove it.",
   ].join("\n");
 
   return {
