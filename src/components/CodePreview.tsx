@@ -3281,6 +3281,9 @@ export default function CodePreview({
 
           function __studioRegisterCanvasEntry(entry) {
             if (!entry || !entry.canvas || !entry.bounds) return;
+            entry.canvasRectSnapshot = __studioNormalizeRect(
+              entry.canvas.getBoundingClientRect ? entry.canvas.getBoundingClientRect() : null
+            );
             entry.id = entry.id || __studioBuildCanvasEntryId(entry);
             entry.timestamp = Date.now();
             var entries = __studioPreviewState.canvasEntries || [];
@@ -3300,6 +3303,56 @@ export default function CodePreview({
             }
             __studioPreviewState.canvasEntries = entries;
             __studioPreviewState.spriteEntries = entries;
+          }
+
+          function __studioScaleCanvasRect(rect, previousCanvasRect, nextCanvasRect) {
+            if (!rect || !previousCanvasRect || !nextCanvasRect) return rect;
+            var previousWidth = Number(previousCanvasRect.width || 0);
+            var previousHeight = Number(previousCanvasRect.height || 0);
+            if (previousWidth <= 0 || previousHeight <= 0) return rect;
+            return __studioNormalizeRect({
+              left:
+                nextCanvasRect.left +
+                ((rect.left - previousCanvasRect.left) / previousWidth) * nextCanvasRect.width,
+              top:
+                nextCanvasRect.top +
+                ((rect.top - previousCanvasRect.top) / previousHeight) * nextCanvasRect.height,
+              width: (rect.width / previousWidth) * nextCanvasRect.width,
+              height: (rect.height / previousHeight) * nextCanvasRect.height
+            });
+          }
+
+          function __studioGetCanvasEntryById(targetId) {
+            var entries = __studioPreviewState.canvasEntries || [];
+            for (var index = entries.length - 1; index >= 0; index -= 1) {
+              if (entries[index] && entries[index].id === targetId) {
+                return entries[index];
+              }
+            }
+            return null;
+          }
+
+          function __studioRefreshCanvasTarget(target) {
+            var entry = __studioGetCanvasEntryById(target && target.id);
+            if (!entry || !entry.canvas || !entry.canvas.getBoundingClientRect) return target;
+            var nextCanvasRect = __studioNormalizeRect(entry.canvas.getBoundingClientRect());
+            if (!nextCanvasRect) return target;
+            var previousCanvasRect = entry.canvasRectSnapshot || nextCanvasRect;
+            if (!__studioRectsEqual(previousCanvasRect, nextCanvasRect)) {
+              entry.bounds =
+                __studioScaleCanvasRect(entry.bounds, previousCanvasRect, nextCanvasRect) ||
+                entry.bounds;
+              entry.collisionBounds =
+                __studioScaleCanvasRect(
+                  entry.collisionBounds || entry.bounds,
+                  previousCanvasRect,
+                  nextCanvasRect
+                ) ||
+                entry.collisionBounds ||
+                entry.bounds;
+              entry.canvasRectSnapshot = nextCanvasRect;
+            }
+            return __studioMakeCanvasTarget(entry);
           }
 
           function __studioMakeCanvasTarget(entry) {
@@ -3826,6 +3879,17 @@ export default function CodePreview({
             };
           }
 
+          function __studioRectsEqual(left, right) {
+            if (!left && !right) return true;
+            if (!left || !right) return false;
+            return (
+              left.left === right.left &&
+              left.top === right.top &&
+              left.width === right.width &&
+              left.height === right.height
+            );
+          }
+
           function __studioTruncate(value, fallback) {
             var text = (value || '').trim();
             if (!text) return fallback;
@@ -4025,6 +4089,50 @@ ${studioCanvasInstrumentationScript}
             if (target && openOptions) {
               __studioPostPreviewEvent('studio-edit-open-options', target);
             }
+          }
+
+          function __studioFindTrackedDomElement(targetId) {
+            if (!targetId || !document.querySelectorAll) return null;
+            var elements = document.querySelectorAll('[data-studio-node-id]');
+            for (var index = 0; index < elements.length; index += 1) {
+              var element = elements[index];
+              if (element && element.dataset && element.dataset.studioNodeId === targetId) {
+                return element;
+              }
+            }
+            return null;
+          }
+
+          function __studioRefreshResolvedTarget(target) {
+            if (!target) return null;
+            var trackedElement = __studioFindTrackedDomElement(target.id);
+            if (trackedElement) {
+              return __studioMakeDomTarget(trackedElement);
+            }
+            return target;
+          }
+
+          function __studioRefreshOverlayTargets() {
+            if (!__studioPreviewState.enabled) return;
+            var nextHovered = __studioRefreshResolvedTarget(__studioPreviewState.hoveredTarget);
+            var nextSelected = __studioRefreshResolvedTarget(__studioPreviewState.selectedTarget);
+            if (
+              !__studioRectsEqual(
+                __studioPreviewState.hoveredTarget && __studioPreviewState.hoveredTarget.bounds,
+                nextHovered && nextHovered.bounds
+              )
+            ) {
+              __studioPreviewState.hoveredTarget = nextHovered;
+            }
+            if (
+              !__studioRectsEqual(
+                __studioPreviewState.selectedTarget && __studioPreviewState.selectedTarget.bounds,
+                nextSelected && nextSelected.bounds
+              )
+            ) {
+              __studioPreviewState.selectedTarget = nextSelected;
+            }
+            __studioRenderOverlays();
           }
 
           function __studioGetDomDepth(element) {
@@ -4279,6 +4387,8 @@ ${studioCanvasInstrumentationScript}
           document.addEventListener('mouseleave', __studioHandlePointerLeave, true);
           document.addEventListener('click', __studioHandleClick, true);
           document.addEventListener('dblclick', __studioHandleDoubleClick, true);
+          window.addEventListener('resize', __studioRefreshOverlayTargets, true);
+          window.addEventListener('scroll', __studioRefreshOverlayTargets, true);
 
           function __studioNotifyReady() {
             window.parent.postMessage({ type: 'studio-preview-ready' }, '*');
@@ -4489,6 +4599,17 @@ ${studioCanvasInstrumentationScript}
                   width: Math.max(0, Number(rect.width || 0)),
                   height: Math.max(0, Number(rect.height || 0))
                 };
+              }
+
+              function __studioRectsEqual(left, right) {
+                if (!left && !right) return true;
+                if (!left || !right) return false;
+                return (
+                  left.left === right.left &&
+                  left.top === right.top &&
+                  left.width === right.width &&
+                  left.height === right.height
+                );
               }
 
               function __studioTruncate(value, fallback) {
@@ -4742,6 +4863,45 @@ ${studioCanvasInstrumentationScript}
                 if (target && openOptions) {
                   __studioPostPreviewEvent('studio-edit-open-options', target);
                 }
+              }
+
+              function __studioFindTrackedDomElement(targetId) {
+                if (!targetId || !document.querySelectorAll) return null;
+                var elements = document.querySelectorAll('[data-studio-node-id]');
+                for (var index = 0; index < elements.length; index += 1) {
+                  var element = elements[index];
+                  if (element && element.dataset && element.dataset.studioNodeId === targetId) {
+                    return element;
+                  }
+                }
+                return null;
+              }
+
+              function __studioRefreshResolvedTarget(target) {
+                if (!target) return null;
+                if (
+                  target.kind === 'sprite' ||
+                  target.kind === 'canvas-text' ||
+                  target.kind === 'canvas-shape'
+                ) {
+                  return __studioRefreshCanvasTarget(target);
+                }
+                var trackedElement = __studioFindTrackedDomElement(target.id);
+                if (trackedElement) {
+                  return __studioMakeDomTarget(trackedElement);
+                }
+                return target;
+              }
+
+              function __studioRefreshOverlayTargets() {
+                if (!__studioPreviewState.enabled) return;
+                __studioPreviewState.hoveredTarget = __studioRefreshResolvedTarget(
+                  __studioPreviewState.hoveredTarget
+                );
+                __studioPreviewState.selectedTarget = __studioRefreshResolvedTarget(
+                  __studioPreviewState.selectedTarget
+                );
+                __studioRenderOverlays();
               }
 
               function __studioGetActiveSpriteEntries() {
@@ -5033,6 +5193,8 @@ ${studioCanvasInstrumentationScript}
               document.addEventListener('mouseleave', __studioHandlePointerLeave, true);
               document.addEventListener('click', __studioHandleClick, true);
               document.addEventListener('dblclick', __studioHandleDoubleClick, true);
+              window.addEventListener('resize', __studioRefreshOverlayTargets, true);
+              window.addEventListener('scroll', __studioRefreshOverlayTargets, true);
 
               // Lucide icon factory — uses lucide.createElement() to get SVG HTML,
               // then wraps it in a React component with dangerouslySetInnerHTML
