@@ -282,7 +282,6 @@ function EditStatusMessage({ content }: { content: string }) {
                     PreTag="div"
                     wrapLines={true}
                     customStyle={{ margin: 0, padding: "0.75rem", fontSize: "0.75rem" }}
-                    {...props}
                   >
                     {code}
                   </SyntaxHighlighter>
