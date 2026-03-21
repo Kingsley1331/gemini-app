@@ -80,16 +80,70 @@ export function getPreviewDiffSemanticsText(): string {
   return `New code appears with ${PREVIEW_DIFF_LINE_MARKERS.added} additions while the current preview code appears with ${PREVIEW_DIFF_LINE_MARKERS.removed} deletions.`;
 }
 
+function normalizeResponseCodeLanguage(
+  language: string | undefined,
+  preferredLanguage?: string,
+): string | null {
+  const rawLanguage = (language || "").trim().toLowerCase();
+  const alias =
+    rawLanguage === "js"
+      ? "javascript"
+      : rawLanguage === "ts"
+        ? "typescript"
+        : rawLanguage;
+
+  if (alias && PREVIEWABLE_RESPONSE_LANGUAGES.has(alias)) {
+    return alias;
+  }
+
+  const preferred = (preferredLanguage || "").trim().toLowerCase();
+  return PREVIEWABLE_RESPONSE_LANGUAGES.has(preferred) ? preferred : null;
+}
+
+function buildFallbackSummary(rawResponse: string, fallback: string): string {
+  const cleaned = rawResponse
+    .replace(/<<[^>]+>>/g, " ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned || fallback;
+}
+
+function inferCodeBlockFromRawResponse(
+  rawResponse: string,
+  preferredLanguage?: string,
+): ExtractedPreviewCodeBlock | null {
+  const normalizedLanguage = normalizeResponseCodeLanguage("", preferredLanguage);
+  if (!normalizedLanguage) return null;
+
+  const trimmed = rawResponse.trim();
+  if (!trimmed) return null;
+
+  const looksLikeCode =
+    /(?:^|\n)\s*(?:export\s+default|export\s+const|function\s+\w+|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|return\s*\(|<\w+|ctx\.\w+|canvas\.\w+)/.test(
+      trimmed,
+    );
+
+  if (!looksLikeCode) return null;
+
+  return {
+    language: normalizedLanguage,
+    code: trimmed,
+  };
+}
+
 export function extractLatestPreviewableCodeBlock(
   content: string,
+  preferredLanguage?: string,
 ): ExtractedPreviewCodeBlock | null {
-  const codeBlockRegex = /```([a-zA-Z0-9_-]+)[^\n]*\n([\s\S]*?)```/g;
+  const codeBlockRegex = /```([a-zA-Z0-9_-]*)[^\n]*\n([\s\S]*?)```/g;
   let match: RegExpExecArray | null;
   let latestMatch: ExtractedPreviewCodeBlock | null = null;
 
   while ((match = codeBlockRegex.exec(content)) !== null) {
-    const language = (match[1] || "").toLowerCase();
-    if (!PREVIEWABLE_RESPONSE_LANGUAGES.has(language)) continue;
+    const language = normalizeResponseCodeLanguage(match[1] || "", preferredLanguage);
+    if (!language) continue;
 
     latestMatch = {
       language,
@@ -102,6 +156,7 @@ export function extractLatestPreviewableCodeBlock(
 
 export function parsePreviewEditResponse(
   rawResponse: string,
+  preferredLanguage?: string,
 ): ParsedPreviewEditResponse | null {
   const chatSummaryMatch = rawResponse.match(
     /<<CHAT_SUMMARY>>\s*([\s\S]*?)\s*<<END_CHAT_SUMMARY>>/i,
@@ -113,12 +168,14 @@ export function parsePreviewEditResponse(
     /<<FULL_UPDATED_CODE>>\s*([\s\S]*?)\s*<<END_FULL_UPDATED_CODE>>/i,
   );
 
-  if (!fullUpdatedCodeMatch) return null;
-
-  const previewCodeBlock = extractLatestPreviewableCodeBlock(fullUpdatedCodeMatch[1] || "");
+  const previewCodeBlock =
+    extractLatestPreviewableCodeBlock(fullUpdatedCodeMatch?.[1] || "", preferredLanguage) ||
+    extractLatestPreviewableCodeBlock(rawResponse, preferredLanguage) ||
+    inferCodeBlockFromRawResponse(rawResponse, preferredLanguage);
   if (!previewCodeBlock) return null;
 
-  const chatSummary = chatSummaryMatch?.[1]?.trim() || "Updated the preview.";
+  const chatSummary =
+    chatSummaryMatch?.[1]?.trim() || buildFallbackSummary(rawResponse, "Updated the preview.");
   const chatDiff = chatDiffMatch?.[1]?.trim() || "";
   const chatContent = [chatSummary, chatDiff].filter(Boolean).join("\n\n");
 
@@ -132,6 +189,7 @@ export function parsePreviewEditResponse(
 
 export function parseComponentEditResponse(
   rawResponse: string,
+  preferredLanguage?: string,
 ): ParsedComponentEditResponse | null {
   const chatSummaryMatch = rawResponse.match(
     /<<CHAT_SUMMARY>>\s*([\s\S]*?)\s*<<END_CHAT_SUMMARY>>/i,
@@ -143,14 +201,18 @@ export function parseComponentEditResponse(
     /<<UPDATED_COMPONENT>>\s*([\s\S]*?)\s*<<END_UPDATED_COMPONENT>>/i,
   );
 
-  if (!updatedComponentMatch) return null;
-
-  const componentCodeBlock = extractLatestPreviewableCodeBlock(
-    updatedComponentMatch[1] || "",
-  );
+  const componentCodeBlock =
+    extractLatestPreviewableCodeBlock(
+      updatedComponentMatch?.[1] || "",
+      preferredLanguage,
+    ) ||
+    extractLatestPreviewableCodeBlock(rawResponse, preferredLanguage) ||
+    inferCodeBlockFromRawResponse(rawResponse, preferredLanguage);
   if (!componentCodeBlock) return null;
 
-  const chatSummary = chatSummaryMatch?.[1]?.trim() || "Updated the component.";
+  const chatSummary =
+    chatSummaryMatch?.[1]?.trim() ||
+    buildFallbackSummary(rawResponse, "Updated the component.");
   const chatDiff = chatDiffMatch?.[1]?.trim() || "";
   const chatContent = [chatSummary, chatDiff].filter(Boolean).join("\n\n");
 

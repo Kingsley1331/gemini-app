@@ -12,6 +12,8 @@ import {
 } from "react";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Play,
   Code,
@@ -258,6 +260,52 @@ function getTargetDisplayLabel(target: StudioSelectedTarget | null): string {
     return truncateEditLabel(target.label, "Selected canvas shape");
   }
   return truncateEditLabel(target.label, "Selected element");
+}
+
+function EditStatusMessage({ content }: { content: string }) {
+  return (
+    <div className="prose prose-sm max-w-none break-words text-xs text-zinc-600 dark:prose-invert dark:text-zinc-300">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className || "");
+            const codeLanguage = match ? match[1] : "";
+            const code = String(children).replace(/\n$/, "");
+
+            if (codeLanguage) {
+              return (
+                <div className="my-2 overflow-x-auto rounded-lg bg-[#1e1e1e]">
+                  <SyntaxHighlighter
+                    style={vscDarkPlus}
+                    language={codeLanguage}
+                    PreTag="div"
+                    wrapLines={true}
+                    customStyle={{ margin: 0, padding: "0.75rem", fontSize: "0.75rem" }}
+                    {...props}
+                  >
+                    {code}
+                  </SyntaxHighlighter>
+                </div>
+              );
+            }
+
+            return (
+              <code
+                className="rounded bg-zinc-200 px-1 dark:bg-zinc-800"
+                {...props}
+              >
+                {children}
+              </code>
+            );
+          },
+          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function sleep(ms: number) {
@@ -1881,7 +1929,7 @@ export default function CodePreview({
       }
       assistantContent += decoder.decode();
 
-      const parsedResponse = parseComponentEditResponse(assistantContent);
+      const parsedResponse = parseComponentEditResponse(assistantContent, language);
       if (!parsedResponse) {
         throw new Error("The model did not return an updated component block.");
       }
@@ -6271,9 +6319,7 @@ ${studioCanvasInstrumentationScript}
                     </label>
                   ) : null}
                   {componentUpdateStatus || aiAssetStatus ? (
-                    <p className="text-xs text-zinc-600 dark:text-zinc-300">
-                      {aiAssetStatus || componentUpdateStatus}
-                    </p>
+                    <EditStatusMessage content={aiAssetStatus || componentUpdateStatus || ""} />
                   ) : null}
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <button
@@ -6401,9 +6447,7 @@ ${studioCanvasInstrumentationScript}
                     </div>
                   ) : null}
                   {componentUpdateStatus || aiAssetStatus ? (
-                    <p className="text-xs text-zinc-600 dark:text-zinc-300">
-                      {aiAssetStatus || componentUpdateStatus}
-                    </p>
+                    <EditStatusMessage content={aiAssetStatus || componentUpdateStatus || ""} />
                   ) : null}
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <button
