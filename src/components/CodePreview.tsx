@@ -103,6 +103,52 @@ interface CodePreviewProps {
 const EMPTY_PREVIEW_ASSETS: AppAsset[] = [];
 const STUDIO_DRAFT_STORAGE_PREFIX = "studio-draft:";
 const ASSET_FILE_ACCEPT = "image/*,.svg";
+
+function persistPreviewDraftToLocalStorage(
+  id: string,
+  data: {
+    code?: string;
+    language?: string;
+    name?: string;
+    hasGeneratedIcon?: boolean;
+    iconVersion?: number;
+  },
+) {
+  try {
+    if (typeof data.code === "string") {
+      localStorage.setItem(`pwa-preview-${id}-code`, data.code);
+    }
+    if (typeof data.language === "string") {
+      localStorage.setItem(`pwa-preview-${id}-language`, data.language);
+    }
+    if (typeof data.name === "string") {
+      localStorage.setItem(`pwa-preview-${id}-name`, data.name);
+    }
+    if (typeof data.hasGeneratedIcon === "boolean") {
+      if (data.hasGeneratedIcon) {
+        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+      } else {
+        localStorage.removeItem(`pwa-preview-${id}-has-generated-icon`);
+      }
+    }
+    if (typeof data.iconVersion === "number" && Number.isFinite(data.iconVersion)) {
+      localStorage.setItem(`pwa-preview-${id}-icon-version`, String(data.iconVersion));
+    } else if (data.hasGeneratedIcon === false) {
+      localStorage.removeItem(`pwa-preview-${id}-icon-version`);
+    }
+  } catch {
+    // localStorage hydration is best-effort; IDB remains the durable source
+  }
+}
+
+function persistPreviewRemoteUpdatedAt(id: string, updatedAt: number) {
+  try {
+    localStorage.setItem(`pwa-preview-${id}-remote-updated-at`, String(updatedAt));
+  } catch {
+    // best-effort
+  }
+}
+
 const MonacoEditor = dynamic(
   () => import("@monaco-editor/react").then((module) => module.default),
   {
@@ -912,7 +958,7 @@ export default function CodePreview({
     for (let i = localStorage.length - 1; i >= 0; i -= 1) {
       const key = localStorage.key(i);
       if (!key) continue;
-      if (/^pwa-preview-.*-icon-(192|512)$/.test(key)) {
+      if (/^pwa-preview-.*-(icon-(192|512)|icon(192|512)-b64)$/.test(key)) {
         localStorage.removeItem(key);
       }
     }
@@ -2267,16 +2313,15 @@ export default function CodePreview({
         data?.iconDataUrls?.icon512?.replace(/^data:[^,]+,/, "") || null;
       const iconVersion = Date.now();
       if (icon192b64) {
-        localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
         setGeneratedIconBase64(icon192b64);
       }
       setGeneratedIcon512Base64(icon512b64);
+      localStorage.removeItem(`pwa-preview-${id}-icon192-b64`);
       localStorage.removeItem(`pwa-preview-${id}-icon512-b64`);
-      localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-      localStorage.setItem(
-        `pwa-preview-${id}-icon-version`,
-        String(iconVersion),
-      );
+      persistPreviewDraftToLocalStorage(id, {
+        hasGeneratedIcon: true,
+        iconVersion,
+      });
       await cacheGeneratedPreviewIcons(id, {
         icon192b64,
         icon512b64,
@@ -2308,8 +2353,8 @@ export default function CodePreview({
     const hasGeneratedIcon = hasSaveIcon;
     const effectiveLanguage = resolveEffectiveLanguage();
     const localIconBase64 =
-      localStorage.getItem(`pwa-preview-${id}-icon192-b64`) ||
       generatedIconBase64 ||
+      localStorage.getItem(`pwa-preview-${id}-icon192-b64`) ||
       undefined;
 
     setIsSavingApp(true);
@@ -2317,21 +2362,15 @@ export default function CodePreview({
     try {
       const preparedAssets = await ensureAssetsOnDraft(id);
 
-      localStorage.setItem(`pwa-preview-${id}-code`, code);
-      localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
-      localStorage.setItem(`pwa-preview-${id}-name`, name);
-      if (hasGeneratedIcon) {
-        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-        if (!localStorage.getItem(`pwa-preview-${id}-icon-version`)) {
-          localStorage.setItem(
-            `pwa-preview-${id}-icon-version`,
-            String(Date.now()),
-          );
-        }
-      } else {
-        localStorage.removeItem(`pwa-preview-${id}-has-generated-icon`);
-        localStorage.removeItem(`pwa-preview-${id}-icon-version`);
-      }
+      persistPreviewDraftToLocalStorage(id, {
+        code,
+        language: effectiveLanguage,
+        name,
+        hasGeneratedIcon,
+        iconVersion: hasGeneratedIcon
+          ? Number(localStorage.getItem(`pwa-preview-${id}-icon-version`)) || Date.now()
+          : undefined,
+      });
 
       await persistPwaPreviewAssets(id, preparedAssets);
       savePreviewToIDB({
@@ -2385,10 +2424,7 @@ export default function CodePreview({
           Number.isFinite(publishData.updatedAt) &&
           publishData.updatedAt > 0
         ) {
-          localStorage.setItem(
-            `pwa-preview-${id}-remote-updated-at`,
-            String(publishData.updatedAt),
-          );
+          persistPreviewRemoteUpdatedAt(id, publishData.updatedAt);
         }
         const sharedLink = publishData.shareUrl as string;
         setShareUrl(sharedLink);
@@ -2396,8 +2432,12 @@ export default function CodePreview({
         setSaveStatus("Saved to My Apps and Firebase.");
         setShowSaveModal(false);
       }
-    } catch {
-      setSaveStatus("Failed to save. Please try again.");
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Failed to save. Please try again.";
+      setSaveStatus(message);
     } finally {
       setIsSavingApp(false);
     }
@@ -2430,12 +2470,12 @@ export default function CodePreview({
         latestAssetsRef.current || [],
       );
 
-      localStorage.setItem(`pwa-preview-${id}-code`, code);
-      localStorage.setItem(`pwa-preview-${id}-language`, effectiveLanguage);
-      localStorage.setItem(`pwa-preview-${id}-name`, name);
-      if (hasGeneratedIcon) {
-        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-      }
+      persistPreviewDraftToLocalStorage(id, {
+        code,
+        language: effectiveLanguage,
+        name,
+        hasGeneratedIcon,
+      });
 
       await persistPwaPreviewAssets(id, preparedAssets);
       savePreviewToIDB({

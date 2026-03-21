@@ -41,6 +41,43 @@ type GenerateIconResponse = {
   shareUrl?: string;
 };
 
+function persistPreviewDraftToLocalStorage(
+  id: string,
+  data: {
+    code?: string;
+    language?: string;
+    name?: string;
+    hasGeneratedIcon?: boolean;
+    iconVersion?: number;
+  },
+) {
+  try {
+    if (typeof data.code === "string") {
+      localStorage.setItem(`pwa-preview-${id}-code`, data.code);
+    }
+    if (typeof data.language === "string") {
+      localStorage.setItem(`pwa-preview-${id}-language`, data.language);
+    }
+    if (typeof data.name === "string") {
+      localStorage.setItem(`pwa-preview-${id}-name`, data.name);
+    }
+    if (typeof data.hasGeneratedIcon === "boolean") {
+      if (data.hasGeneratedIcon) {
+        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
+      } else {
+        localStorage.removeItem(`pwa-preview-${id}-has-generated-icon`);
+      }
+    }
+    if (typeof data.iconVersion === "number" && Number.isFinite(data.iconVersion)) {
+      localStorage.setItem(`pwa-preview-${id}-icon-version`, String(data.iconVersion));
+    } else if (data.hasGeneratedIcon === false) {
+      localStorage.removeItem(`pwa-preview-${id}-icon-version`);
+    }
+  } catch {
+    // best-effort; IDB and remote storage remain authoritative
+  }
+}
+
 function stripDataUrlPrefix(value?: string | null): string | null {
   if (!value) return null;
   return value.replace(/^data:[^,]+,/, "");
@@ -345,11 +382,14 @@ export default function AppsPage() {
       const icon512b64 = stripDataUrlPrefix(data.iconDataUrls?.icon512);
       const iconVersion = Date.now();
       if (icon192b64) {
-        localStorage.setItem(`pwa-preview-${id}-icon192-b64`, icon192b64);
         setCloneIconBase64(icon192b64);
       }
-      localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-      localStorage.setItem(`pwa-preview-${id}-icon-version`, String(iconVersion));
+      localStorage.removeItem(`pwa-preview-${id}-icon192-b64`);
+      localStorage.removeItem(`pwa-preview-${id}-icon512-b64`);
+      persistPreviewDraftToLocalStorage(id, {
+        hasGeneratedIcon: true,
+        iconVersion,
+      });
       await cacheGeneratedPreviewIcons(id, { icon192b64, icon512b64, version: iconVersion });
       setCloneHasIcon(true);
       setCloneIconMode(nextMode);
@@ -456,18 +496,15 @@ export default function AppsPage() {
       setCloneStatus("Uploading assets...");
       const preparedAssets = await ensureDraftAppAssets(id, assets);
 
-      localStorage.setItem(`pwa-preview-${id}-code`, cloneSourceData.code);
-      localStorage.setItem(`pwa-preview-${id}-language`, cloneSourceData.language);
-      localStorage.setItem(`pwa-preview-${id}-name`, name);
-      if (cloneHasIcon) {
-        localStorage.setItem(`pwa-preview-${id}-has-generated-icon`, "1");
-        if (!localStorage.getItem(`pwa-preview-${id}-icon-version`)) {
-          localStorage.setItem(`pwa-preview-${id}-icon-version`, String(Date.now()));
-        }
-      } else {
-        localStorage.removeItem(`pwa-preview-${id}-has-generated-icon`);
-        localStorage.removeItem(`pwa-preview-${id}-icon-version`);
-      }
+      persistPreviewDraftToLocalStorage(id, {
+        code: cloneSourceData.code,
+        language: cloneSourceData.language,
+        name,
+        hasGeneratedIcon: cloneHasIcon,
+        iconVersion: cloneHasIcon
+          ? Number(localStorage.getItem(`pwa-preview-${id}-icon-version`)) || Date.now()
+          : undefined,
+      });
 
       await persistPwaPreviewAssets(id, preparedAssets);
       savePreviewToIDB({
