@@ -3511,6 +3511,35 @@ export default function CodePreview({
             return null;
           }
 
+          function __studioRefreshCanvasEntryBounds(entry) {
+            if (!entry || !entry.canvas || !entry.canvas.getBoundingClientRect) return entry;
+            var nextCanvasRect = __studioNormalizeRect(entry.canvas.getBoundingClientRect());
+            if (!nextCanvasRect) return entry;
+            var previousCanvasRect = entry.canvasRectSnapshot || nextCanvasRect;
+            if (__studioRectsEqual(previousCanvasRect, nextCanvasRect)) return entry;
+            entry.bounds =
+              __studioScaleCanvasRect(entry.bounds, previousCanvasRect, nextCanvasRect) ||
+              entry.bounds;
+            entry.collisionBounds = entry.collisionBounds
+              ? __studioScaleCanvasRect(
+                  entry.collisionBounds,
+                  previousCanvasRect,
+                  nextCanvasRect
+                ) || entry.collisionBounds
+              : null;
+            entry.canvasRectSnapshot = nextCanvasRect;
+            entry.timestamp = Date.now();
+            return entry;
+          }
+
+          function __studioRefreshCanvasEntries() {
+            var entries = __studioPreviewState.canvasEntries || [];
+            for (var index = 0; index < entries.length; index += 1) {
+              __studioRefreshCanvasEntryBounds(entries[index]);
+            }
+            return entries;
+          }
+
           function __studioResolveRegistryCanvas(entry) {
             if (!entry) return null;
             if (entry.canvas && typeof entry.canvas.getBoundingClientRect === 'function') {
@@ -3726,7 +3755,7 @@ export default function CodePreview({
           }
 
           function __studioGetResolvedCanvasEntries() {
-            var baseEntries = __studioPreviewState.canvasEntries || [];
+            var baseEntries = __studioRefreshCanvasEntries();
             var registryEntries = __studioGetRegistryCanvasEntries();
             if (registryEntries.length === 0) return baseEntries;
             var usedRegistryIds = {};
@@ -3761,31 +3790,99 @@ export default function CodePreview({
             return null;
           }
 
-          function __studioRefreshCanvasTarget(target) {
-            var baseEntry = __studioGetBaseCanvasEntryById(target && target.id);
-            if (baseEntry && baseEntry.canvas && baseEntry.canvas.getBoundingClientRect) {
-              var nextCanvasRect = __studioNormalizeRect(baseEntry.canvas.getBoundingClientRect());
-              if (nextCanvasRect) {
-                var previousCanvasRect = baseEntry.canvasRectSnapshot || nextCanvasRect;
-                if (!__studioRectsEqual(previousCanvasRect, nextCanvasRect)) {
-                  baseEntry.bounds =
-                    __studioScaleCanvasRect(
-                      baseEntry.bounds,
-                      previousCanvasRect,
-                      nextCanvasRect
-                    ) || baseEntry.bounds;
-                  baseEntry.collisionBounds = baseEntry.collisionBounds
-                    ? __studioScaleCanvasRect(
-                        baseEntry.collisionBounds,
-                        previousCanvasRect,
-                        nextCanvasRect
-                      ) || baseEntry.collisionBounds
-                    : null;
-                  baseEntry.canvasRectSnapshot = nextCanvasRect;
-                }
+          function __studioCountMatchingCanvasHints(leftHints, rightHints) {
+            if (!Array.isArray(leftHints) || !Array.isArray(rightHints)) return 0;
+            var rightSet = {};
+            for (var index = 0; index < rightHints.length; index += 1) {
+              var rightHint = rightHints[index];
+              if (typeof rightHint === 'string' && rightHint) {
+                rightSet[rightHint] = true;
               }
             }
-            var entry = __studioGetCanvasEntryById(target && target.id);
+            var total = 0;
+            for (var leftIndex = 0; leftIndex < leftHints.length; leftIndex += 1) {
+              var leftHint = leftHints[leftIndex];
+              if (typeof leftHint === 'string' && leftHint && rightSet[leftHint]) {
+                total += 1;
+              }
+            }
+            return total;
+          }
+
+          function __studioFindCanvasEntryForTarget(target, preferredCanvas) {
+            if (!target) return null;
+            var activeEntries = __studioGetActiveCanvasEntries();
+            var entries = activeEntries.length > 0 ? activeEntries : __studioGetResolvedCanvasEntries();
+            var exactIdMatch = null;
+            var bestMatch = null;
+            var bestScore = -1;
+            for (var index = entries.length - 1; index >= 0; index -= 1) {
+              var entry = entries[index];
+              if (!entry) continue;
+              if (preferredCanvas && entry.canvas && entry.canvas !== preferredCanvas) {
+                continue;
+              }
+              if (entry.id === target.id) {
+                exactIdMatch = entry;
+                break;
+              }
+              if (target.kind && entry.kind !== target.kind) continue;
+              var score = 0;
+              if (target.assetKey && entry.assetKey && target.assetKey === entry.assetKey) {
+                score += 10;
+              }
+              if (
+                target.assetUrl &&
+                entry.assetUrl &&
+                __studioAssetUrlsMatch(target.assetUrl, entry.assetUrl)
+              ) {
+                score += 8;
+              }
+              if (
+                target.textPreview &&
+                entry.textPreview &&
+                target.textPreview === entry.textPreview
+              ) {
+                score += 8;
+              }
+              if (
+                target.canvasOperation &&
+                entry.canvasOperation &&
+                target.canvasOperation === entry.canvasOperation
+              ) {
+                score += 4;
+              }
+              if (
+                target.canvasPaintMode &&
+                entry.canvasPaintMode &&
+                target.canvasPaintMode === entry.canvasPaintMode
+              ) {
+                score += 2;
+              }
+              if (target.label && entry.label && target.label === entry.label) {
+                score += 2;
+              }
+              score +=
+                __studioCountMatchingCanvasHints(target.sourceHints, entry.sourceHints) * 3;
+              if (score > bestScore) {
+                bestScore = score;
+                bestMatch = entry;
+              }
+            }
+            if (exactIdMatch) return exactIdMatch;
+            return bestScore > 0 ? bestMatch : null;
+          }
+
+          function __studioRefreshCanvasTarget(target) {
+            var baseEntry = __studioGetBaseCanvasEntryById(target && target.id);
+            __studioRefreshCanvasEntryBounds(baseEntry);
+            var entry = __studioFindCanvasEntryForTarget(
+              target,
+              baseEntry && baseEntry.canvas ? baseEntry.canvas : null
+            );
+            if (!entry) {
+              entry = __studioGetCanvasEntryById(target && target.id);
+            }
             if (!entry) return target;
             return __studioMakeCanvasTarget(entry);
           }
