@@ -3476,14 +3476,13 @@ export default function CodePreview({
               entry.bounds =
                 __studioScaleCanvasRect(entry.bounds, previousCanvasRect, nextCanvasRect) ||
                 entry.bounds;
-              entry.collisionBounds =
-                __studioScaleCanvasRect(
-                  entry.collisionBounds || entry.bounds,
-                  previousCanvasRect,
-                  nextCanvasRect
-                ) ||
-                entry.collisionBounds ||
-                entry.bounds;
+              entry.collisionBounds = entry.collisionBounds
+                ? __studioScaleCanvasRect(
+                    entry.collisionBounds,
+                    previousCanvasRect,
+                    nextCanvasRect
+                  ) || entry.collisionBounds
+                : null;
               entry.canvasRectSnapshot = nextCanvasRect;
             }
             return __studioMakeCanvasTarget(entry);
@@ -3503,7 +3502,7 @@ export default function CodePreview({
               canvasPaintMode: entry.canvasPaintMode || undefined,
               styleHints: Array.isArray(entry.styleHints) ? entry.styleHints : [],
               bounds: entry.bounds,
-              collisionBounds: entry.collisionBounds || entry.bounds,
+              collisionBounds: entry.collisionBounds || null,
               sourceHints: Array.isArray(entry.sourceHints) ? entry.sourceHints : []
             };
           }
@@ -3648,7 +3647,7 @@ export default function CodePreview({
               styleHints: __studioBuildCanvasStyleHints(context),
               sourceHints: ['canvas', 'shape', operation, paintMode, __studioNormalizeCanvasHint(label)].filter(Boolean),
               bounds: rect,
-              collisionBounds: rect
+              collisionBounds: null
             });
           }
 
@@ -3698,7 +3697,7 @@ export default function CodePreview({
               styleHints: __studioBuildCanvasStyleHints(context),
               sourceHints: ['canvas', 'text', operation, textPreview].filter(Boolean),
               bounds: rect,
-              collisionBounds: rect
+              collisionBounds: null
             });
           }
 
@@ -3728,7 +3727,7 @@ export default function CodePreview({
                 .concat(Array.isArray(state.hints) ? state.hints : [])
                 .filter(Boolean),
               bounds: rect,
-              collisionBounds: rect
+              collisionBounds: null
             });
           }
 
