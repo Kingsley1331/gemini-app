@@ -4256,6 +4256,13 @@ ${studioCanvasInstrumentationScript}
 
           function __studioRefreshResolvedTarget(target) {
             if (!target) return null;
+            if (
+              target.kind === 'sprite' ||
+              target.kind === 'canvas-text' ||
+              target.kind === 'canvas-shape'
+            ) {
+              return __studioRefreshCanvasTarget(target);
+            }
             var trackedElement = __studioFindTrackedDomElement(target.id);
             if (trackedElement) {
               return __studioMakeDomTarget(trackedElement);
@@ -4271,6 +4278,11 @@ ${studioCanvasInstrumentationScript}
               !__studioRectsEqual(
                 __studioPreviewState.hoveredTarget && __studioPreviewState.hoveredTarget.bounds,
                 nextHovered && nextHovered.bounds
+              ) ||
+              !__studioRectsEqual(
+                __studioPreviewState.hoveredTarget &&
+                  __studioPreviewState.hoveredTarget.collisionBounds,
+                nextHovered && nextHovered.collisionBounds
               )
             ) {
               __studioPreviewState.hoveredTarget = nextHovered;
@@ -4279,6 +4291,11 @@ ${studioCanvasInstrumentationScript}
               !__studioRectsEqual(
                 __studioPreviewState.selectedTarget && __studioPreviewState.selectedTarget.bounds,
                 nextSelected && nextSelected.bounds
+              ) ||
+              !__studioRectsEqual(
+                __studioPreviewState.selectedTarget &&
+                  __studioPreviewState.selectedTarget.collisionBounds,
+                nextSelected && nextSelected.collisionBounds
               )
             ) {
               __studioPreviewState.selectedTarget = nextSelected;
