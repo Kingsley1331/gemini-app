@@ -4149,9 +4149,26 @@ ${studioCanvasInstrumentationScript}
             node.style.top = rect.top + 'px';
             node.style.width = rect.width + 'px';
             node.style.height = rect.height + 'px';
-            node.style.border = borderStyle + ' ' + borderColor;
-            node.style.background = backgroundColor;
             node.style.boxSizing = 'border-box';
+            node.style.backgroundImage = 'none';
+            node.style.backgroundRepeat = '';
+            node.style.backgroundPosition = '';
+            node.style.backgroundSize = '';
+            if (id === '__studio_overlay_hover') {
+              node.style.border = 'none';
+              node.style.backgroundColor = backgroundColor;
+              node.style.backgroundImage =
+                'repeating-linear-gradient(to right, #000 0 4px, #fff 4px 8px), ' +
+                'repeating-linear-gradient(to bottom, #000 0 4px, #fff 4px 8px), ' +
+                'repeating-linear-gradient(to right, #000 0 4px, #fff 4px 8px), ' +
+                'repeating-linear-gradient(to bottom, #000 0 4px, #fff 4px 8px)';
+              node.style.backgroundRepeat = 'no-repeat';
+              node.style.backgroundPosition = 'top left, top right, bottom left, top left';
+              node.style.backgroundSize = '100% 1px, 1px 100%, 100% 1px, 1px 100%';
+            } else {
+              node.style.border = borderStyle + ' ' + borderColor;
+              node.style.background = backgroundColor;
+            }
           }
 
           function __studioRenderOverlays() {
@@ -4173,8 +4190,8 @@ ${studioCanvasInstrumentationScript}
             __studioUpsertOverlay(
               '__studio_overlay_hover',
               hoveredRect,
-              '3px dashed',
-              '#71717a',
+              '1px dashed',
+              '#000000',
               'rgba(113, 113, 122, 0.04)'
             );
             __studioUpsertOverlay(
@@ -4923,9 +4940,26 @@ ${studioCanvasInstrumentationScript}
                 node.style.top = rect.top + 'px';
                 node.style.width = rect.width + 'px';
                 node.style.height = rect.height + 'px';
-                node.style.border = borderStyle + ' ' + borderColor;
-                node.style.background = backgroundColor;
                 node.style.boxSizing = 'border-box';
+                node.style.backgroundImage = 'none';
+                node.style.backgroundRepeat = '';
+                node.style.backgroundPosition = '';
+                node.style.backgroundSize = '';
+                if (id === '__studio_overlay_hover') {
+                  node.style.border = 'none';
+                  node.style.backgroundColor = backgroundColor;
+                  node.style.backgroundImage =
+                    'repeating-linear-gradient(to right, #000 0 4px, #fff 4px 8px), ' +
+                    'repeating-linear-gradient(to bottom, #000 0 4px, #fff 4px 8px), ' +
+                    'repeating-linear-gradient(to right, #000 0 4px, #fff 4px 8px), ' +
+                    'repeating-linear-gradient(to bottom, #000 0 4px, #fff 4px 8px)';
+                  node.style.backgroundRepeat = 'no-repeat';
+                  node.style.backgroundPosition = 'top left, top right, bottom left, top left';
+                  node.style.backgroundSize = '100% 1px, 1px 100%, 100% 1px, 1px 100%';
+                } else {
+                  node.style.border = borderStyle + ' ' + borderColor;
+                  node.style.background = backgroundColor;
+                }
               }
 
               function __studioRenderOverlays() {
@@ -4947,8 +4981,8 @@ ${studioCanvasInstrumentationScript}
                 __studioUpsertOverlay(
                   '__studio_overlay_hover',
                   hoveredRect,
-                  '3px dashed',
-                  '#71717a',
+                  '1px dashed',
+                  '#000000',
                   'rgba(113, 113, 122, 0.04)'
                 );
                 __studioUpsertOverlay(
