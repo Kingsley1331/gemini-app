@@ -2869,6 +2869,10 @@ export default function CodePreview({
           state.spriteEntries = state.canvasEntries;
           state.lastPointer = state.lastPointer || { x: 0, y: 0 };
           state.pausedMedia = Array.isArray(state.pausedMedia) ? state.pausedMedia : [];
+          state.audioContexts = Array.isArray(state.audioContexts) ? state.audioContexts : [];
+          state.pausedAudioContexts = Array.isArray(state.pausedAudioContexts)
+            ? state.pausedAudioContexts
+            : [];
           state.pendingRaf = state.pendingRaf || {};
           state.pendingTimeouts = state.pendingTimeouts || {};
           state.nextRafId = state.nextRafId || 1;
@@ -2883,6 +2887,21 @@ export default function CodePreview({
             state.nativeSetTimeout = window.setTimeout.bind(window);
             state.nativeClearTimeout = window.clearTimeout.bind(window);
             window.__studioNativeRequestAnimationFrame = state.nativeRequestAnimationFrame;
+
+            function registerAudioContext(context) {
+              if (!context) return context;
+              if (state.audioContexts.indexOf(context) < 0) {
+                state.audioContexts.push(context);
+              }
+              if (state.paused && typeof context.suspend === 'function') {
+                try {
+                  context.suspend();
+                } catch (_error) {
+                  // Ignore contexts that cannot be suspended.
+                }
+              }
+              return context;
+            }
 
             function invokeCallback(callback, args) {
               if (typeof callback === 'function') {
@@ -2994,6 +3013,104 @@ export default function CodePreview({
               };
             }
 
+            function wrapAudioContextConstructor(constructorName) {
+              var NativeConstructor = window[constructorName];
+              if (typeof NativeConstructor !== 'function' || NativeConstructor.__studioPauseWrapped) {
+                return;
+              }
+              function StudioAudioContext() {
+                return registerAudioContext(Reflect.construct(NativeConstructor, arguments, StudioAudioContext));
+              }
+              StudioAudioContext.prototype = NativeConstructor.prototype;
+              Object.setPrototypeOf(StudioAudioContext, NativeConstructor);
+              StudioAudioContext.__studioPauseWrapped = true;
+              window[constructorName] = StudioAudioContext;
+            }
+
+            wrapAudioContextConstructor('AudioContext');
+            wrapAudioContextConstructor('webkitAudioContext');
+
+            if (window.AudioContext && window.AudioContext.prototype && !window.AudioContext.prototype.__studioPauseWrapped) {
+              var nativeAudioResume = window.AudioContext.prototype.resume;
+              window.AudioContext.prototype.__studioPauseWrapped = true;
+              if (typeof nativeAudioResume === 'function') {
+                window.AudioContext.prototype.resume = function() {
+                  registerAudioContext(this);
+                  if (state.paused) {
+                    return Promise.resolve();
+                  }
+                  return nativeAudioResume.apply(this, arguments);
+                };
+              }
+              if (typeof window.AudioContext.prototype.suspend === 'function') {
+                var nativeAudioSuspend = window.AudioContext.prototype.suspend;
+                window.AudioContext.prototype.suspend = function() {
+                  registerAudioContext(this);
+                  return nativeAudioSuspend.apply(this, arguments);
+                };
+              }
+            }
+
+            if (window.webkitAudioContext && window.webkitAudioContext.prototype && !window.webkitAudioContext.prototype.__studioPauseWrapped) {
+              var nativeWebkitResume = window.webkitAudioContext.prototype.resume;
+              window.webkitAudioContext.prototype.__studioPauseWrapped = true;
+              if (typeof nativeWebkitResume === 'function') {
+                window.webkitAudioContext.prototype.resume = function() {
+                  registerAudioContext(this);
+                  if (state.paused) {
+                    return Promise.resolve();
+                  }
+                  return nativeWebkitResume.apply(this, arguments);
+                };
+              }
+              if (typeof window.webkitAudioContext.prototype.suspend === 'function') {
+                var nativeWebkitSuspend = window.webkitAudioContext.prototype.suspend;
+                window.webkitAudioContext.prototype.suspend = function() {
+                  registerAudioContext(this);
+                  return nativeWebkitSuspend.apply(this, arguments);
+                };
+              }
+            }
+
+            if (!window.__studioPauseInputBlockersInstalled) {
+              window.__studioPauseInputBlockersInstalled = true;
+              state.nativeSetTimeout(function() {
+                var blockedEventTypes = [
+                  'pointerdown',
+                  'pointerup',
+                  'pointermove',
+                  'mousedown',
+                  'mouseup',
+                  'mousemove',
+                  'click',
+                  'dblclick',
+                  'contextmenu',
+                  'touchstart',
+                  'touchmove',
+                  'touchend',
+                  'keydown',
+                  'keypress',
+                  'keyup',
+                  'submit'
+                ];
+                blockedEventTypes.forEach(function(type) {
+                  document.addEventListener(type, function(event) {
+                    if (!state.paused) return;
+                    if (event.target && event.target.id === '__studio_overlay_root') return;
+                    if (event.target && event.target.closest && event.target.closest('#__studio_overlay_root')) return;
+                    if (typeof event.preventDefault === 'function') {
+                      event.preventDefault();
+                    }
+                    if (typeof event.stopImmediatePropagation === 'function') {
+                      event.stopImmediatePropagation();
+                    } else if (typeof event.stopPropagation === 'function') {
+                      event.stopPropagation();
+                    }
+                  }, { capture: true, passive: false });
+                });
+              }, 0);
+            }
+
             window.__studioApplyPauseState = function(paused) {
               state.paused = paused === true;
               if (document && document.documentElement) {
@@ -3012,6 +3129,18 @@ export default function CodePreview({
                   } catch (_error) {
                     return false;
                   }
+                });
+                state.pausedAudioContexts = state.audioContexts.filter(function(context) {
+                  if (!context || typeof context.suspend !== 'function') return false;
+                  try {
+                    if (context.state === 'running' || context.state === 'interrupted') {
+                      context.suspend();
+                      return true;
+                    }
+                  } catch (_error) {
+                    return false;
+                  }
+                  return false;
                 });
               } else {
                 Object.keys(state.pendingRaf).forEach(function(id) {
@@ -3038,6 +3167,11 @@ export default function CodePreview({
                   media.play().catch(function() {});
                 });
                 state.pausedMedia = [];
+                state.pausedAudioContexts.forEach(function(context) {
+                  if (!context || typeof context.resume !== 'function') return;
+                  context.resume().catch(function() {});
+                });
+                state.pausedAudioContexts = [];
               }
 
               if (document && document.getAnimations) {
