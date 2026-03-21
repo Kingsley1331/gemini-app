@@ -4144,16 +4144,26 @@ ${studioCanvasInstrumentationScript}
               node.id = id;
               root.appendChild(node);
             }
+            var displayRect = rect;
+            if (id === '__studio_overlay_collision') {
+              displayRect = {
+                left: rect.left - 2,
+                top: rect.top - 2,
+                width: rect.width + 4,
+                height: rect.height + 4
+              };
+            }
             node.style.position = 'fixed';
-            node.style.left = rect.left + 'px';
-            node.style.top = rect.top + 'px';
-            node.style.width = rect.width + 'px';
-            node.style.height = rect.height + 'px';
+            node.style.left = displayRect.left + 'px';
+            node.style.top = displayRect.top + 'px';
+            node.style.width = displayRect.width + 'px';
+            node.style.height = displayRect.height + 'px';
             node.style.boxSizing = 'border-box';
             node.style.backgroundImage = 'none';
             node.style.backgroundRepeat = '';
             node.style.backgroundPosition = '';
             node.style.backgroundSize = '';
+            node.style.boxShadow = 'none';
             if (id === '__studio_overlay_hover') {
               node.style.border = 'none';
               node.style.backgroundColor = backgroundColor;
@@ -4165,6 +4175,10 @@ ${studioCanvasInstrumentationScript}
               node.style.backgroundRepeat = 'no-repeat';
               node.style.backgroundPosition = 'top left, top right, bottom left, top left';
               node.style.backgroundSize = '100% 1px, 1px 100%, 100% 1px, 1px 100%';
+            } else if (id === '__studio_overlay_collision') {
+              node.style.border = borderStyle + ' ' + borderColor;
+              node.style.background = 'transparent';
+              node.style.boxShadow = '0 0 0 1px rgba(96, 165, 250, 0.35)';
             } else {
               node.style.border = borderStyle + ' ' + borderColor;
               node.style.background = backgroundColor;
@@ -4183,10 +4197,21 @@ ${studioCanvasInstrumentationScript}
               __studioPreviewState.enabled && __studioPreviewState.selectedTarget
                 ? __studioPreviewState.selectedTarget.bounds
                 : null;
-            var collisionRect =
-              __studioPreviewState.enabled && __studioPreviewState.selectedTarget
-                ? __studioPreviewState.selectedTarget.collisionBounds || null
-                : null;
+            var collisionTarget =
+              __studioPreviewState.enabled &&
+              __studioPreviewState.hoveredTarget &&
+              (!__studioPreviewState.selectedTarget ||
+                __studioPreviewState.hoveredTarget.id !== __studioPreviewState.selectedTarget.id)
+                ? __studioPreviewState.hoveredTarget
+                : __studioPreviewState.enabled && __studioPreviewState.selectedTarget
+                  ? __studioPreviewState.selectedTarget
+                  : null;
+            var collisionRect = collisionTarget ? collisionTarget.collisionBounds || null : null;
+            var canvasCollisionTarget =
+              collisionTarget &&
+              (collisionTarget.tagName === 'canvas' ||
+                collisionTarget.kind === 'canvas-text' ||
+                collisionTarget.kind === 'canvas-shape');
             __studioUpsertOverlay(
               '__studio_overlay_hover',
               hoveredRect,
@@ -4204,7 +4229,7 @@ ${studioCanvasInstrumentationScript}
             __studioUpsertOverlay(
               '__studio_overlay_collision',
               collisionRect,
-              '2px dashed',
+              canvasCollisionTarget ? '1px solid' : '2px dashed',
               '#60a5fa',
               'rgba(96, 165, 250, 0.06)'
             );
@@ -4952,16 +4977,26 @@ ${studioCanvasInstrumentationScript}
                   node.id = id;
                   root.appendChild(node);
                 }
+                var displayRect = rect;
+                if (id === '__studio_overlay_collision') {
+                  displayRect = {
+                    left: rect.left - 2,
+                    top: rect.top - 2,
+                    width: rect.width + 4,
+                    height: rect.height + 4
+                  };
+                }
                 node.style.position = 'fixed';
-                node.style.left = rect.left + 'px';
-                node.style.top = rect.top + 'px';
-                node.style.width = rect.width + 'px';
-                node.style.height = rect.height + 'px';
+                node.style.left = displayRect.left + 'px';
+                node.style.top = displayRect.top + 'px';
+                node.style.width = displayRect.width + 'px';
+                node.style.height = displayRect.height + 'px';
                 node.style.boxSizing = 'border-box';
                 node.style.backgroundImage = 'none';
                 node.style.backgroundRepeat = '';
                 node.style.backgroundPosition = '';
                 node.style.backgroundSize = '';
+                node.style.boxShadow = 'none';
                 if (id === '__studio_overlay_hover') {
                   node.style.border = 'none';
                   node.style.backgroundColor = backgroundColor;
@@ -4973,6 +5008,10 @@ ${studioCanvasInstrumentationScript}
                   node.style.backgroundRepeat = 'no-repeat';
                   node.style.backgroundPosition = 'top left, top right, bottom left, top left';
                   node.style.backgroundSize = '100% 1px, 1px 100%, 100% 1px, 1px 100%';
+                } else if (id === '__studio_overlay_collision') {
+                  node.style.border = borderStyle + ' ' + borderColor;
+                  node.style.background = 'transparent';
+                  node.style.boxShadow = '0 0 0 1px rgba(96, 165, 250, 0.35)';
                 } else {
                   node.style.border = borderStyle + ' ' + borderColor;
                   node.style.background = backgroundColor;
@@ -4991,10 +5030,21 @@ ${studioCanvasInstrumentationScript}
                   __studioPreviewState.enabled && __studioPreviewState.selectedTarget
                     ? __studioPreviewState.selectedTarget.bounds
                     : null;
-                var collisionRect =
-                  __studioPreviewState.enabled && __studioPreviewState.selectedTarget
-                    ? __studioPreviewState.selectedTarget.collisionBounds || null
-                    : null;
+                var collisionTarget =
+                  __studioPreviewState.enabled &&
+                  __studioPreviewState.hoveredTarget &&
+                  (!__studioPreviewState.selectedTarget ||
+                    __studioPreviewState.hoveredTarget.id !== __studioPreviewState.selectedTarget.id)
+                    ? __studioPreviewState.hoveredTarget
+                    : __studioPreviewState.enabled && __studioPreviewState.selectedTarget
+                      ? __studioPreviewState.selectedTarget
+                      : null;
+                var collisionRect = collisionTarget ? collisionTarget.collisionBounds || null : null;
+                var canvasCollisionTarget =
+                  collisionTarget &&
+                  (collisionTarget.tagName === 'canvas' ||
+                    collisionTarget.kind === 'canvas-text' ||
+                    collisionTarget.kind === 'canvas-shape');
                 __studioUpsertOverlay(
                   '__studio_overlay_hover',
                   hoveredRect,
@@ -5012,7 +5062,7 @@ ${studioCanvasInstrumentationScript}
                 __studioUpsertOverlay(
                   '__studio_overlay_collision',
                   collisionRect,
-                  '2px dashed',
+                  canvasCollisionTarget ? '1px solid' : '2px dashed',
                   '#60a5fa',
                   'rgba(96, 165, 250, 0.06)'
                 );
