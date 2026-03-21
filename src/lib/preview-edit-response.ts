@@ -96,6 +96,10 @@ function normalizeResponseCodeLanguage(
     return alias;
   }
 
+  if (rawLanguage) {
+    return null;
+  }
+
   const preferred = (preferredLanguage || "").trim().toLowerCase();
   return PREVIEWABLE_RESPONSE_LANGUAGES.has(preferred) ? preferred : null;
 }
@@ -114,11 +118,20 @@ function inferCodeBlockFromRawResponse(
   rawResponse: string,
   preferredLanguage?: string,
 ): ExtractedPreviewCodeBlock | null {
+  if (/```/.test(rawResponse)) return null;
+
   const normalizedLanguage = normalizeResponseCodeLanguage("", preferredLanguage);
   if (!normalizedLanguage) return null;
 
   const trimmed = rawResponse.trim();
   if (!trimmed) return null;
+
+  if (
+    /<<CHAT_|<<UPDATED_|<<FULL_UPDATED_CODE>>|<<END_/i.test(trimmed) ||
+    /^(summary|diff)\s*:/im.test(trimmed)
+  ) {
+    return null;
+  }
 
   const looksLikeCode =
     /(?:^|\n)\s*(?:export\s+default|export\s+const|function\s+\w+|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|return\s*\(|<\w+|ctx\.\w+|canvas\.\w+)/.test(
@@ -126,6 +139,16 @@ function inferCodeBlockFromRawResponse(
     );
 
   if (!looksLikeCode) return null;
+
+  const lines = trimmed.split("\n").map((line) => line.trim()).filter(Boolean);
+  const codeLikeLineCount = lines.filter((line) =>
+    /^(?:[{});]|\)|<[/A-Za-z]|(?:export\s+default|export\s+const|function\s+\w+|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|return\b|if\b|for\b|while\b|switch\b|ctx\.|canvas\.|use[A-Z]\w*\())/.test(
+      line,
+    ),
+  ).length;
+  if (lines.length > 0 && codeLikeLineCount / lines.length < 0.6) {
+    return null;
+  }
 
   return {
     language: normalizedLanguage,
