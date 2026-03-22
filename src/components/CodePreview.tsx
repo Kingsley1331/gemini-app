@@ -180,6 +180,112 @@ const RASTER_OUTPUT_OPTIONS = [
 ] as const;
 
 type RasterOutputMimeType = (typeof RASTER_OUTPUT_OPTIONS)[number]["mimeType"];
+type CanvasColorApplyMode = "fill" | "stroke" | "both";
+
+type CanvasColorPaletteState = {
+  targetId: string;
+  left: number;
+  top: number;
+  color: string;
+  applyMode: CanvasColorApplyMode;
+};
+
+function isCanvasDrawableTarget(
+  target: StudioSelectedTarget | null | undefined,
+): target is StudioSelectedTarget {
+  return Boolean(
+    target && (target.kind === "canvas-text" || target.kind === "canvas-shape"),
+  );
+}
+
+function getCanvasStyleHintValue(
+  target: StudioSelectedTarget,
+  prefix: "fill" | "stroke",
+): string | null {
+  const match = target.styleHints?.find((hint) =>
+    hint.toLowerCase().startsWith(`${prefix}:`),
+  );
+  return match ? match.split(":").slice(1).join(":").trim() || null : null;
+}
+
+function normalizeHexColor(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^#?([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+  if (!match) return null;
+  const hex = match[1];
+
+  if (hex.length === 3 || hex.length === 4) {
+    return `#${hex
+      .slice(0, 3)
+      .split("")
+      .map((entry) => `${entry}${entry}`)
+      .join("")}`.toLowerCase();
+  }
+
+  return `#${hex.slice(0, 6)}`.toLowerCase();
+}
+
+function toHexChannel(value: number): string {
+  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0");
+}
+
+function parseCanvasColorValue(value: string | null | undefined): string | null {
+  const hexColor = normalizeHexColor(value);
+  if (hexColor) return hexColor;
+
+  const rgbMatch = value
+    ?.trim()
+    .match(
+      /^rgba?\(\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*([0-9]+(?:\.[0-9]+)?)(?:\s*,\s*[0-9.]+\s*)?\)$/i,
+    );
+  if (!rgbMatch) return null;
+
+  return `#${toHexChannel(Number(rgbMatch[1]))}${toHexChannel(Number(rgbMatch[2]))}${toHexChannel(Number(rgbMatch[3]))}`;
+}
+
+function getCanvasPaletteDefaultMode(target: StudioSelectedTarget): CanvasColorApplyMode {
+  if (target.canvasPaintMode === "stroke") return "stroke";
+  if (target.canvasPaintMode === "fill-stroke") return "both";
+  return "fill";
+}
+
+function getInitialCanvasPaletteColor(target: StudioSelectedTarget): string {
+  const defaultMode = getCanvasPaletteDefaultMode(target);
+  const preferredPrefixes =
+    defaultMode === "stroke"
+      ? (["stroke", "fill"] as const)
+      : (["fill", "stroke"] as const);
+
+  for (const prefix of preferredPrefixes) {
+    const parsedColor = parseCanvasColorValue(getCanvasStyleHintValue(target, prefix));
+    if (parsedColor) return parsedColor;
+  }
+
+  return "#000000";
+}
+
+function buildCanvasColorChangePrompt(
+  target: StudioSelectedTarget,
+  color: string,
+  applyMode: CanvasColorApplyMode,
+): string {
+  const colorTarget =
+    applyMode === "both"
+      ? "fill and stroke colors"
+      : applyMode === "stroke"
+        ? "stroke color"
+        : "fill color";
+  const targetType = target.kind === "canvas-text" ? "canvas text target" : "canvas shape target";
+
+  return [
+    `Update only the selected ${targetType}.`,
+    `Change its ${colorTarget} to ${color}.`,
+    "Keep the same position, size, path geometry, text content, font, line width, and animation behavior.",
+    "Do not modify any other element, sprite, HTML node, or unrelated canvas draw call.",
+    "Make only the minimal code changes needed to update this selected target's color.",
+  ].join(" ");
+}
 
 function normalizePreviewError(message: string): string {
   const invalidHookPattern =
@@ -573,6 +679,8 @@ export default function CodePreview({
   const [selectedExtraction, setSelectedExtraction] =
     useState<StudioComponentExtraction | null>(null);
   const [selectionMenuOpen, setSelectionMenuOpen] = useState(false);
+  const [canvasColorPalette, setCanvasColorPalette] =
+    useState<CanvasColorPaletteState | null>(null);
   const [componentUpdateStatus, setComponentUpdateStatus] = useState<string | null>(
     null,
   );
@@ -581,6 +689,7 @@ export default function CodePreview({
   const [aiAssetCandidate, setAiAssetCandidate] = useState<AppAsset | null>(null);
   const [aiAssetStatus, setAiAssetStatus] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const previewSurfaceRef = useRef<HTMLDivElement>(null);
   const addAssetInputRef = useRef<HTMLInputElement>(null);
   const latestAssetsRef = useRef(assets);
   const latestEditUiRef = useRef(editUi);
@@ -1698,6 +1807,7 @@ export default function CodePreview({
     setAiAssetStatus(null);
 
     if (selectionChanged) {
+      setCanvasColorPalette(null);
       updateEditUiState((current) => ({
         ...current,
         componentDraft: extraction.snippet,
@@ -1736,6 +1846,7 @@ export default function CodePreview({
     }
 
     setSelectionMenuOpen(false);
+    setCanvasColorPalette(null);
     setComponentUpdateStatus(null);
     updateEditUiState((current) => {
       if (current.isEnabled) {
@@ -1759,6 +1870,23 @@ export default function CodePreview({
       };
     });
   }, [activeTab, handleTabChange, updateEditUiState]);
+
+  useEffect(() => {
+    if (activeTab === "preview") return;
+    setCanvasColorPalette(null);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!editUi.isEnabled || !isCanvasDrawableTarget(editUi.selectedTarget)) {
+      setCanvasColorPalette(null);
+      return;
+    }
+
+    const selectedTargetId = editUi.selectedTarget.id;
+    setCanvasColorPalette((current) =>
+      current && current.targetId === selectedTargetId ? current : null,
+    );
+  }, [editUi.isEnabled, editUi.selectedTarget]);
 
   const openEditPanel = useCallback(
     (panel: StudioEditPanel) => {
@@ -1826,6 +1954,127 @@ export default function CodePreview({
     selectedExtraction,
   ]);
 
+  const requestSelectedComponentUpdate = useCallback(
+    async (
+      prompt: string,
+      options?: {
+        autoApply?: boolean;
+        pendingStatus?: string;
+        appliedStatus?: string;
+      },
+    ) => {
+      if (!editUi.selectedTarget) {
+        setComponentUpdateStatus("Select an element, sprite, or canvas target first.");
+        return false;
+      }
+
+      if (!selectedExtraction) {
+        setComponentUpdateStatus(
+          "Studio could not map this selection to editable source yet. Try another element or use the full Code tab.",
+        );
+        return false;
+      }
+
+      if (!prompt.trim()) {
+        setComponentUpdateStatus("Describe the change you want to make first.");
+        return false;
+      }
+
+      setIsGeneratingComponentCandidate(true);
+      setAiAssetCandidate(null);
+      setAiAssetStatus(null);
+      setComponentUpdateStatus(options?.pendingStatus || "Generating component update...");
+
+      try {
+        const requestMessages = [
+          await buildSelectedComponentContextRequestMessage({
+            title: title || "Studio Preview",
+            code,
+            language,
+            assets,
+            target: editUi.selectedTarget,
+            extraction: selectedExtraction,
+          }),
+          {
+            role: "user" as const,
+            content: prompt.trim(),
+          },
+        ];
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: studioModelId || "gemini-3.1-pro-preview",
+            messages: requestMessages,
+            responseMode: "component_edit_compact",
+          }),
+        });
+        if (!response.ok || !response.body) {
+          throw new Error("Unable to generate a component update.");
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let assistantContent = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          assistantContent += decoder.decode(value, { stream: true });
+        }
+        assistantContent += decoder.decode();
+
+        const parsedResponse = parseComponentEditResponse(assistantContent, language);
+        if (!parsedResponse) {
+          throw new Error("The model did not return an updated component block.");
+        }
+
+        updateEditUiState((current) => ({
+          ...current,
+          generatedComponent: parsedResponse.componentCodeBlock.code,
+          generatedSummary: parsedResponse.chatSummary,
+          generationMode: "component",
+        }));
+
+        if (options?.autoApply) {
+          if (!onCodeKeep) {
+            throw new Error("This preview cannot save code changes right now.");
+          }
+          const nextCode = applyComponentPatchToCode(
+            code,
+            selectedExtraction,
+            parsedResponse.componentCodeBlock.code,
+          );
+          onCodeKeep(nextCode);
+          setComponentUpdateStatus(
+            options.appliedStatus ||
+              `Applied generated changes to ${getTargetDisplayLabel(editUi.selectedTarget)}.`,
+          );
+          return true;
+        }
+
+        setComponentUpdateStatus(parsedResponse.chatContent || "Candidate ready.");
+        return true;
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error ? error.message : "Unable to generate a component update.";
+        setComponentUpdateStatus(message);
+        return false;
+      } finally {
+        setIsGeneratingComponentCandidate(false);
+      }
+    },
+    [
+      assets,
+      code,
+      editUi.selectedTarget,
+      language,
+      onCodeKeep,
+      selectedExtraction,
+      studioModelId,
+      title,
+      updateEditUiState,
+    ],
+  );
+
   const handleGenerateInspectorCandidate = useCallback(async () => {
     if (!editUi.selectedTarget) {
       setComponentUpdateStatus("Select an element, sprite, or canvas target first.");
@@ -1887,83 +2136,43 @@ export default function CodePreview({
       return;
     }
 
-    setIsGeneratingComponentCandidate(true);
-    setAiAssetCandidate(null);
-    setAiAssetStatus(null);
-    setComponentUpdateStatus("Generating component update...");
-    try {
-      const requestMessages = [
-        await buildSelectedComponentContextRequestMessage({
-          title: title || "Studio Preview",
-          code,
-          language,
-          assets,
-          target: editUi.selectedTarget,
-          extraction: selectedExtraction,
-        }),
-        {
-          role: "user" as const,
-          content: editUi.aiPrompt.trim(),
-        },
-      ];
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: studioModelId || "gemini-3.1-pro-preview",
-          messages: requestMessages,
-          responseMode: "component_edit_compact",
-        }),
-      });
-      if (!response.ok || !response.body) {
-        throw new Error("Unable to generate a component update.");
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let assistantContent = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        assistantContent += decoder.decode(value, { stream: true });
-      }
-      assistantContent += decoder.decode();
-
-      const parsedResponse = parseComponentEditResponse(assistantContent, language);
-      if (!parsedResponse) {
-        throw new Error("The model did not return an updated component block.");
-      }
-
-      updateEditUiState((current) => ({
-        ...current,
-        generatedComponent: parsedResponse.componentCodeBlock.code,
-        generatedSummary: parsedResponse.chatSummary,
-        generationMode: "component",
-      }));
-      setComponentUpdateStatus(parsedResponse.chatContent || "Candidate ready.");
-    } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : "Unable to generate a component update.";
-      setComponentUpdateStatus(message);
-    } finally {
-      setIsGeneratingComponentCandidate(false);
-    }
+    await requestSelectedComponentUpdate(editUi.aiPrompt);
   }, [
     assetEditTransparentBackground,
-    assets,
-    code,
     editUi.aiPrompt,
     editUi.activePanel,
     editUi.selectedTarget,
     generateEditedAssetCandidate,
-    language,
     selectedEditAsset,
     selectedEditAssetKey,
     selectedEditAssetIndex,
     selectedExtraction,
-    studioModelId,
-    title,
+    requestSelectedComponentUpdate,
     updateEditUiState,
   ]);
+
+  const handleSaveCanvasColor = useCallback(async () => {
+    if (!canvasColorPalette || !isCanvasDrawableTarget(editUi.selectedTarget)) {
+      setComponentUpdateStatus("Select a canvas drawn element first.");
+      return;
+    }
+
+    const selectedTarget = editUi.selectedTarget;
+    const prompt = buildCanvasColorChangePrompt(
+      selectedTarget,
+      canvasColorPalette.color,
+      canvasColorPalette.applyMode,
+    );
+    const didApply = await requestSelectedComponentUpdate(prompt, {
+      autoApply: true,
+      pendingStatus: "Updating selected canvas color...",
+      appliedStatus: `Updated ${getTargetDisplayLabel(selectedTarget)} to ${canvasColorPalette.color}.`,
+    });
+
+    if (didApply) {
+      setCanvasColorPalette(null);
+    }
+  }, [canvasColorPalette, editUi.selectedTarget, requestSelectedComponentUpdate]);
 
   const handleOpenInStudio = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -4633,8 +4842,11 @@ ${studioCanvasInstrumentationScript}
             );
           }
 
-          function __studioPostPreviewEvent(type, target) {
-            window.parent.postMessage({ type: type, target: target }, '*');
+          function __studioPostPreviewEvent(type, target, detail) {
+            window.parent.postMessage(
+              Object.assign({ type: type, target: target }, detail || {}),
+              '*'
+            );
           }
 
           function __studioSetHoveredTarget(target) {
@@ -4955,6 +5167,20 @@ ${studioCanvasInstrumentationScript}
             __studioSetSelectedTarget(target, true);
           }
 
+          function __studioHandleContextMenu(event) {
+            if (!__studioPreviewState.enabled) return;
+            var target = __studioResolveTargetFromPoint(event.clientX, event.clientY);
+            if (!target) return;
+            if (target.id !== __studioPreviewState.selectedTargetId) return;
+            if (target.kind !== 'canvas-text' && target.kind !== 'canvas-shape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            __studioPostPreviewEvent('studio-edit-canvas-color', target, {
+              clientX: event.clientX,
+              clientY: event.clientY
+            });
+          }
+
           window.addEventListener('message', function(event) {
             if (event.data && event.data.type === 'studio-preview-control') {
               __studioPreviewState.enabled = event.data.enabled === true;
@@ -4978,6 +5204,7 @@ ${studioCanvasInstrumentationScript}
           document.addEventListener('mouseleave', __studioHandlePointerLeave, true);
           document.addEventListener('click', __studioHandleClick, true);
           document.addEventListener('dblclick', __studioHandleDoubleClick, true);
+          document.addEventListener('contextmenu', __studioHandleContextMenu, true);
           window.addEventListener('resize', __studioRefreshOverlayTargets, true);
           window.addEventListener('scroll', __studioRefreshOverlayTargets, true);
 
@@ -5466,8 +5693,11 @@ ${studioCanvasInstrumentationScript}
                 );
               }
 
-              function __studioPostPreviewEvent(type, target) {
-                window.parent.postMessage({ type: type, target: target }, '*');
+              function __studioPostPreviewEvent(type, target, detail) {
+                window.parent.postMessage(
+                  Object.assign({ type: type, target: target }, detail || {}),
+                  '*'
+                );
               }
 
               function __studioSetHoveredTarget(target) {
@@ -5803,6 +6033,20 @@ ${studioCanvasInstrumentationScript}
                 __studioSetSelectedTarget(target, true);
               }
 
+              function __studioHandleContextMenu(event) {
+                if (!__studioPreviewState.enabled) return;
+                var target = __studioResolveTargetFromEvent(event);
+                if (!target) return;
+                if (target.id !== __studioPreviewState.selectedTargetId) return;
+                if (target.kind !== 'canvas-text' && target.kind !== 'canvas-shape') return;
+                event.preventDefault();
+                event.stopPropagation();
+                __studioPostPreviewEvent('studio-edit-canvas-color', target, {
+                  clientX: event.clientX,
+                  clientY: event.clientY
+                });
+              }
+
               window.addEventListener('message', function(event) {
                 if (event.data && event.data.type === 'studio-preview-control') {
                   __studioPreviewState.enabled = event.data.enabled === true;
@@ -5826,6 +6070,7 @@ ${studioCanvasInstrumentationScript}
               document.addEventListener('mouseleave', __studioHandlePointerLeave, true);
               document.addEventListener('click', __studioHandleClick, true);
               document.addEventListener('dblclick', __studioHandleDoubleClick, true);
+              document.addEventListener('contextmenu', __studioHandleContextMenu, true);
               window.addEventListener('resize', __studioRefreshOverlayTargets, true);
               window.addEventListener('scroll', __studioRefreshOverlayTargets, true);
 
@@ -6027,6 +6272,50 @@ ${studioCanvasInstrumentationScript}
           hoveredTarget: target ?? current.hoveredTarget,
           activePanel: target ? current.activePanel : null,
         }));
+        return;
+      }
+
+      if (event.data?.type === "studio-edit-canvas-color") {
+        const target = event.data.target as StudioSelectedTarget | null;
+        const clientX =
+          typeof event.data.clientX === "number" ? event.data.clientX : null;
+        const clientY =
+          typeof event.data.clientY === "number" ? event.data.clientY : null;
+
+        if (!target || clientX === null || clientY === null || !isCanvasDrawableTarget(target)) {
+          setCanvasColorPalette(null);
+          return;
+        }
+
+        const iframeBounds = iframeRef.current?.getBoundingClientRect();
+        const surfaceBounds = previewSurfaceRef.current?.getBoundingClientRect();
+        const paletteWidth = 248;
+        const paletteHeight = 232;
+
+        if (!iframeBounds || !surfaceBounds) {
+          setCanvasColorPalette(null);
+          return;
+        }
+
+        setSelectionMenuOpen(false);
+        updateEditUiState((current) => ({
+          ...current,
+          selectedTarget: target,
+          hoveredTarget: target,
+        }));
+        setCanvasColorPalette({
+          targetId: target.id,
+          color: getInitialCanvasPaletteColor(target),
+          applyMode: getCanvasPaletteDefaultMode(target),
+          left: Math.min(
+            Math.max(12, iframeBounds.left - surfaceBounds.left + clientX + 12),
+            Math.max(12, surfaceBounds.width - paletteWidth),
+          ),
+          top: Math.min(
+            Math.max(12, iframeBounds.top - surfaceBounds.top + clientY + 12),
+            Math.max(12, surfaceBounds.height - paletteHeight),
+          ),
+        });
         return;
       }
 
@@ -6295,7 +6584,8 @@ ${studioCanvasInstrumentationScript}
             Edit Mode:
           </span>{" "}
           Hover elements, sprites, or canvas targets to inspect them. Click to select. Double-click the
-          selected target to choose how to edit it.
+          selected target to choose how to edit it. Right-click a selected canvas drawing to open the
+          color palette.
           {editUi.selectedTarget ? (
             <span className="ml-2 font-medium text-zinc-800 dark:text-zinc-100">
               Selected: {selectedTargetLabel}
@@ -6566,7 +6856,10 @@ ${studioCanvasInstrumentationScript}
                 </div>
               </aside>
             ) : null}
-            <div className="relative min-h-[320px] flex-1 sm:min-h-[500px] lg:min-h-0">
+            <div
+              ref={previewSurfaceRef}
+              className="relative min-h-[320px] flex-1 sm:min-h-[500px] lg:min-h-0"
+            >
               {selectionMenuOpen && editUi.selectedTarget ? (
                 <div className="absolute left-4 top-4 z-20 rounded-xl border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-950">
                   <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
@@ -6595,6 +6888,85 @@ ${studioCanvasInstrumentationScript}
                       className="rounded-lg bg-zinc-900 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
                     >
                       AI
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {canvasColorPalette && isCanvasDrawableTarget(editUi.selectedTarget) ? (
+                <div
+                  className="absolute z-20 w-60 rounded-xl border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-950"
+                  style={{
+                    left: canvasColorPalette.left,
+                    top: canvasColorPalette.top,
+                  }}
+                >
+                  <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Canvas Color
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                    {selectedTargetLabel}
+                  </p>
+                  <div className="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+                    <input
+                      type="color"
+                      value={canvasColorPalette.color}
+                      onChange={(event) =>
+                        setCanvasColorPalette((current) =>
+                          current
+                            ? {
+                                ...current,
+                                color: event.target.value,
+                              }
+                            : current,
+                        )
+                      }
+                      className="h-12 w-full cursor-pointer rounded-lg border border-zinc-300 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-950"
+                    />
+                    <p className="mt-2 text-center font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                      {canvasColorPalette.color}
+                    </p>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    {(["fill", "stroke", "both"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() =>
+                          setCanvasColorPalette((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  applyMode: mode,
+                                }
+                              : current,
+                          )
+                        }
+                        className={`rounded-lg px-2 py-2 text-xs font-medium capitalize transition-colors ${
+                          canvasColorPalette.applyMode === mode
+                            ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                            : "border border-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                        }`}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCanvasColorPalette(null)}
+                      className="rounded-lg border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveCanvasColor}
+                      disabled={isGeneratingComponentCandidate}
+                      className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                    >
+                      <Save className="h-3.5 w-3.5" />
+                      {isGeneratingComponentCandidate ? "Saving..." : "Save"}
                     </button>
                   </div>
                 </div>
