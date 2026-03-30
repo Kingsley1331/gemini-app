@@ -3350,6 +3350,12 @@ export default function CodePreview({
                 blockedEventTypes.forEach(function(type) {
                   document.addEventListener(type, function(event) {
                     if (!state.paused) return;
+                    if (
+                      state.enabled &&
+                      (type === 'pointermove' || type === 'mousemove')
+                    ) {
+                      return;
+                    }
                     if (event.target && event.target.id === '__studio_overlay_root') return;
                     if (event.target && event.target.closest && event.target.closest('#__studio_overlay_root')) return;
                     if (typeof event.preventDefault === 'function') {
