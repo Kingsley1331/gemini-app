@@ -6382,8 +6382,10 @@ ${studioCanvasInstrumentationScript}
 
   return (
     <div
-      className={`flex flex-col border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden bg-white dark:bg-zinc-950 my-4 ${
-        isFullscreen ? "fixed inset-1 z-50 sm:inset-4" : "w-full"
+      className={`flex min-h-0 flex-col rounded-xl border border-zinc-200 overflow-hidden bg-white dark:border-zinc-800 dark:bg-zinc-950 ${
+        isFullscreen
+          ? "fixed inset-1 z-50 h-[calc(100dvh-0.5rem)] my-0 shadow-2xl sm:inset-4 sm:h-[calc(100dvh-2rem)]"
+          : "my-4 w-full"
       }`}
     >
       <input
@@ -6600,9 +6602,19 @@ ${studioCanvasInstrumentationScript}
         </div>
       ) : null}
 
-      <div className="relative flex-1 min-h-[320px] bg-zinc-50 dark:bg-zinc-900/20 sm:min-h-[500px]">
+      <div
+        className={`relative flex-1 bg-zinc-50 dark:bg-zinc-900/20 ${
+          isFullscreen ? "min-h-0" : "min-h-[320px] sm:min-h-[500px]"
+        }`}
+      >
         {activeTab === "preview" ? (
-          <div className="flex h-full min-h-[320px] flex-col sm:min-h-[500px] lg:h-[600px] lg:min-h-0 lg:flex-row lg:overflow-hidden">
+          <div
+            className={`flex h-full flex-col lg:flex-row lg:overflow-hidden ${
+              isFullscreen
+                ? "min-h-0"
+                : "min-h-[320px] sm:min-h-[500px] lg:h-[600px] lg:min-h-0"
+            }`}
+          >
             {editUi.isEnabled &&
             editUi.activePanel === "asset" &&
             canEditSelectedTargetAsAsset ? (
@@ -6864,7 +6876,11 @@ ${studioCanvasInstrumentationScript}
             ) : null}
             <div
               ref={previewSurfaceRef}
-              className="relative min-h-[320px] flex-1 sm:min-h-[500px] lg:min-h-0"
+              className={`relative flex-1 ${
+                isFullscreen
+                  ? "min-h-0"
+                  : "min-h-[320px] sm:min-h-[500px] lg:min-h-0"
+              }`}
             >
               {selectionMenuOpen && editUi.selectedTarget ? (
                 <div className="absolute left-4 top-4 z-20 rounded-xl border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-950">
