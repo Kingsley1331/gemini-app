@@ -12,7 +12,7 @@ const SW_CACHE_NAME = "preview-pwa-v6";
 
 // CDN scripts used by the preview — must be cached for offline support
 const CDN_URLS = [
-  "https://unpkg.com/@babel/standalone/babel.min.js",
+  "https://unpkg.com/@babel/standalone@7/babel.min.js",
   "https://unpkg.com/react@18/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
   "https://unpkg.com/lucide@latest",
@@ -1353,7 +1353,7 @@ function buildStandaloneHTML(
     <link rel="apple-touch-icon" href="${iconHref}">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="${appName}">
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+    <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"><\/script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"><\/script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"><\/script>
     <script src="https://unpkg.com/lucide@latest"><\/script>
@@ -1562,7 +1562,7 @@ function buildPreviewHTML(
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>${appName}</title>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+    <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"><\/script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"><\/script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"><\/script>
     <script src="https://unpkg.com/lucide@latest"><\/script>
