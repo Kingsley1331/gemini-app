@@ -1,5 +1,10 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+> **New here?** Read the [Developer Setup Guide](docs/DEVELOPER_SETUP.md) for a
+> complete walkthrough of every tool and service this app uses (Gemini/OpenAI/
+> Anthropic, Nano Banana image generation, remove.bg, Firebase, Vercel Blob,
+> environment variables, and Vercel deployment).
+
 ## Getting Started
 
 First, run the development server:
